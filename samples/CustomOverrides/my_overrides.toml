@@ -1,0 +1,63 @@
+# Custom override configuration example.
+# Merge on top of embedded defaults with: td-tl-gen --overrides my_overrides.toml
+
+# ---------------------------------------------------------------
+# Layer variants: CIDs that change between protocol layers
+# ---------------------------------------------------------------
+# When the server sends a constructor whose CID changed in a newer layer,
+# the generator emits a runtime resolver: GeneratedLayerCid.user(layer)
+
+[[layer_variants]]
+name = "MyCustomType"
+variants = [
+    { max_layer = 220, cid = 0xAABBCCDD },   # used for layer <= 220
+    { cid = 0x11223344 },                      # default (layer > 220)
+]
+
+# ---------------------------------------------------------------
+# Aliases: same RPC method with multiple known CIDs
+# ---------------------------------------------------------------
+# Client may receive responses with old CIDs from older servers.
+
+[[aliases]]
+name = "MessagesSendMessage"
+cids = [0xDFF8042C, 0xA1B2C3D4]
+
+# ---------------------------------------------------------------
+# Extras: undocumented CIDs not in the official schema
+# ---------------------------------------------------------------
+
+[[extras]]
+name = "InternalPing"
+cid = 0xDEADBEEF
+comment = "Custom internal ping, not in public schema"
+
+# ---------------------------------------------------------------
+# Whitelists: which types/functions to generate code for
+# ---------------------------------------------------------------
+
+[whitelists]
+# Types for serialization (Serialize/Deserialize static methods)
+types = [
+    "MessagesSendMessage",
+    "AuthSignIn",
+    "InputPeer",
+    "Bool",
+]
+
+# Types for writer functions (standalone write{X} functions)
+writers = [
+    "boolFalse", "boolTrue",
+    "inputPeerEmpty", "inputPeerSelf", "inputPeerChat",
+    "message", "user",
+]
+
+# Types needing layer parameter in writer functions
+writer_layer_types = [
+    "user", "message",
+]
+
+# Types replaced with byte[] (opaque, not deserialized)
+stub_types = [
+    "PageBlock", "RichText",
+]

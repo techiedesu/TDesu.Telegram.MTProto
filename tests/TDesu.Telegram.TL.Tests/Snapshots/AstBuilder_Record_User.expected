@@ -1,0 +1,25 @@
+type User = {
+    id: int64
+    accessHash: int64
+    firstName: string
+} with
+
+    static member ConstructorId: uint32 = 559694904u
+
+    static member Serialize(writer: TlWriteBuffer, value: User) : unit =
+        writer.WriteConstructorId(559694904u)
+        writer.WriteInt64(value.id)
+        writer.WriteInt64(value.accessHash)
+        writer.WriteString(value.firstName)
+
+    static member Deserialize(reader: TlReadBuffer) : User =
+        let _cid = reader.ReadConstructorId()
+        let id = reader.ReadInt64()
+        let accessHash = reader.ReadInt64()
+        let firstName = reader.ReadString()
+
+        {
+            id = id
+            accessHash = accessHash
+            firstName = firstName
+        }

@@ -1,0 +1,38 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>netstandard2.1</TargetFramework>
+        <RootNamespace>TDesu.Telegram.TL</RootNamespace>
+        <IsPackable>true</IsPackable>
+        <PackageId>TDesu.Telegram.TL</PackageId>
+        <Authors>Vlad Dyshakov</Authors>
+        <Description>TL (Type Language) schema parser and AST for Telegram</Description>
+        <PackageTags>telegram;tl;parser;schema;mtproto;fsharp</PackageTags>
+        <PackageLicenseExpression>Unlicense</PackageLicenseExpression>
+        <PackageProjectUrl>https://github.com/techiedesu/TDesu.Telegram</PackageProjectUrl>
+        <RepositoryUrl>https://github.com/techiedesu/TDesu.Telegram</RepositoryUrl>
+        <RepositoryType>git</RepositoryType>
+        <PublishRepositoryUrl>true</PublishRepositoryUrl>
+        <EmbedUntrackedSources>true</EmbedUntrackedSources>
+        <DebugType>embedded</DebugType>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <Compile Include="AST\Types.fs" />
+        <Compile Include="AST\Helpers.fs" />
+        <Compile Include="AST\Parsers\PrimitiveParsers.fs" />
+        <Compile Include="AST\Parsers\TypeParsers.fs" />
+        <Compile Include="AST\Parsers\CombinatorParsers.fs" />
+        <Compile Include="Crc32.fs" />
+        <Compile Include="AstFactory.fs" />
+        <Compile Include="TlParser.fs" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <PackageReference Include="TDesu.FSharp" />
+        <PackageReference Include="FParsec" />
+        <PackageReference Include="MinVer" PrivateAssets="all" />
+        <PackageReference Include="Microsoft.SourceLink.GitHub" PrivateAssets="all" />
+    </ItemGroup>
+
+</Project>

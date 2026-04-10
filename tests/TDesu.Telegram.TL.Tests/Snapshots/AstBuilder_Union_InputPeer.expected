@@ -1,0 +1,29 @@
+type InputPeer =
+    | InputPeerEmpty
+    | InputPeerSelf
+    | InputPeerChat of chatId: int64
+
+    static member Serialize(writer: TlWriteBuffer, value: InputPeer) : unit =
+        match value with
+        | InputPeerEmpty -> writer.WriteConstructorId(2134579434u)
+        | InputPeerSelf -> writer.WriteConstructorId(2107670217u)
+        | InputPeerChat(chatId) ->
+            writer.WriteConstructorId(900291769u)
+            writer.WriteInt64(chatId)
+
+    static member Deserialize(reader: TlReadBuffer) : InputPeer =
+        let ctorId = reader.ReadConstructorId()
+
+        match ctorId with
+        | 2134579434u -> InputPeerEmpty
+        | 2107670217u -> InputPeerSelf
+        | 900291769u ->
+            let chatId = reader.ReadInt64()
+            InputPeerChat(chatId)
+        | _ -> failwith ("Unknown constructor id for InputPeer: 0x" + ctorId.ToString("X08"))
+
+    static member inline getChatId(x: InputPeer) =
+        match x with
+        | InputPeerEmpty -> ValueNone
+        | InputPeerSelf -> ValueNone
+        | InputPeerChat(chatId) -> ValueSome chatId

@@ -1,0 +1,61 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <OutputType>Exe</OutputType>
+        <RootNamespace>TDesu.Telegram.TL.Generator</RootNamespace>
+        <IsPackable>true</IsPackable>
+        <PackAsTool>true</PackAsTool>
+        <ToolCommandName>td-tl-gen</ToolCommandName>
+        <Authors>Vlad Dyshakov</Authors>
+        <Description>CLI tool for generating F# types from Telegram TL schema</Description>
+        <PackageTags>telegram;tl;codegen;mtproto;fsharp;dotnet-tool</PackageTags>
+        <PackageLicenseExpression>Unlicense</PackageLicenseExpression>
+        <PackageProjectUrl>https://github.com/techiedesu/TDesu.Telegram</PackageProjectUrl>
+        <RepositoryUrl>https://github.com/techiedesu/TDesu.Telegram</RepositoryUrl>
+        <RepositoryType>git</RepositoryType>
+        <PublishRepositoryUrl>true</PublishRepositoryUrl>
+        <EmbedUntrackedSources>true</EmbedUntrackedSources>
+        <DebugType>embedded</DebugType>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <Compile Include="Logger.fs" />
+        <Compile Include="Overrides\Types.fs" />
+        <Compile Include="Overrides\Toml.fs" />
+        <Compile Include="Overrides\Dsl.fs" />
+        <Compile Include="Downloader.fs" />
+        <Compile Include="Naming.fs" />
+        <Compile Include="CodeModel.fs" />
+        <Compile Include="SchemaMapper.fs" />
+        <Compile Include="Fantomas\Extensions.fs" />
+        <Compile Include="Fantomas\ExprBuilder.fs" />
+        <Compile Include="Fantomas\TypeBuilder.fs" />
+        <Compile Include="Overrides\Config.fs" />
+        <Compile Include="EmitTypes.fs" />
+        <Compile Include="EmitWriters.fs" />
+        <Compile Include="EmitTemplates.fs" />
+        <Compile Include="Pipeline.fs" />
+        <Compile Include="Program.fs" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <EmbeddedResource Include="Overrides\DefaultOverrides.toml" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\TDesu.Telegram.TL\TDesu.Telegram.TL.fsproj" />
+        <PackageReference Include="TDesu.FSharp" />
+        <PackageReference Include="Microsoft.Extensions.Logging" />
+        <PackageReference Include="Microsoft.Extensions.Logging.Console" />
+        <PackageReference Include="Tomlyn" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <PackageReference Include="Fantomas.Core" />
+        <PackageReference Include="Fantomas.FCS" />
+        <PackageReference Include="FSharp.Data" />
+        <PackageReference Include="MinVer" PrivateAssets="all" />
+        <PackageReference Include="Microsoft.SourceLink.GitHub" PrivateAssets="all" />
+    </ItemGroup>
+
+</Project>

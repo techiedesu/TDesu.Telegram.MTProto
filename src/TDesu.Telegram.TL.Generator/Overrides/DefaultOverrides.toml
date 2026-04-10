@@ -1,0 +1,484 @@
+# Default CID override configuration for TDesu.Telegram.TL.Generator
+# Handles layer-dependent CIDs, multi-CID aliases, undocumented constructors,
+# and whitelists for code generation.
+
+# ---------------------------------------------------------------
+# Layer-dependent CIDs (resolved at runtime via LayerCid module)
+# ---------------------------------------------------------------
+
+[[layer_variants]]
+name = "User"
+variants = [
+    { max_layer = 216, cid = 0x020b1422 },
+    { cid = 0x31774388 },
+]
+
+[[layer_variants]]
+name = "Message"
+variants = [
+    { max_layer = 216, cid = 0x9815cec8 },
+    { cid = 0x3ae56482 },
+]
+
+[[layer_variants]]
+name = "Channel"
+variants = [
+    { max_layer = 216, cid = 0xfe685355 },
+    { cid = 0x1c32b11c },
+]
+
+[[layer_variants]]
+name = "MessageMediaDocument"
+variants = [
+    { max_layer = 216, cid = 0x52d8ccd9 },
+    { max_layer = 221, cid = 0x4cf4d72d },
+    { cid = 0x52d8ccd9 },
+]
+
+# ---------------------------------------------------------------
+# Aliases: one logical method, multiple CIDs from different layers
+# ---------------------------------------------------------------
+
+[[aliases]]
+name = "MessagesSendMessage"
+cids = [0xdff8042c, 0x983689b3, 0x280d096f, 0xfe05dc9a]
+
+[[aliases]]
+name = "MessagesEditMessage"
+cids = [0xdfd14005, 0x51e842e1]
+
+[[aliases]]
+name = "ContactsAddContact"
+cids = [0xe8f463d0, 0xd9ba2e54]
+
+[[aliases]]
+name = "InputPeerUser"
+cids = [0x7b8e7de6, 0xdde8a54c]
+
+[[aliases]]
+name = "InputReplyToMessage"
+cids = [0x73ec805d, 0x22c0f6d5, 0x869fbe10]
+
+[[aliases]]
+name = "MessagesSendMedia"
+cids = [0x7852f42b, 0xe44df73c]
+
+[[aliases]]
+name = "UpdatesGetDifference"
+cids = [0x19c2f763, 0xa1b9b13f]
+
+# ---------------------------------------------------------------
+# Extra CIDs not in any schema
+# ---------------------------------------------------------------
+
+[[extras]]
+name = "InputPasskeyLogin"
+cid = 0x518ad0b7
+comment = "auth.initPasskeyLogin — undocumented, seen from web client"
+
+[[extras]]
+name = "UnknownRpc0xdea20a39"
+cid = 0xdea20a39
+comment = "Unidentified RPC seen from web client"
+
+[[extras]]
+name = "Messages"
+cid = 0x1d73e7ea
+comment = "messages.messages (4-vector, current layer)"
+
+[[extras]]
+name = "MessagesSlice"
+cid = 0x5f206716
+comment = "messages.messagesSlice"
+
+[[extras]]
+name = "VectorCid"
+cid = 0x1cb5c415
+comment = "vector constructor"
+
+[[extras]]
+name = "MessagesSendMessage1"
+cid = 0x983f9745
+comment = "messages.sendMessage layer 216 CID"
+
+[[extras]]
+name = "InputReplyToMessage1"
+cid = 0x73ec805d
+comment = "inputReplyToMessage old CID"
+
+[[extras]]
+name = "ChannelsEditAbout"
+cid = 0x13e27f1e
+comment = "channels.editAbout"
+
+[[extras]]
+name = "ChannelsCreateForumTopic"
+cid = 0x2f98c3d5
+comment = "channels.createForumTopic → messages.createForumTopic"
+
+[[extras]]
+name = "ChannelsGetForumTopics"
+cid = 0x0de560d1
+comment = "channels.getForumTopics → messages.getForumTopics"
+
+[[extras]]
+name = "ChannelsGetForumTopicsByID"
+cid = 0xb0831eb9
+comment = "channels.getForumTopicsByID → messages.getForumTopicsByID"
+
+[[extras]]
+name = "ChannelsEditForumTopic"
+cid = 0xf4dfa185
+comment = "channels.editForumTopic → messages.editForumTopic"
+
+[[extras]]
+name = "ChannelsUpdatePinnedForumTopic"
+cid = 0x6c2d9026
+comment = "channels.updatePinnedForumTopic → messages.updatePinnedForumTopic"
+
+[[extras]]
+name = "ChannelsDeleteTopicHistory"
+cid = 0x34435f2d
+comment = "channels.deleteTopicHistory → messages.deleteTopicHistory"
+
+[[extras]]
+name = "UpdateChannelPinnedTopic"
+cid = 0x192efbe3
+comment = "updateChannelPinnedTopic"
+
+[[extras]]
+name = "DocumentAttributeVideo2"
+cid = 0x43c57c48
+comment = "documentAttributeVideo layer 216"
+
+[[extras]]
+name = "InputMediaUploadedDocument2"
+cid = 0x037c9330
+comment = "inputMediaUploadedDocument layer 216"
+
+[[extras]]
+name = "InputMediaDocument2"
+cid = 0xa8763ab5
+comment = "inputMediaDocument layer 216"
+
+[[extras]]
+name = "MessagesGetPinnedMessages"
+cid = 0xade8d43f
+comment = "messages.getPinnedMessages"
+
+[[extras]]
+name = "PaymentsGetStarGiftActiveAuctions"
+cid = 0xa5d0514d
+comment = "payments.getStarGiftActiveAuctions"
+
+[[extras]]
+name = "StarGiftActiveAuctionsNotModified"
+cid = 0xdb33dad0
+comment = "payments.starGiftActiveAuctionsNotModified"
+
+[[extras]]
+name = "UserFullOld"
+cid = 0xa02bc13e
+comment = "users.userFull old CID"
+
+[[extras]]
+name = "MessagesCreateForumTopic"
+cid = 0x2f98c3d5
+comment = "messages.createForumTopic old CID"
+
+[[extras]]
+name = "MessagesEditForumTopic"
+cid = 0xcecc1134
+comment = "messages.editForumTopic old CID"
+
+[[extras]]
+name = "MessagesGetForumTopics"
+cid = 0x3ba47bff
+comment = "messages.getForumTopics old CID"
+
+[[extras]]
+name = "MessagesGetForumTopicsByID"
+cid = 0xaf0a4a08
+comment = "messages.getForumTopicsByID old CID"
+
+[[extras]]
+name = "MessagesUpdatePinnedForumTopic"
+cid = 0x175df251
+comment = "messages.updatePinnedForumTopic old CID"
+
+[[extras]]
+name = "AuthResendCode"
+cid = 0x3EF1A9BF
+comment = "auth.resendCode old layer CID"
+
+[[extras]]
+name = "UpdatesGetDifferenceOld"
+cid = 0x25939651
+comment = "updates.getDifference old layer CID"
+
+[[extras]]
+name = "PhotosUploadProfilePhotoOld"
+cid = 0x0d50f1c1
+comment = "photos.uploadProfilePhoto Telethon layer 216"
+
+[[extras]]
+name = "MessagesDeleteTopicHistory"
+cid = 0xd2816f10
+comment = "messages.deleteTopicHistory old CID"
+
+# ---------------------------------------------------------------
+# Layer-dependent type metadata
+# ---------------------------------------------------------------
+
+[layer_type_info]
+[layer_type_info.User]
+flags2_min_layer = 223
+
+# ---------------------------------------------------------------
+# Whitelists for code generation
+# ---------------------------------------------------------------
+
+[whitelists]
+types = [
+    # Messages — CRUD
+    "MessagesDeleteMessages", "MessagesReadHistory", "MessagesDeleteHistory",
+    "MessagesCreateChat", "MessagesAddChatUser", "MessagesDeleteChatUser",
+    "MessagesGetFullChat", "MessagesEditMessage",
+    "MessagesForwardMessages", "MessagesSendMultiMedia",
+    "MessagesStartBot", "MessagesUnpinAllMessages", "MessagesPinMessage",
+    # Messages — queries
+    "MessagesGetMessages", "MessagesGetHistory", "MessagesSearch",
+    "MessagesSearchGlobal", "MessagesGetChats", "MessagesGetPeerDialogs",
+    "MessagesGetMessagesViews", "MessagesGetUnreadMentions",
+    "MessagesGetUnreadReactions", "MessagesGetPinnedMessages",
+    "MessagesGetSavedHistory", "MessagesGetReplies",
+    # Messages — scheduled
+    "MessagesGetScheduledHistory", "MessagesGetScheduledMessages",
+    "MessagesDeleteScheduledMessages", "MessagesSendScheduledMessages",
+    # Messages — chat admin
+    "MessagesDeleteChat", "MessagesEditChatTitle", "MessagesEditChatPhoto",
+    "MessagesEditChatAdmin", "MessagesEditChatAbout",
+    "MessagesEditChatDefaultBannedRights",
+    # Messages — chat invites
+    "MessagesExportChatInvite", "MessagesEditExportedChatInvite",
+    "MessagesGetExportedChatInvites", "MessagesGetAdminsWithInvites",
+    "MessagesImportChatInvite", "MessagesCheckChatInvite",
+    "MessagesHideChatJoinRequest",
+    # Messages — reactions/polls/TTL
+    "MessagesSendReaction", "MessagesGetMessagesReactions",
+    "MessagesGetMessageReactionsList",
+    "MessagesSetHistoryTTL", "MessagesSetDefaultHistoryTTL",
+    "MessagesSetDefaultReaction", "MessagesSetChatAvailableReactions",
+    "MessagesToggleNoForwards",
+    # Messages — misc
+    "MessagesSetTyping", "MessagesMarkDialogUnread", "MessagesSaveDraft",
+    "MessagesReadMentions", "MessagesTranslateText",
+    "MessagesUploadMedia", "MessagesSendMedia",
+    "MessagesGetBotCallbackAnswer", "MessagesGetInlineBotResults",
+    "MessagesGetDhConfig", "MessagesGetAvailableReactions",
+    "MessagesGetMessageReadParticipants", "MessagesGetSearchCounters",
+    "MessagesTogglePeerTranslations", "MessagesReportSpam",
+    "MessagesGetTopReactions", "MessagesGetRecentReactions",
+    "MessagesGetPinnedDialogs", "MessagesReadMessageContents",
+    "MessagesSendVote", "MessagesGetPollResults", "MessagesGetPollVotes",
+    "MessagesSaveDefaultSendAs", "MessagesGetOutboxReadDate",
+    "MessagesReorderPinnedSavedDialogs", "MessagesToggleSavedDialogPin",
+    "MessagesReport", "MessagesGetDiscussionMessage",
+    "MessagesReadDiscussion", "MessagesReadReactions",
+    "MessagesToggleDialogPin", "MessagesReorderPinnedDialogs",
+    "MessagesMigrateChat",
+    "MessagesGetCommonChats", "MessagesUpdateDialogFilter",
+    "MessagesUpdateDialogFiltersOrder", "MessagesGetPinnedMessages",
+    "MessagesSendInlineBotResult", "MessagesGetSearchResultsCalendar",
+    "MessagesUpdatePinnedMessage",
+    # Folders
+    "FoldersEditPeerFolders",
+    # Stories
+    "StoriesGetAllStories", "StoriesGetPeerStories",
+    # Contacts
+    "ContactsAddContact",
+    "ContactsDeleteContacts",
+    "ContactsImportContacts",
+    "ContactsSearch",
+    "ContactsGetTopPeers",
+    "ContactsBlock",
+    "ContactsUnblock",
+    "ContactsGetBlocked",
+    "ContactsGetContactIDs",
+    "ContactsResolveUsername",
+    # Channels
+    "ChannelsJoinChannel",
+    "ChannelsLeaveChannel",
+    "ChannelsEditTitle",
+    "ChannelsCreateChannel",
+    "ChannelsEditAbout",
+    "ChannelsGetFullChannel",
+    "ChannelsGetChannels",
+    "ChannelsGetMessages",
+    "ChannelsGetParticipants",
+    "ChannelsGetParticipant",
+    "ChannelsInviteToChannel",
+    "ChannelsReadHistory",
+    "ChannelsDeleteMessages",
+    "ChannelsToggleSignatures",
+    "ChannelsToggleSlowMode", "ChannelsTogglePreHistoryHidden",
+    "ChannelsToggleJoinRequest", "ChannelsToggleJoinToSend",
+    "ChannelsCheckUsername", "ChannelsUpdateUsername",
+    "ChannelsEditPhoto", "ChannelsGetSendAs",
+    "ChannelsEditBanned",
+    "ChannelsDeleteChannel",
+    "ChannelsReadMessageContents",
+    "ChannelsToggleForum",
+    "ChannelsSetDiscussionGroup",
+    # Updates
+    "UpdatesGetDifference", "UpdatesGetChannelDifference",
+    # Account
+    "AccountUpdateProfile",
+    "AccountUpdateUsername",
+    "AccountCheckUsername",
+    "AccountUpdateStatus",
+    "AccountGetPrivacy",
+    "AccountSetPrivacy",
+    "AccountSetAccountTTL",
+    "AccountSetGlobalPrivacySettings",
+    "AccountUpdateBirthday",
+    "AccountUpdateNotifySettings", "AccountGetNotifySettings",
+    # Users
+    "UsersGetUsers",
+    "UsersGetFullUser",
+    # Photos
+    "PhotosUpdateProfilePhoto",
+    "PhotosGetUserPhotos", "PhotosDeletePhotos",
+    # Phone calls & group calls
+    "PhoneRequestCall", "PhoneAcceptCall", "PhoneConfirmCall",
+    "PhoneDiscardCall", "PhoneSaveCallDebug", "PhoneSendSignalingData",
+    "PhoneCreateGroupCall", "PhoneJoinGroupCall", "PhoneLeaveGroupCall",
+    "PhoneInviteToGroupCall", "PhoneDiscardGroupCall",
+    "PhoneToggleGroupCallSettings", "PhoneGetGroupCall",
+    "PhoneGetGroupParticipants", "PhoneCheckGroupCall",
+    "PhoneEditGroupCallParticipant", "PhoneEditGroupCallTitle",
+    "PhoneToggleGroupCallRecord", "PhoneGetGroupCallJoinAs",
+    "PhoneExportGroupCallInvite",
+    # Encrypted chats
+    "MessagesRequestEncryption", "MessagesAcceptEncryption",
+    "MessagesDiscardEncryption", "MessagesSendEncrypted",
+    "MessagesSendEncryptedService", "MessagesSendEncryptedFile",
+    "MessagesSetEncryptedTyping", "MessagesReadEncryptedHistory",
+    "MessagesReceivedQueue",
+    # Auth
+    "AuthImportBotAuthorization",
+    "AuthSendCode",
+    "AuthSignIn",
+    "AuthSignUp",
+    "AuthBindTempAuthKey",
+    "AuthExportLoginToken",
+    "AuthExportAuthorization", "AuthImportAuthorization",
+    "AuthCheckPassword", "AuthResendCode", "AuthCancelCode",
+    # LangPack
+    "LangpackGetLangPack",
+    "LangpackGetStrings",
+    "LangpackGetDifference",
+    "LangpackGetLanguages",
+    "LangpackGetLanguage",
+    # Upload
+    "UploadSaveFilePart",
+    "UploadSaveBigFilePart",
+    "UploadGetFile",
+    # Added for client coverage
+    "MessagesGetDialogs", "MessagesSendMessage",
+    "MessagesClearAllDrafts", "MessagesGetAllDrafts",
+    "MessagesGetDefaultHistoryTTL", "MessagesGetDialogFilters",
+    "MessagesGetWebPage",
+    "UpdatesGetState",
+    "AccountGetAccountTTL", "AccountGetAuthorizations",
+    "AccountGetContentSettings", "AccountGetGlobalPrivacySettings",
+    "ContactsGetContacts", "ContactsGetStatuses",
+    "ChannelsEditAdmin",
+    "ChannelsCreateForumTopic", "ChannelsGetForumTopics",
+    "ChannelsGetGroupsForDiscussion", "ChannelsGetAdminedPublicChannels",
+    "ChannelsGetChannelRecommendations",
+    "PhotosUploadProfilePhoto",
+    # Remaining client methods
+    "ChannelsToggleUsername", "ChannelsSearchPosts",
+    # Response type constructors (for client parsing)
+    "Dialog", "Peer", "ChatPhoto", "UserProfilePhoto",
+]
+
+writers = [
+    # Core entities (layer-dependent)
+    "user", "message", "channel",
+    # Core entities (fixed CID)
+    "chat", "dialog",
+    # Peers
+    "peerUser", "peerChat", "peerChannel",
+    # Media
+    "photo", "document", "messageMediaPhoto", "messageMediaDocument",
+    "photoSize", "documentAttributeFilename",
+    # Message parts
+    "messageReplyHeader",
+    # Updates — basic
+    "updateNewMessage", "updateEditMessage", "updateDeleteMessages",
+    "updateMessageID", "updateNewChannelMessage", "updateDeleteChannelMessages",
+    "updateReadHistoryInbox", "updateReadHistoryOutbox", "updateReadChannelInbox",
+    "updates.state", "updateChannel", "updateChat",
+    "updatePinnedMessages",
+    # Updates — extra
+    "updateEncryption", "updateUserStatus", "updatePeerSettings",
+    "updateShortSentMessage", "updateNewScheduledMessage",
+    "updateReadChannelOutbox", "updateMessagePoll",
+    "updateNewEncryptedMessage", "updateEncryptedChatTyping",
+    # Group calls
+    "updateGroupCall", "groupCall", "groupCallParticipant", "groupCallDiscarded",
+    "updateGroupCallParticipants", "inputGroupCall",
+    # Phone calls
+    "phoneCallDiscarded", "updatePhoneCall",
+    "phoneCallWaiting", "phoneCallAccepted", "phoneCall",
+    "phoneCallProtocol", "phoneConnection", "phoneConnectionWebrtc",
+    # Channel participants
+    "channelFull", "channelParticipant", "channelParticipantCreator", "channelParticipantAdmin",
+    "chatAdminRights", "chatBannedRights",
+    # Chat participants
+    "chatParticipant", "chatParticipantCreator", "chatParticipantAdmin",
+    # Encrypted chats
+    "encryptedChatEmpty", "encryptedChatWaiting", "encryptedChatRequested",
+    "encryptedChat", "encryptedChatDiscarded",
+    # Encrypted files
+    "encryptedFileEmpty", "encryptedFile",
+    # Encrypted messages
+    "encryptedMessage", "encryptedMessageService",
+    # Misc inline types
+    "peerNotifySettings", "contact", "peerBlocked",
+    "draftMessage", "updateDraftMessage",
+    "rpcError", "userProfilePhoto", "chatPhoto", "chatPhotoEmpty",
+    # Reactions
+    "updateMessageReactions", "messageReactions", "reactionCount",
+    "reactionEmoji", "reactionCustomEmoji", "messagePeerReaction",
+    # Statuses
+    "userStatusOnline", "userStatusOffline", "userStatusRecently",
+    "contactStatus",
+    # Contact/block leaf types
+    "importedContact", "dialogPeer",
+    # Complex leaf types
+    "authorization", "langPackLanguage",
+    # Polls
+    "pollResults", "pollAnswerVoters",
+    # Auth responses
+    "dcOption", "auth.authorization", "auth.loggedOut",
+    "auth.sentCode", "auth.sentCodeTypeApp",
+    # Message response types
+    "messages.sentEncryptedMessage", "messages.sentEncryptedFile",
+    "messages.affectedMessages", "messages.affectedHistory",
+    "updates.differenceEmpty",
+    # Forum
+    "forumTopic",
+    # Stories
+    "storiesStealthMode",
+    # Misc
+    "peerSettings", "messageViews",
+]
+
+writer_layer_types = [
+    "user", "message", "channel", "messageMediaDocument",
+]
+
+stub_types = []

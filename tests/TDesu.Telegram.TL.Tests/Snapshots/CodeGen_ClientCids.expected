@@ -1,0 +1,33 @@
+// Auto-generated client CID constants. Do not edit manually.
+// Re-generate with: dotnet run --project src/MTProto.TL.Generator -- --client-cids
+// Source: cached/api.tl (2 functions, 8 constructors)
+
+namespace TDesu.MTProto.Client.Api
+
+/// Auto-generated TL constructor and function CIDs from the API schema.
+[<RequireQualifiedAccess>]
+module ClientCid =
+
+    // === Functions (RPC methods) ===
+    [<Literal>]
+    let AuthSignIn = 0x8D52A951u // auth.signIn
+    [<Literal>]
+    let MessagesSendMessage = 0xDFF8042Cu // messages.sendMessage
+
+    // === Constructors (response/object types) ===
+    [<Literal>]
+    let BoolFalse = 0xBC799737u // boolFalse
+    [<Literal>]
+    let BoolTrue = 0x997275B5u // boolTrue
+    [<Literal>]
+    let InputPeerChat = 0x35A95CB9u // inputPeerChat
+    [<Literal>]
+    let InputPeerEmpty = 0x7F3B18EAu // inputPeerEmpty
+    [<Literal>]
+    let InputPeerSelf = 0x7DA07EC9u // inputPeerSelf
+    [<Literal>]
+    let Message = 0x5A686D7Cu // message
+    [<Literal>]
+    let MessageEntity = 0xE4599BBDu // messageEntity
+    [<Literal>]
+    let User = 0x215C4438u // user

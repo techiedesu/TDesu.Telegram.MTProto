@@ -1,0 +1,27 @@
+// Auto-generated handler coverage validator. Do not edit manually.
+// Re-generate with: dotnet run --project src/MTProto.TL.Generator -- --coverage
+
+namespace TDesu.Serialization
+
+/// Validates handler coverage: which TL functions have registered handlers.
+[<RequireQualifiedAccess>]
+module GeneratedCoverageValidator =
+
+    /// All 2 API function CIDs with their TL names.
+    let allFunctions : (uint32 * string)[] = [|
+        0xDFF8042Cu, "messages.sendMessage"
+        0x8D52A951u, "auth.signIn"
+    |]
+
+    /// Validate registered handlers. Returns (covered, missing, extra) method names.
+    let validate (registeredCids: uint32 seq) : string list * string list * string list =
+        let registered = System.Collections.Generic.HashSet<uint32>(registeredCids)
+        let allSet = System.Collections.Generic.HashSet<uint32>()
+        let covered = System.Collections.Generic.List<string>()
+        let missing = System.Collections.Generic.List<string>()
+        for cid, name in allFunctions do
+            if allSet.Add(cid) then
+                if registered.Contains(cid) then covered.Add(name)
+                else missing.Add(name)
+        let extra = [for cid in registered do if not (allSet.Contains cid) then yield $"0x%08X{cid}"]
+        (List.ofSeq covered, List.ofSeq missing, extra)

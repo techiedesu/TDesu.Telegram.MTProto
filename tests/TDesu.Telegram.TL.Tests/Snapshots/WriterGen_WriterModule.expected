@@ -1,0 +1,75 @@
+// Auto-generated TL writer functions. Do not edit manually.
+// Re-generate with: dotnet run --project src/MTProto.TL.Generator -- --writers
+
+namespace TDesu.Serialization
+
+module GeneratedTlWriters =
+    [<RequireQualifiedAccess>]
+    type WriteBool =
+        | BoolFalse
+        | BoolTrue
+
+    and [<RequireQualifiedAccess>] WriteInputPeer =
+        | InputPeerEmpty
+        | InputPeerSelf
+        | InputPeerChat of chatId: int64
+
+    and WriteMessageEntityParams = { offset: int32; length: int32 }
+
+    and WriteMessageParams = {
+        out: bool
+        text: string
+        entities: WriteMessageEntityParams[] option
+    }
+
+    and WriteUserParams = {
+        id: int64
+        accessHash: int64
+        firstName: string
+    }
+
+    let rec writeBool (w: TlWriteBuffer) (p: WriteBool) =
+        match p with
+        | WriteBool.BoolFalse -> w.WriteConstructorId(0xBC799737u)
+        | WriteBool.BoolTrue -> w.WriteConstructorId(0x997275B5u)
+
+    and writeInputPeer (w: TlWriteBuffer) (p: WriteInputPeer) =
+        match p with
+        | WriteInputPeer.InputPeerEmpty -> w.WriteConstructorId(0x7F3B18EAu)
+        | WriteInputPeer.InputPeerSelf -> w.WriteConstructorId(0x7DA07EC9u)
+        | WriteInputPeer.InputPeerChat(chatId) ->
+            w.WriteConstructorId(0x35A95CB9u)
+            w.WriteInt64(chatId)
+
+    and writeMessage (w: TlWriteBuffer) (p: WriteMessageParams) =
+        w.WriteConstructorId(0x5A686D7Cu)
+        let mutable flags = 0
+
+        if p.out then
+            flags <- flags ||| (1 <<< 1)
+
+        if p.entities.IsSome then
+            flags <- flags ||| (1 <<< 0)
+
+        w.WriteInt32(flags)
+        w.WriteString(p.text)
+
+        match p.entities with
+        | Some(arr) ->
+            w.WriteConstructorId(0x1CB5C415u)
+            w.WriteInt32(arr.Length)
+
+            for item in arr do
+                writeMessageEntity w item
+        | None -> ()
+
+    and writeMessageEntity (w: TlWriteBuffer) (p: WriteMessageEntityParams) =
+        w.WriteConstructorId(0xE4599BBDu)
+        w.WriteInt32(p.offset)
+        w.WriteInt32(p.length)
+
+    and writeUser (w: TlWriteBuffer) (p: WriteUserParams) =
+        w.WriteConstructorId(0x215C4438u)
+        w.WriteInt64(p.id)
+        w.WriteInt64(p.accessHash)
+        w.WriteString(p.firstName)

@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <IsTestProject>true</IsTestProject>
+        <IsPackable>false</IsPackable>
+        <RootNamespace>TDesu.Telegram.TL.Tests</RootNamespace>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <Compile Include="TestHelpers.fs" />
+        <Compile Include="SnapshotHelpers.fs" />
+        <Compile Include="PrimitiveParserTests.fs" />
+        <Compile Include="TypeExprParserTests.fs" />
+        <Compile Include="CombinatorParserTests.fs" />
+        <Compile Include="SchemaParserTests.fs" />
+        <Compile Include="Crc32Tests.fs" />
+        <Compile Include="AstBuilderTests.fs" />
+        <Compile Include="CodeGeneratorTests.fs" />
+        <Compile Include="WriterGeneratorTests.fs" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <Content Include="TestData\**" CopyToOutputDirectory="PreserveNewest" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\..\src\TDesu.Telegram.TL\TDesu.Telegram.TL.fsproj" />
+        <ProjectReference Include="..\..\src\TDesu.Telegram.TL.Generator\TDesu.Telegram.TL.Generator.fsproj" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <PackageReference Include="NUnit" />
+        <PackageReference Include="Microsoft.NET.Test.Sdk" />
+        <PackageReference Include="NUnit3TestAdapter" />
+        <PackageReference Include="coverlet.collector" />
+        <PackageReference Include="JunitXml.TestLogger" />
+    </ItemGroup>
+
+</Project>

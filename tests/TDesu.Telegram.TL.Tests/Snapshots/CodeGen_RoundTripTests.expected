@@ -1,0 +1,35 @@
+// Auto-generated round-trip tests. Do not edit manually.
+// Re-generate with: dotnet run --project src/MTProto.TL.Generator -- --tests
+
+module TDesu.MTProto.Tests.GeneratedRoundTripTests
+
+open NUnit.Framework
+open TDesu.Serialization
+open TDesu.Serialization.Requests
+
+[<TestFixture>]
+type RoundTripTests() =
+
+    [<Test>]
+    member _.``MessagesSendMessage round-trip``() =
+        let v : MessagesSendMessage = { peer = InputPeer.InputPeerEmpty; message = "" }
+        use w1 = new TlWriteBuffer()
+        MessagesSendMessage.Serialize(w1, v)
+        let bytes1 = w1.ToArray()
+        let v2 = MessagesSendMessage.Deserialize(bytes1)
+        use w2 = new TlWriteBuffer()
+        MessagesSendMessage.Serialize(w2, v2)
+        let bytes2 = w2.ToArray()
+        Assert.That(bytes2, Is.EqualTo(bytes1 :> obj), "MessagesSendMessage round-trip mismatch")
+
+    [<Test>]
+    member _.``AuthSignIn round-trip``() =
+        let v : AuthSignIn = { phoneNumber = ""; phoneCodeHash = ""; phoneCode = "" }
+        use w1 = new TlWriteBuffer()
+        AuthSignIn.Serialize(w1, v)
+        let bytes1 = w1.ToArray()
+        let v2 = AuthSignIn.Deserialize(bytes1)
+        use w2 = new TlWriteBuffer()
+        AuthSignIn.Serialize(w2, v2)
+        let bytes2 = w2.ToArray()
+        Assert.That(bytes2, Is.EqualTo(bytes1 :> obj), "AuthSignIn round-trip mismatch")

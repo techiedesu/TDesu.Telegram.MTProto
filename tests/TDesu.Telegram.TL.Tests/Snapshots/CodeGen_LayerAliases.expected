@@ -1,0 +1,21 @@
+// Auto-generated layer CID aliases. Do not edit manually.
+// Re-generate with: dotnet run --project src/MTProto.TL.Generator -- --layer-aliases
+// Base schema: cached/api.tl (Telethon L216)
+// New schema:  src/cached/api.tl (tdesktop L223)
+
+namespace TDesu.Serialization
+
+/// L223→L216 function CID aliases for dual-layer compatibility.
+[<RequireQualifiedAccess>]
+module GeneratedLayerAliases =
+
+    /// All L223→L216 function CID aliases (0 total).
+    let aliases : (uint32 * uint32) array = [|
+    |]
+
+    /// NotModified constructor CIDs (0 total).
+    /// tdesktop rejects these when client sends hash=0 (first request).
+    /// Server should return full empty response instead.
+    let notModifiedCids : System.Collections.Generic.HashSet<uint32> =
+        System.Collections.Generic.HashSet<uint32>([|
+        |])

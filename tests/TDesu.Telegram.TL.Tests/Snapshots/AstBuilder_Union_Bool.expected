@@ -1,0 +1,16 @@
+type Bool =
+    | BoolFalse
+    | BoolTrue
+
+    static member Serialize(writer: TlWriteBuffer, value: Bool) : unit =
+        match value with
+        | BoolFalse -> writer.WriteConstructorId(3162085175u)
+        | BoolTrue -> writer.WriteConstructorId(2574415285u)
+
+    static member Deserialize(reader: TlReadBuffer) : Bool =
+        let ctorId = reader.ReadConstructorId()
+
+        match ctorId with
+        | 3162085175u -> BoolFalse
+        | 2574415285u -> BoolTrue
+        | _ -> failwith ("Unknown constructor id for Bool: 0x" + ctorId.ToString("X08"))

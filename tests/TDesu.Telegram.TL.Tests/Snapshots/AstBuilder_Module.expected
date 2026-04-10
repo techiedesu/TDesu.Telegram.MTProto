@@ -1,0 +1,200 @@
+// Auto-generated at [TIMESTAMP]
+// Do not edit manually.
+
+namespace Test.Namespace
+
+open TDesu.Serialization
+
+type Bool =
+    | BoolFalse
+    | BoolTrue
+
+    static member Serialize(writer: TlWriteBuffer, value: Bool) : unit =
+        match value with
+        | BoolFalse -> writer.WriteConstructorId(3162085175u)
+        | BoolTrue -> writer.WriteConstructorId(2574415285u)
+
+    static member Deserialize(reader: TlReadBuffer) : Bool =
+        let ctorId = reader.ReadConstructorId()
+
+        match ctorId with
+        | 3162085175u -> BoolFalse
+        | 2574415285u -> BoolTrue
+        | _ -> failwith ("Unknown constructor id for Bool: 0x" + ctorId.ToString("X08"))
+
+type MessageEntity = {
+    offset: int32
+    length: int32
+} with
+
+    static member ConstructorId: uint32 = 3831077821u
+
+    static member Serialize(writer: TlWriteBuffer, value: MessageEntity) : unit =
+        writer.WriteConstructorId(3831077821u)
+        writer.WriteInt32(value.offset)
+        writer.WriteInt32(value.length)
+
+    static member Deserialize(reader: TlReadBuffer) : MessageEntity =
+        let _cid = reader.ReadConstructorId()
+        let offset = reader.ReadInt32()
+        let length = reader.ReadInt32()
+        { offset = offset; length = length }
+
+type Message = {
+    out: bool
+    text: string
+    entities: MessageEntity array option
+} with
+
+    static member ConstructorId: uint32 = 1516793212u
+
+    static member Serialize(writer: TlWriteBuffer, value: Message) : unit =
+        let mutable flags = 0
+        writer.WriteConstructorId(1516793212u)
+
+        if value.out then
+            flags <- flags ||| (1 <<< 1)
+
+        if value.entities.IsSome then
+            flags <- flags ||| (1 <<< 0)
+
+        writer.WriteInt32(flags)
+        writer.WriteString(value.text)
+
+        match value.entities with
+        | Some(v) ->
+            writer.WriteVector (v) (fun w item ->
+                let writer = w
+                MessageEntity.Serialize(writer, item))
+        | None -> ()
+
+    static member Deserialize(reader: TlReadBuffer) : Message =
+        let _cid = reader.ReadConstructorId()
+        let flags = reader.ReadInt32()
+        let out = (flags &&& (1 <<< 1)) <> 0
+        let text = reader.ReadString()
+
+        let entities =
+            if (flags &&& (1 <<< 0)) <> 0 then
+                Some(
+                    reader
+                        .ReadVector(fun r ->
+                            let reader = r
+                            MessageEntity.Deserialize(reader))
+                )
+            else
+                None
+
+        {
+            out = out
+            text = text
+            entities = entities
+        }
+
+type User = {
+    id: int64
+    accessHash: int64
+    firstName: string
+} with
+
+    static member ConstructorId: uint32 = 559694904u
+
+    static member Serialize(writer: TlWriteBuffer, value: User) : unit =
+        writer.WriteConstructorId(559694904u)
+        writer.WriteInt64(value.id)
+        writer.WriteInt64(value.accessHash)
+        writer.WriteString(value.firstName)
+
+    static member Deserialize(reader: TlReadBuffer) : User =
+        let _cid = reader.ReadConstructorId()
+        let id = reader.ReadInt64()
+        let accessHash = reader.ReadInt64()
+        let firstName = reader.ReadString()
+
+        {
+            id = id
+            accessHash = accessHash
+            firstName = firstName
+        }
+
+type InputPeer =
+    | InputPeerEmpty
+    | InputPeerSelf
+    | InputPeerChat of chatId: int64
+
+    static member Serialize(writer: TlWriteBuffer, value: InputPeer) : unit =
+        match value with
+        | InputPeerEmpty -> writer.WriteConstructorId(2134579434u)
+        | InputPeerSelf -> writer.WriteConstructorId(2107670217u)
+        | InputPeerChat(chatId) ->
+            writer.WriteConstructorId(900291769u)
+            writer.WriteInt64(chatId)
+
+    static member Deserialize(reader: TlReadBuffer) : InputPeer =
+        let ctorId = reader.ReadConstructorId()
+
+        match ctorId with
+        | 2134579434u -> InputPeerEmpty
+        | 2107670217u -> InputPeerSelf
+        | 900291769u ->
+            let chatId = reader.ReadInt64()
+            InputPeerChat(chatId)
+        | _ -> failwith ("Unknown constructor id for InputPeer: 0x" + ctorId.ToString("X08"))
+
+    static member inline getChatId(x: InputPeer) =
+        match x with
+        | InputPeerEmpty -> ValueNone
+        | InputPeerSelf -> ValueNone
+        | InputPeerChat(chatId) -> ValueSome chatId
+
+type MessagesSendMessage = {
+    peer: InputPeer
+    message: string
+} with
+
+    static member ConstructorId: uint32 = 3757573164u
+
+    static member Serialize(writer: TlWriteBuffer, value: MessagesSendMessage) : unit =
+        writer.WriteConstructorId(3757573164u)
+        InputPeer.Serialize(writer, value.peer)
+        writer.WriteString(value.message)
+
+    static member DeserializeFields(reader: TlReadBuffer) : MessagesSendMessage =
+        let peer = InputPeer.Deserialize(reader)
+        let message = reader.ReadString()
+        { peer = peer; message = message }
+
+    static member Deserialize(body: byte[]) : MessagesSendMessage =
+        use reader = new TlReadBuffer(body)
+        let _cid = reader.ReadConstructorId()
+        MessagesSendMessage.DeserializeFields(reader)
+
+type AuthSignIn = {
+    phoneNumber: string
+    phoneCodeHash: string
+    phoneCode: string
+} with
+
+    static member ConstructorId: uint32 = 2371004753u
+
+    static member Serialize(writer: TlWriteBuffer, value: AuthSignIn) : unit =
+        writer.WriteConstructorId(2371004753u)
+        writer.WriteString(value.phoneNumber)
+        writer.WriteString(value.phoneCodeHash)
+        writer.WriteString(value.phoneCode)
+
+    static member DeserializeFields(reader: TlReadBuffer) : AuthSignIn =
+        let phoneNumber = reader.ReadString()
+        let phoneCodeHash = reader.ReadString()
+        let phoneCode = reader.ReadString()
+
+        {
+            phoneNumber = phoneNumber
+            phoneCodeHash = phoneCodeHash
+            phoneCode = phoneCode
+        }
+
+    static member Deserialize(body: byte[]) : AuthSignIn =
+        use reader = new TlReadBuffer(body)
+        let _cid = reader.ReadConstructorId()
+        AuthSignIn.DeserializeFields(reader)

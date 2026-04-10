@@ -1,0 +1,29 @@
+// Auto-generated RPC return type mapping. Do not edit manually.
+// Re-generate with: dotnet run --project src/MTProto.TL.Generator -- --return-types
+
+namespace TDesu.Serialization
+
+/// Maps each RPC function CID to its expected TL return type name.
+[<RequireQualifiedAccess>]
+module GeneratedReturnTypes =
+
+    /// Lookup: CID → (methodName, returnType).
+    let private entries = [|
+        0xDFF8042Cu, ("messages.sendMessage", "Updates")
+        0x8D52A951u, ("auth.signIn", "auth.Authorization")
+    |]
+
+    let private lookup = System.Collections.Generic.Dictionary<uint32, string * string>(entries.Length)
+    do for cid, v in entries do lookup.[cid] <- v
+
+    /// Get (methodName, returnType) for a CID.
+    let tryGet (cid: uint32) : (string * string) option =
+        match lookup.TryGetValue(cid) with
+        | true, v -> Some v
+        | false, _ -> None
+
+    /// Get expected return type name for a CID.
+    let returnType (cid: uint32) : string option =
+        match lookup.TryGetValue(cid) with
+        | true, (_, rt) -> Some rt
+        | false, _ -> None

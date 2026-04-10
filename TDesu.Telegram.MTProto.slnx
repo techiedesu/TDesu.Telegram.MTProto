@@ -1,0 +1,15 @@
+<Solution>
+    <Folder Name="/src/">
+        <Project Path="src/TDesu.Telegram.TL/TDesu.Telegram.TL.fsproj" />
+        <Project Path="src/TDesu.Telegram.TL.Generator/TDesu.Telegram.TL.Generator.fsproj" />
+    </Folder>
+    <Folder Name="/tests/">
+        <Project Path="tests/TDesu.Telegram.TL.Tests/TDesu.Telegram.TL.Tests.fsproj" />
+    </Folder>
+    <Folder Name="/samples/">
+        <Project Path="samples/CSharpParser/CSharpParser.csproj" />
+        <Project Path="samples/FSharpParser/FSharpParser.fsproj" />
+        <Project Path="samples/CustomOverrides/CustomOverrides.fsproj" />
+        <Project Path="samples/PingPongBot/PingPongBot.fsproj" Type="F#" />
+    </Folder>
+</Solution>

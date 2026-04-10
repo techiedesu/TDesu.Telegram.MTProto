@@ -1,0 +1,29 @@
+type AuthSignIn = {
+    phoneNumber: string
+    phoneCodeHash: string
+    phoneCode: string
+} with
+
+    static member ConstructorId: uint32 = 2371004753u
+
+    static member Serialize(writer: TlWriteBuffer, value: AuthSignIn) : unit =
+        writer.WriteConstructorId(2371004753u)
+        writer.WriteString(value.phoneNumber)
+        writer.WriteString(value.phoneCodeHash)
+        writer.WriteString(value.phoneCode)
+
+    static member DeserializeFields(reader: TlReadBuffer) : AuthSignIn =
+        let phoneNumber = reader.ReadString()
+        let phoneCodeHash = reader.ReadString()
+        let phoneCode = reader.ReadString()
+
+        {
+            phoneNumber = phoneNumber
+            phoneCodeHash = phoneCodeHash
+            phoneCode = phoneCode
+        }
+
+    static member Deserialize(body: byte[]) : AuthSignIn =
+        use reader = new TlReadBuffer(body)
+        let _cid = reader.ReadConstructorId()
+        AuthSignIn.DeserializeFields(reader)

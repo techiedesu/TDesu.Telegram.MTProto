@@ -1,0 +1,21 @@
+type MessagesSendMessage = {
+    peer: InputPeer
+    message: string
+} with
+
+    static member ConstructorId: uint32 = 3757573164u
+
+    static member Serialize(writer: TlWriteBuffer, value: MessagesSendMessage) : unit =
+        writer.WriteConstructorId(3757573164u)
+        InputPeer.Serialize(writer, value.peer)
+        writer.WriteString(value.message)
+
+    static member DeserializeFields(reader: TlReadBuffer) : MessagesSendMessage =
+        let peer = InputPeer.Deserialize(reader)
+        let message = reader.ReadString()
+        { peer = peer; message = message }
+
+    static member Deserialize(body: byte[]) : MessagesSendMessage =
+        use reader = new TlReadBuffer(body)
+        let _cid = reader.ReadConstructorId()
+        MessagesSendMessage.DeserializeFields(reader)

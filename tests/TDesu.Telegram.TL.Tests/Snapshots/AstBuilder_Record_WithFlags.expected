@@ -1,0 +1,50 @@
+type Message = {
+    out: bool
+    text: string
+    entities: MessageEntity array option
+} with
+
+    static member ConstructorId: uint32 = 1516793212u
+
+    static member Serialize(writer: TlWriteBuffer, value: Message) : unit =
+        let mutable flags = 0
+        writer.WriteConstructorId(1516793212u)
+
+        if value.out then
+            flags <- flags ||| (1 <<< 1)
+
+        if value.entities.IsSome then
+            flags <- flags ||| (1 <<< 0)
+
+        writer.WriteInt32(flags)
+        writer.WriteString(value.text)
+
+        match value.entities with
+        | Some(v) ->
+            writer.WriteVector (v) (fun w item ->
+                let writer = w
+                MessageEntity.Serialize(writer, item))
+        | None -> ()
+
+    static member Deserialize(reader: TlReadBuffer) : Message =
+        let _cid = reader.ReadConstructorId()
+        let flags = reader.ReadInt32()
+        let out = (flags &&& (1 <<< 1)) <> 0
+        let text = reader.ReadString()
+
+        let entities =
+            if (flags &&& (1 <<< 0)) <> 0 then
+                Some(
+                    reader
+                        .ReadVector(fun r ->
+                            let reader = r
+                            MessageEntity.Deserialize(reader))
+                )
+            else
+                None
+
+        {
+            out = out
+            text = text
+            entities = entities
+        }

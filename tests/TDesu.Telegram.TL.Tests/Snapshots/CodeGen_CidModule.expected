@@ -1,0 +1,80 @@
+// Auto-generated TL constructor IDs. Do not edit manually.
+// Re-generate with: dotnet run --project src/MTProto.TL.Generator
+// Overrides defined in: src/MTProto.TL.Generator/CidOverrides.fs
+
+namespace TDesu.Serialization
+
+/// Auto-generated constructor IDs from TL schema + client overrides.
+[<RequireQualifiedAccess>]
+module GeneratedCid =
+
+    // --- MTProto Constructors ---
+    [<Literal>]
+    let ResPQ = 0x05162463u
+
+    // --- MTProto Functions ---
+
+    // --- API Constructors ---
+    [<Literal>]
+    let BoolFalse = 0xBC799737u
+    [<Literal>]
+    let BoolTrue = 0x997275B5u
+    [<Literal>]
+    let Message = 0x5A686D7Cu
+    [<Literal>]
+    let MessageEntity = 0xE4599BBDu
+    [<Literal>]
+    let User = 0x215C4438u
+    [<Literal>]
+    let InputPeerEmpty = 0x7F3B18EAu
+    [<Literal>]
+    let InputPeerSelf = 0x7DA07EC9u
+    [<Literal>]
+    let InputPeerChat = 0x35A95CB9u
+
+    // --- API Functions ---
+    [<Literal>]
+    let MessagesSendMessage = 0xDFF8042Cu
+    [<Literal>]
+    let AuthSignIn = 0x8D52A951u
+
+    // --- Aliases (multi-CID methods from different client layers) ---
+
+    // --- Extra (undocumented / client-specific) ---
+
+/// Layer-dependent constructor IDs. Resolved at runtime by negotiated layer.
+[<RequireQualifiedAccess>]
+module GeneratedLayerCid =
+
+    /// Default layer when client hasn't sent invokeWithLayer yet.
+    [<Literal>]
+    let DefaultLayer = 223
+
+    /// Minimum supported layer.
+    [<Literal>]
+    let MinSupportedLayer = 190
+
+/// Runtime CID → TL method name lookup for logging and dispatch.
+[<RequireQualifiedAccess>]
+module GeneratedMethodNames =
+
+    /// Lookup table: CID → TL method name.
+    let private entries = [|
+        0xDFF8042Cu, "messages.sendMessage"
+        0x8D52A951u, "auth.signIn"
+    |]
+
+    let private lookup = System.Collections.Generic.Dictionary<uint32, string>(entries.Length)
+    do for cid, name in entries do lookup.[cid] <- name
+
+    /// Get TL method name for a CID, or None if unknown.
+    let tryGet (cid: uint32) : string option =
+        match lookup.TryGetValue(cid) with
+        | true, name -> Some name
+        | false, _ -> None
+
+    /// Get TL method name, or hex fallback.
+    let getOrHex (cid: uint32) : string =
+        match lookup.TryGetValue(cid) with
+        | true, name -> name
+        | false, _ -> $"0x%08X{cid}"
