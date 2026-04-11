@@ -1,6 +1,5 @@
 // Auto-generated TL constructor IDs. Do not edit manually.
-// Re-generate with: dotnet run --project src/MTProto.TL.Generator
-// Overrides defined in: src/MTProto.TL.Generator/CidOverrides.fs
+// Re-generate with: td-tl-gen --target cid --overrides <your.toml>
 
 namespace TDesu.Serialization
 

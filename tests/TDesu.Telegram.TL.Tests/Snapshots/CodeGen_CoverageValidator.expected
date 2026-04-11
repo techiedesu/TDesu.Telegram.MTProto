@@ -1,5 +1,5 @@
 // Auto-generated handler coverage validator. Do not edit manually.
-// Re-generate with: dotnet run --project src/MTProto.TL.Generator -- --coverage
+// Re-generate with: td-tl-gen --target coverage --overrides <your.toml>
 
 namespace TDesu.Serialization
 

@@ -1,141 +1,188 @@
-﻿namespace TDesu.Telegram.TL.Generator
+namespace TDesu.Telegram.TL.Generator
 
 open System.IO
 open Microsoft.Extensions.Logging
 open TDesu.FSharp
 open TDesu.FSharp.Operators
-open TDesu.FSharp.Tasks
 open TDesu.FSharp.Utilities
 open TDesu.Telegram.TL
+open TDesu.Telegram.TL.AST
 open TDesu.Telegram.TL.Generator.Overrides
 
 module Program =
 
-    let private srcDir = System.IO.Path.GetFullPath(System.IO.Path.Combine(__SOURCE_DIRECTORY__, ".."))
+    let private usage = """
+td-tl-gen — F# code generator for Telegram TL schemas
 
-    let private tryGetArgValue (name: string) (argv: string array) =
+Usage:
+  td-tl-gen --schema <path> --output <dir> --namespace <ns> --overrides <toml> --target <names>
+
+Required flags:
+  --schema <path>             Path to .tl schema file (e.g. cached/api.tl)
+  --output <dir>              Directory where generated .g.fs files are written
+  --namespace <ns>            F# namespace for emitted code (e.g. MyApp.Serialization)
+  --overrides <toml>          Path to TOML override config (no embedded default in 0.1.0+)
+  --target <names>            Comma-separated list of targets to generate
+
+Available targets:
+  cid                Constructor ID literals (GeneratedCid module)
+  types              Whitelist-filtered request types with Serialize/Deserialize
+  writers            Standalone write{X} functions and Write* DUs
+  coverage           Handler coverage validator (GeneratedCoverageValidator)
+  return-types       CID → return type lookup (GeneratedReturnTypes)
+  tests              Round-trip tests for whitelisted request types
+  layer-aliases      L_old ↔ L_new function CID aliases (requires --layer-base-schema)
+  client-cids        Flat literal table of all function/constructor CIDs
+  client-parsers     Response parsers for client.parsers whitelist
+  all                Equivalent to: cid,types,writers,coverage,return-types
+
+Optional flags:
+  --mtproto-schema <path>     Required only by `cid` target (mtproto-level schema)
+  --layer-base-schema <path>  Required only by `layer-aliases` target
+  --tests-namespace <ns>      Override namespace for `tests` (defaults to <namespace>.Tests)
+  --client-namespace <ns>     Override namespace for client-cids/client-parsers
+                              (defaults to <namespace>.Client.Api)
+
+Sample overrides config: samples/SedBotOverrides/sedbot-overrides.toml
+"""
+
+    let private tryGetArg (name: string) (argv: string[]) =
         argv
         |> Array.tryFindIndex (fun s -> s = name)
         |> Option.bind (fun i -> if i + 1 < argv.Length then Some argv[i + 1] else None)
 
+    let private fail (log: ILogger) (msg: string) =
+        log.LogError("{Message}", msg)
+        eprintfn "%s" usage
+        1
+
+    let private parseTargets (raw: string) : Set<string> =
+        let normalised =
+            raw.Split([| ','; ' ' |], System.StringSplitOptions.RemoveEmptyEntries)
+            |> Array.map (fun s -> s.Trim().ToLowerInvariant())
+            |> Set.ofArray
+        if normalised.Contains "all" then
+            Set.ofList [ "cid"; "types"; "writers"; "coverage"; "return-types" ]
+            |> Set.union (normalised |> Set.remove "all")
+        else
+            normalised
+
+    let private parseSchema (log: ILogger) (kind: string) (path: string) : TlSchema option =
+        if not (File.Exists path) then
+            log.LogError("{Kind} schema not found at {Path}", kind, path)
+            None
+        else
+            let text = File.ReadAllText(path) |> Downloader.preprocess
+            match AstFactory.parse text with
+            | Ok schema ->
+                log.LogInformation(
+                    "{Kind}: {Ctors} constructors, {Funcs} functions",
+                    kind, schema.Constructors.Length, schema.Functions.Length)
+                Some schema
+            | Error err ->
+                log.LogError("Failed to parse {Kind} schema: {Error}", kind, err)
+                None
+
     [<EntryPoint>]
     let main argv =
-        let log = Logger.get "MTProto.TL.Generator"
-        let cidOnly = argv |> Array.contains "--cid-only"
-        let serializationTypes = argv |> Array.contains "--serialization-types"
-        let writers = argv |> Array.contains "--writers"
+        let log = Logger.get "td-tl-gen"
 
-        // Load override config: embedded defaults + optional user overrides
-        let config =
-            match argv |> tryGetArgValue "--overrides" with
-            | Some path ->
-                log.LogInformation("Loading overrides from {path}...", path)
-                Config.loadWithOverlay path
-            | None ->
-                Config.loadDefaults ()
+        let schemaPath = argv |> tryGetArg "--schema"
+        let mtprotoSchemaPath = argv |> tryGetArg "--mtproto-schema"
+        let layerBasePath = argv |> tryGetArg "--layer-base-schema"
+        let outputDir = argv |> tryGetArg "--output"
+        let nsOpt = argv |> tryGetArg "--namespace"
+        let overridesPath = argv |> tryGetArg "--overrides"
+        let targetRaw = argv |> tryGetArg "--target"
+        let testsNs = argv |> tryGetArg "--tests-namespace"
+        let clientNs = argv |> tryGetArg "--client-namespace"
 
-        Downloader.downloadIfNotCached () |> Task.runSynchronously
+        match schemaPath, outputDir, nsOpt, overridesPath, targetRaw with
+        | None, _, _, _, _ -> fail log "--schema is required"
+        | _, None, _, _, _ -> fail log "--output is required"
+        | _, _, None, _, _ -> fail log "--namespace is required"
+        | _, _, _, None, _ -> fail log "--overrides is required"
+        | _, _, _, _, None -> fail log "--target is required"
+        | Some schemaPath, Some outputDir, Some ns, Some overridesPath, Some targetRaw ->
+            let targets = parseTargets targetRaw
+            log.LogInformation("Targets: {Targets}", String.concat "," targets)
 
-        let mtprotoText = Downloader.getMtprotoSchema ()
-        let apiText = Downloader.getApiSchema ()
-
-        log.LogInformation("Parsing MTProto schema...")
-        let mtprotoSchema =
-            match AstFactory.parse mtprotoText with
-            | Ok schema -> schema
-            | Error err -> failwith $"Failed to parse MTProto schema: %s{err}"
-
-        log.LogInformation("Parsing API schema...")
-        let apiSchema =
-            match AstFactory.parse apiText with
-            | Ok schema -> schema
-            | Error err -> failwith $"Failed to parse API schema: %s{err}"
-
-        log.LogInformation(
-            "MTProto: {ctors} constructors, {funcs} functions",
-            mtprotoSchema.Constructors.Length,
-            mtprotoSchema.Functions.Length
-        )
-        log.LogInformation(
-            "API: {ctors} constructors, {funcs} functions",
-            apiSchema.Constructors.Length,
-            apiSchema.Functions.Length
-        )
-
-        // Always generate CID module
-        let cidCode = EmitTemplates.generateCidModule config mtprotoSchema apiSchema
-        let cidPath = Path.Combine(srcDir, "MTProto.Serialization", "GeneratedCid.g.fs")
-        File.WriteAllText(cidPath, cidCode)
-        log.LogInformation("Wrote GeneratedCid.g.fs ({count} bytes, {overrides} overrides)",
-            cidCode.Length, config.Aliases.Length + config.Extras.Length)
-
-        // Generate whitelist-filtered serialization types
-        if serializationTypes then
-            let serPath = Path.Combine(srcDir, "MTProto.Serialization", "GeneratedTlRequests.g.fs")
-            log.LogInformation("Generating serialization types to {path}...", serPath)
-            Pipeline.generateSerializationTypes config apiSchema serPath
-
-        // Generate writer functions
-        if writers then
-            let writerPath = Path.Combine(srcDir, "MTProto.Serialization", "GeneratedTlWriters.g.fs")
-            log.LogInformation("Generating writer functions to {path}...", writerPath)
-            Pipeline.generateWriterModule config apiSchema writerPath
-
-        // Generate coverage validator
-        if argv |> Array.contains "--coverage" then
-            let covPath = Path.Combine(srcDir, "MTProto.Serialization", "GeneratedCoverageValidator.g.fs")
-            log.LogInformation("Generating coverage validator to {path}...", covPath)
-            EmitTemplates.generateCoverageValidator config apiSchema covPath
-
-        // Generate return type mapping
-        if argv |> Array.contains "--return-types" then
-            let rtPath = Path.Combine(srcDir, "MTProto.Serialization", "GeneratedReturnTypes.g.fs")
-            log.LogInformation("Generating return type map to {path}...", rtPath)
-            EmitTemplates.generateReturnTypeMap config apiSchema rtPath
-
-        // Generate round-trip tests
-        if argv |> Array.contains "--tests" then
-            let testPath = Path.Combine(srcDir, "MTProto.Tests", "Serialization", "GeneratedRoundTripTests.g.fs")
-            log.LogInformation("Generating round-trip tests to {path}...", testPath)
-            EmitTemplates.generateRoundTripTests config apiSchema testPath
-
-        // Generate layer CID aliases (compare L216 base with L223 new)
-        if argv |> Array.contains "--layer-aliases" then
-            let newSchemaPath = Path.Combine(srcDir, "cached", "api.tl")
-            if File.Exists(newSchemaPath) then
-                let newText = File.ReadAllText(newSchemaPath) |> Downloader.preprocess
-                match AstFactory.parse newText with
-                | Ok newSchema ->
-                    let aliasPath = Path.Combine(srcDir, "MTProto.Serialization", "GeneratedLayerAliases.g.fs")
-                    log.LogInformation("Generating layer aliases to {path}...", aliasPath)
-                    EmitTemplates.generateLayerAliases apiSchema newSchema aliasPath
-                | Error err ->
-                    log.LogError("Failed to parse new schema: {Error}", err)
+            if not (File.Exists overridesPath) then
+                fail log $"overrides file not found: {overridesPath}"
             else
-                log.LogWarning("New schema not found at {Path}, skipping layer aliases", newSchemaPath)
+                log.LogInformation("Loading overrides from {Path}...", overridesPath)
+                let config = Config.load overridesPath
 
-        // Generate client CID constants
-        if argv |> Array.contains "--client-cids" then
-            let clientCidPath = Path.Combine(srcDir, "MTProto.Client", "Api", "GeneratedClientCid.g.fs")
-            log.LogInformation("Generating client CIDs to {path}...", clientCidPath)
-            EmitTemplates.generateClientCids apiSchema clientCidPath
+                match parseSchema log "API" schemaPath with
+                | None -> 1
+                | Some apiSchema ->
+                    if not (Directory.Exists outputDir) then
+                        Directory.CreateDirectory(outputDir) |> ignore
 
-        let tests = argv |> Array.contains "--tests"
-        let coverage = argv |> Array.contains "--coverage"
-        let returnTypes = argv |> Array.contains "--return-types"
-        let layerAliases = argv |> Array.contains "--layer-aliases"
-        // Generate client response parsers
-        if argv |> Array.contains "--client-parsers" then
-            let parserPath = Path.Combine(srcDir, "MTProto.Client", "Api", "GeneratedResponseParsers.g.fs")
-            log.LogInformation("Generating client response parsers to {path}...", parserPath)
-            Pipeline.generateClientParsers config apiSchema parserPath
+                    let path name = Path.Combine(outputDir, name)
+                    let resolvedTestsNs = defaultArg testsNs $"{ns}.Tests.GeneratedRoundTripTests"
+                    let resolvedClientNs = defaultArg clientNs $"{ns}.Client.Api"
 
-        let clientCids = argv |> Array.contains "--client-cids"
-        let clientParsers = argv |> Array.contains "--client-parsers"
-        if not cidOnly && not serializationTypes && not writers && not tests && not coverage && not returnTypes && not layerAliases && not clientCids && not clientParsers then
-            let outputDir = Path.Combine(srcDir, "MTProto", "Generated")
-            log.LogInformation("Output directory: {dir}", outputDir)
-            Pipeline.generate config mtprotoSchema apiSchema outputDir
+                    let mutable failed = false
 
-        log.LogInformation("Code generation complete.")
-        0
+                    if targets.Contains "cid" then
+                        match mtprotoSchemaPath with
+                        | None ->
+                            log.LogError("`cid` target requires --mtproto-schema")
+                            failed <- true
+                        | Some mtPath ->
+                            match parseSchema log "MTProto" mtPath with
+                            | None -> failed <- true
+                            | Some mtSchema ->
+                                let code = EmitTemplates.generateCidModule ns config mtSchema apiSchema
+                                let outPath = path "GeneratedCid.g.fs"
+                                File.WriteAllText(outPath, code)
+                                log.LogInformation("Wrote {Path} ({Bytes} bytes)", outPath, code.Length)
+
+                    if targets.Contains "types" then
+                        Pipeline.generateSerializationTypes ns config apiSchema (path "GeneratedTlRequests.g.fs")
+
+                    if targets.Contains "writers" then
+                        Pipeline.generateWriterModule ns config apiSchema (path "GeneratedTlWriters.g.fs")
+
+                    if targets.Contains "coverage" then
+                        EmitTemplates.generateCoverageValidator ns config apiSchema (path "GeneratedCoverageValidator.g.fs")
+
+                    if targets.Contains "return-types" then
+                        EmitTemplates.generateReturnTypeMap ns config apiSchema (path "GeneratedReturnTypes.g.fs")
+
+                    if targets.Contains "tests" then
+                        EmitTemplates.generateRoundTripTests resolvedTestsNs ns config apiSchema (path "GeneratedRoundTripTests.g.fs")
+
+                    if targets.Contains "layer-aliases" then
+                        match layerBasePath with
+                        | None ->
+                            log.LogError("`layer-aliases` target requires --layer-base-schema")
+                            failed <- true
+                        | Some basePath ->
+                            match parseSchema log "layer-base" basePath with
+                            | None -> failed <- true
+                            | Some baseSchema ->
+                                EmitTemplates.generateLayerAliases ns baseSchema apiSchema (path "GeneratedLayerAliases.g.fs")
+
+                    if targets.Contains "client-cids" then
+                        EmitTemplates.generateClientCids resolvedClientNs apiSchema (path "GeneratedClientCid.g.fs")
+
+                    if targets.Contains "client-parsers" then
+                        Pipeline.generateClientParsers resolvedClientNs config apiSchema (path "GeneratedResponseParsers.g.fs")
+
+                    let unknown =
+                        let known =
+                            Set.ofList [
+                                "cid"; "types"; "writers"; "coverage"; "return-types"
+                                "tests"; "layer-aliases"; "client-cids"; "client-parsers"
+                            ]
+                        targets |> Set.filter (fun t -> not (known.Contains t))
+                    if not unknown.IsEmpty then
+                        log.LogError("Unknown target(s): {Unknown}", String.concat "," unknown)
+                        failed <- true
+
+                    if failed then 1
+                    else
+                        log.LogInformation("Code generation complete.")
+                        0

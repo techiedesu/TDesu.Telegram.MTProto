@@ -24,16 +24,15 @@ module EmitTemplates =
         |> Map.ofList
 
     /// Generate the Cid + LayerCid modules with overrides applied.
-    let generateCidModule (config: OverrideConfig) (mtprotoSchema: TlSchema) (apiSchema: TlSchema) : string =
+    let generateCidModule (ns: string) (config: OverrideConfig) (mtprotoSchema: TlSchema) (apiSchema: TlSchema) : string =
         let sb = System.Text.StringBuilder()
         let ln (s: string) = sb.AppendLine(s) |> ignore
         let ln0 () = sb.AppendLine() |> ignore
 
         ln "// Auto-generated TL constructor IDs. Do not edit manually."
-        ln "// Re-generate with: dotnet run --project src/MTProto.TL.Generator"
-        ln "// Overrides defined in: src/MTProto.TL.Generator/CidOverrides.fs"
+        ln "// Re-generate with: td-tl-gen --target cid --overrides <your.toml>"
         ln0 ()
-        ln "namespace TDesu.Serialization"
+        ln $"namespace {ns}"
         ln0 ()
 
         // --- GeneratedCid module ---
@@ -181,7 +180,11 @@ module EmitTemplates =
         sb.ToString()
 
     /// Generate round-trip tests for all request types with Serialize+Deserialize.
-    let generateRoundTripTests (config: OverrideConfig) (apiSchema: TlSchema) (outputPath: string) =
+    /// `ns` is the F# module name to emit (e.g. `MyApp.Tests.GeneratedRoundTripTests`).
+    /// `runtimeNs` is the namespace where the request types live (e.g. `MyApp.Serialization`).
+    let generateRoundTripTests
+        (ns: string) (runtimeNs: string)
+        (config: OverrideConfig) (apiSchema: TlSchema) (outputPath: string) =
         let aliasMap = buildAliasMap config
         let _, functions =
             SchemaMapper.mapSchemaWhitelisted apiSchema config.TypeWhitelist config.StubTypes aliasMap
@@ -190,13 +193,13 @@ module EmitTemplates =
         let ln (s: string) = sb.AppendLine(s) |> ignore
 
         ln "// Auto-generated round-trip tests. Do not edit manually."
-        ln "// Re-generate with: dotnet run --project src/MTProto.TL.Generator -- --tests"
+        ln "// Re-generate with: td-tl-gen --target tests --overrides <your.toml>"
         ln ""
-        ln "module TDesu.MTProto.Tests.GeneratedRoundTripTests"
+        ln $"module {ns}"
         ln ""
         ln "open NUnit.Framework"
-        ln "open TDesu.Serialization"
-        ln "open TDesu.Serialization.Requests"
+        ln $"open {runtimeNs}"
+        ln $"open {runtimeNs}.Requests"
         ln ""
         ln "[<TestFixture>]"
         ln "type RoundTripTests() ="
@@ -313,19 +316,18 @@ module EmitTemplates =
         File.WriteAllText(outputPath, sb.ToString())
         log.LogInformation("Wrote GeneratedRoundTripTests.g.fs ({count} tests)", functions.Length)
 
-    /// Generate L223→L216 function CID alias map by comparing two schemas.
+    /// Generate function CID alias map by comparing two schemas.
     /// Detects: same-name CID changes + namespace-moved functions (channels→messages).
-    let generateLayerAliases (baseSchema: TlSchema) (newSchema: TlSchema) (outputPath: string) =
+    /// Use this when you need a server to accept method calls from clients on different layers.
+    let generateLayerAliases (ns: string) (baseSchema: TlSchema) (newSchema: TlSchema) (outputPath: string) =
         let sb = System.Text.StringBuilder()
         let ln (s: string) = sb.AppendLine(s) |> ignore
         let ln0 () = sb.AppendLine() |> ignore
 
         ln "// Auto-generated layer CID aliases. Do not edit manually."
-        ln "// Re-generate with: dotnet run --project src/MTProto.TL.Generator -- --layer-aliases"
-        ln "// Base schema: cached/api.tl (Telethon L216)"
-        ln "// New schema:  src/cached/api.tl (tdesktop L223)"
+        ln "// Re-generate with: td-tl-gen --target layer-aliases --layer-base-schema <old.tl>"
         ln0 ()
-        ln "namespace TDesu.Serialization"
+        ln $"namespace {ns}"
         ln0 ()
         ln "/// L223→L216 function CID aliases for dual-layer compatibility."
         ln "[<RequireQualifiedAccess>]"
@@ -410,15 +412,15 @@ module EmitTemplates =
         log.LogInformation("Wrote GeneratedLayerAliases.g.fs ({count} aliases, {notModCount} notModified CIDs)", sorted.Length, notModifiedCids.Length)
 
     /// Generate handler coverage validator: checks registered CIDs against known TL functions.
-    let generateCoverageValidator (config: OverrideConfig) (apiSchema: TlSchema) (outputPath: string) =
+    let generateCoverageValidator (ns: string) (config: OverrideConfig) (apiSchema: TlSchema) (outputPath: string) =
         let sb = System.Text.StringBuilder()
         let ln (s: string) = sb.AppendLine(s) |> ignore
         let ln0 () = sb.AppendLine() |> ignore
 
         ln "// Auto-generated handler coverage validator. Do not edit manually."
-        ln "// Re-generate with: dotnet run --project src/MTProto.TL.Generator -- --coverage"
+        ln "// Re-generate with: td-tl-gen --target coverage --overrides <your.toml>"
         ln0 ()
-        ln "namespace TDesu.Serialization"
+        ln $"namespace {ns}"
         ln0 ()
         ln "/// Validates handler coverage: which TL functions have registered handlers."
         ln "[<RequireQualifiedAccess>]"
@@ -467,15 +469,15 @@ module EmitTemplates =
         log.LogInformation("Wrote GeneratedCoverageValidator.g.fs ({count} functions)", functions.Length)
 
     /// Generate RPC function -> return type mapping for typed handler validation.
-    let generateReturnTypeMap (config: OverrideConfig) (apiSchema: TlSchema) (outputPath: string) =
+    let generateReturnTypeMap (ns: string) (config: OverrideConfig) (apiSchema: TlSchema) (outputPath: string) =
         let sb = System.Text.StringBuilder()
         let ln (s: string) = sb.AppendLine(s) |> ignore
         let ln0 () = sb.AppendLine() |> ignore
 
         ln "// Auto-generated RPC return type mapping. Do not edit manually."
-        ln "// Re-generate with: dotnet run --project src/MTProto.TL.Generator -- --return-types"
+        ln "// Re-generate with: td-tl-gen --target return-types --overrides <your.toml>"
         ln0 ()
-        ln "namespace TDesu.Serialization"
+        ln $"namespace {ns}"
         ln0 ()
         ln "/// Maps each RPC function CID to its expected TL return type name."
         ln "[<RequireQualifiedAccess>]"
@@ -534,18 +536,19 @@ module EmitTemplates =
         File.WriteAllText(outputPath, sb.ToString())
         log.LogInformation("Wrote GeneratedReturnTypes.g.fs ({count} functions)", functions.Length)
 
-    /// Generate CID constants for MTProto.Client from the API schema.
-    /// Replaces 233 manually defined constants in Methods.fs.
-    let generateClientCids (apiSchema: TlSchema) (outputPath: string) =
+    /// Generate CID constants module from an API schema (every function + constructor).
+    /// Useful for clients that need a flat literal table without going through the full
+    /// override pipeline.
+    let generateClientCids (ns: string) (apiSchema: TlSchema) (outputPath: string) =
         let sb = System.Text.StringBuilder()
         let ln (s: string) = sb.AppendLine(s) |> ignore
         let ln0 () = sb.AppendLine() |> ignore
 
         ln "// Auto-generated client CID constants. Do not edit manually."
-        ln "// Re-generate with: dotnet run --project src/MTProto.TL.Generator -- --client-cids"
-        ln $"// Source: cached/api.tl ({apiSchema.Functions.Length} functions, {apiSchema.Constructors.Length} constructors)"
+        ln "// Re-generate with: td-tl-gen --target client-cids"
+        ln $"// Source: {apiSchema.Functions.Length} functions, {apiSchema.Constructors.Length} constructors"
         ln0 ()
-        ln "namespace TDesu.MTProto.Client.Api"
+        ln $"namespace {ns}"
         ln0 ()
         ln "/// Auto-generated TL constructor and function CIDs from the API schema."
         ln "[<RequireQualifiedAccess>]"

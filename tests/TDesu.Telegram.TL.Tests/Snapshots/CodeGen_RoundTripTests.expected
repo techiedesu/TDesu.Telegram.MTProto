@@ -1,5 +1,5 @@
 // Auto-generated round-trip tests. Do not edit manually.
-// Re-generate with: dotnet run --project src/MTProto.TL.Generator -- --tests
+// Re-generate with: td-tl-gen --target tests --overrides <your.toml>
 
 module TDesu.MTProto.Tests.GeneratedRoundTripTests
 

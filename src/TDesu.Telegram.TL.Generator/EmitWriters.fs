@@ -299,6 +299,7 @@ module EmitWriters =
     // ----------------------------------------------------------------
 
     let generateWriterModule
+        (ns: string)
         (schema: TlSchema)
         (whitelist: Set<string>)
         (layerTypes: Set<string>)
@@ -523,7 +524,7 @@ module EmitWriters =
                 trivia = { SynModuleDeclNestedModuleTrivia.ModuleKeyword = Some r; EqualsRange = Some r }
             )
 
-        let nsNode = mkNamespace "TDesu.Serialization" [ nestedModule ]
+        let nsNode = mkNamespace ns [ nestedModule ]
         let parsed = mkParsedInput [ nsNode ]
         let formatted = formatAst parsed |> Async.RunSynchronously
 

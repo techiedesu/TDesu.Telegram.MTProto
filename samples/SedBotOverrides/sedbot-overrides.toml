@@ -1,6 +1,24 @@
-# Default CID override configuration for TDesu.Telegram.TL.Generator
-# Handles layer-dependent CIDs, multi-CID aliases, undocumented constructors,
-# and whitelists for code generation.
+# SedBot example overrides for TDesu.Telegram.TL.Generator (`td-tl-gen`).
+#
+# Up to td-tl-gen 0.0.0-alpha.0 this exact file shipped as embedded
+# `Overrides/DefaultOverrides.toml` and was implicitly applied to every
+# generator invocation. Starting in 0.1.0 there is no embedded default —
+# every consumer supplies its own TOML via `--overrides` and the generator
+# applies only what's in that file. This sample is preserved as a worked
+# example for anyone building a Telegram server with similar requirements
+# (dual-layer support, undocumented RPCs, custom whitelists).
+#
+# Use it as:
+#   td-tl-gen --schema cached/api.tl --overrides samples/SedBotOverrides/sedbot-overrides.toml \
+#             --output ./Generated --namespace MyApp.Serialization \
+#             --target cid types writers
+#
+# Sections supported by the parser:
+#   [[layer_variants]]            — CIDs that vary by negotiated protocol layer
+#   [[aliases]]                   — multiple known CIDs for one method (older client layers)
+#   [[extras]]                    — undocumented CIDs not in the public schema
+#   [layer_type_info.<TypeName>]  — per-type layer metadata (e.g. flags2_min_layer)
+#   [whitelists]                  — types/writers/writer_layer_types/stub_types/client_parsers
 
 # ---------------------------------------------------------------
 # Layer-dependent CIDs (resolved at runtime via LayerCid module)

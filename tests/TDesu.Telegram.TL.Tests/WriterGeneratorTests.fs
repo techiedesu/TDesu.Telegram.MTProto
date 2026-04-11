@@ -25,5 +25,5 @@ module WriterGeneratorTests =
                   "user"
                   "message" ]
 
-        let actual = EmitWriters.generateWriterModule schema whitelist Set.empty []
+        let actual = EmitWriters.generateWriterModule "TDesu.Serialization" schema whitelist Set.empty []
         assertMatchesSnapshot actual "WriterGen_WriterModule"

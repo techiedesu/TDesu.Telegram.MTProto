@@ -94,8 +94,9 @@ module Toml =
             let writers = wl |> getStringArray "writers" |> Set.ofList
             let writerLayerTypes = wl |> getStringArray "writer_layer_types" |> Set.ofList
             let stubTypes = wl |> getStringArray "stub_types" |> Set.ofList
-            types, writers, writerLayerTypes, stubTypes
-        | _ -> Set.empty, Set.empty, Set.empty, Set.empty
+            let clientParsers = wl |> getStringArray "client_parsers" |> Set.ofList
+            types, writers, writerLayerTypes, stubTypes, clientParsers
+        | _ -> Set.empty, Set.empty, Set.empty, Set.empty, Set.empty
 
     /// Parse TOML string into OverrideConfig.
     let load (toml: string) : OverrideConfig =
@@ -105,7 +106,8 @@ module Toml =
         let aliases = doc |> getTableArray "aliases" |> List.map parseAlias
         let extras = doc |> getTableArray "extras" |> List.map parseExtra
         let layerTypeInfo = doc |> parseLayerTypeInfo
-        let typeWhitelist, writerWhitelist, writerLayerTypes, stubTypes = doc |> parseWhitelists
+        let typeWhitelist, writerWhitelist, writerLayerTypes, stubTypes, clientParsers =
+            doc |> parseWhitelists
 
         { LayerVariants = layerVariants
           Aliases = aliases
@@ -114,18 +116,9 @@ module Toml =
           TypeWhitelist = typeWhitelist
           WriterWhitelist = writerWhitelist
           WriterLayerTypes = writerLayerTypes
-          StubTypes = stubTypes }
+          StubTypes = stubTypes
+          ClientParserWhitelist = clientParsers }
 
     /// Load OverrideConfig from a TOML file.
     let loadFile (path: string) : OverrideConfig =
         File.ReadAllText(path) |> load
-
-    /// Load the embedded DefaultOverrides.toml resource.
-    let loadEmbedded () : OverrideConfig =
-        let asm = Assembly.GetExecutingAssembly()
-        let resourceName =
-            asm.GetManifestResourceNames()
-            |> Array.find (fun n -> n.EndsWith("DefaultOverrides.toml", StringComparison.OrdinalIgnoreCase))
-        use stream = asm.GetManifestResourceStream(resourceName)
-        use reader = new StreamReader(stream)
-        reader.ReadToEnd() |> load

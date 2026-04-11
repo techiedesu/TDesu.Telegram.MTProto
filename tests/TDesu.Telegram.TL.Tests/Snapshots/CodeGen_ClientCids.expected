@@ -1,6 +1,6 @@
 // Auto-generated client CID constants. Do not edit manually.
-// Re-generate with: dotnet run --project src/MTProto.TL.Generator -- --client-cids
-// Source: cached/api.tl (2 functions, 8 constructors)
+// Re-generate with: td-tl-gen --target client-cids
+// Source: 2 functions, 8 constructors
 
 namespace TDesu.MTProto.Client.Api
 

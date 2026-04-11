@@ -43,6 +43,11 @@ module Types =
         WriterWhitelist: Set<string>
         WriterLayerTypes: Set<string>
         StubTypes: Set<string>
+        /// Constructor names to emit response parsers for (used by the
+        /// `client-parsers` target). When empty, the target produces an empty
+        /// module. Replaces the previously hardcoded ["Message"; "User"; "Chat"]
+        /// in Pipeline.generateClientParsers.
+        ClientParserWhitelist: Set<string>
     }
 
     module OverrideConfig =
@@ -55,6 +60,7 @@ module Types =
             WriterWhitelist = Set.empty
             WriterLayerTypes = Set.empty
             StubTypes = Set.empty
+            ClientParserWhitelist = Set.empty
         }
 
         /// Merge overlay on top of base config.
@@ -69,4 +75,5 @@ module Types =
             WriterWhitelist = Set.union baseConfig.WriterWhitelist overlay.WriterWhitelist
             WriterLayerTypes = Set.union baseConfig.WriterLayerTypes overlay.WriterLayerTypes
             StubTypes = Set.union baseConfig.StubTypes overlay.StubTypes
+            ClientParserWhitelist = Set.union baseConfig.ClientParserWhitelist overlay.ClientParserWhitelist
         }

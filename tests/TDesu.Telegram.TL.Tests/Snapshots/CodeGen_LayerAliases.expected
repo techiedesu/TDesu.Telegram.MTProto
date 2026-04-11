@@ -1,7 +1,5 @@
 // Auto-generated layer CID aliases. Do not edit manually.
-// Re-generate with: dotnet run --project src/MTProto.TL.Generator -- --layer-aliases
-// Base schema: cached/api.tl (Telethon L216)
-// New schema:  src/cached/api.tl (tdesktop L223)
+// Re-generate with: td-tl-gen --target layer-aliases --layer-base-schema <old.tl>
 
 namespace TDesu.Serialization
 

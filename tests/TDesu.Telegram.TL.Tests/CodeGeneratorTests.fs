@@ -30,33 +30,35 @@ module CodeGeneratorTests =
             if File.Exists path then
                 File.Delete path
 
+    let private testNs = "TDesu.Serialization"
+
     [<Test>]
     let ``generateCidModule`` () =
-        let actual = EmitTemplates.generateCidModule emptyConfig mtprotoSchema apiSchema
+        let actual = EmitTemplates.generateCidModule testNs emptyConfig mtprotoSchema apiSchema
         assertMatchesSnapshot actual "CodeGen_CidModule"
 
     [<Test>]
     let ``generateClientCids`` () =
         withTempFile (fun path ->
-            EmitTemplates.generateClientCids apiSchema path
+            EmitTemplates.generateClientCids "TDesu.MTProto.Client.Api" apiSchema path
             assertMatchesSnapshot (File.ReadAllText path) "CodeGen_ClientCids")
 
     [<Test>]
     let ``generateCoverageValidator`` () =
         withTempFile (fun path ->
-            EmitTemplates.generateCoverageValidator emptyConfig apiSchema path
+            EmitTemplates.generateCoverageValidator testNs emptyConfig apiSchema path
             assertMatchesSnapshot (File.ReadAllText path) "CodeGen_CoverageValidator")
 
     [<Test>]
     let ``generateReturnTypeMap`` () =
         withTempFile (fun path ->
-            EmitTemplates.generateReturnTypeMap emptyConfig apiSchema path
+            EmitTemplates.generateReturnTypeMap testNs emptyConfig apiSchema path
             assertMatchesSnapshot (File.ReadAllText path) "CodeGen_ReturnTypeMap")
 
     [<Test>]
     let ``generateLayerAliases`` () =
         withTempFile (fun path ->
-            EmitTemplates.generateLayerAliases mtprotoSchema apiSchema path
+            EmitTemplates.generateLayerAliases testNs mtprotoSchema apiSchema path
             assertMatchesSnapshot (File.ReadAllText path) "CodeGen_LayerAliases")
 
     [<Test>]
@@ -66,7 +68,8 @@ module CodeGeneratorTests =
                 TypeWhitelist = set [ "MessagesSendMessage"; "AuthSignIn" ] }
 
         withTempFile (fun path ->
-            EmitTemplates.generateRoundTripTests config apiSchema path
+            EmitTemplates.generateRoundTripTests
+                "TDesu.MTProto.Tests.GeneratedRoundTripTests" testNs config apiSchema path
             assertMatchesSnapshot (File.ReadAllText path) "CodeGen_RoundTripTests")
 
     [<Test>]
@@ -76,5 +79,5 @@ module CodeGeneratorTests =
                 TypeWhitelist = set [ "MessagesSendMessage"; "AuthSignIn" ] }
 
         withTempFile (fun path ->
-            Pipeline.generateSerializationTypes config apiSchema path
+            Pipeline.generateSerializationTypes testNs config apiSchema path
             assertMatchesSnapshot (normalizeTimestamp (File.ReadAllText path)) "CodeGen_SerializationTypes")

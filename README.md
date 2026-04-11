@@ -14,6 +14,11 @@ F# library and CLI tool for parsing Telegram [TL (Type Language)](https://core.t
 | **TDesu.Telegram.TL** | TL schema parser (FParsec-based) | netstandard2.1 |
 | **TDesu.Telegram.TL.Generator** | Code generator CLI tool (`td-tl-gen`) | net10.0 |
 
+> **0.1.0 (breaking)** reshapes `td-tl-gen` from a SedBot-internal helper into a
+> generic dotnet tool. New required flags (`--schema`, `--output`, `--namespace`,
+> `--overrides`, `--target`), no embedded "default" overrides, no hardcoded paths.
+> See [`RELEASE_NOTES.md`](RELEASE_NOTES.md) for the migration list.
+
 ## Installation
 
 ### Library (NuGet)
@@ -61,26 +66,51 @@ foreach (var ctor in schema.GetConstructors())
 
 ### Generator CLI
 
+Every invocation needs a schema, an output directory, an F# namespace, an overrides
+TOML, and at least one target. There is no embedded default config — supply your own.
+
 ```sh
-# Full generation (types + CIDs + functions)
-td-tl-gen
-
-# Individual artifacts
-td-tl-gen --cid-only              # Constructor ID constants
-td-tl-gen --serialization-types   # F# types with Serialize/Deserialize
-td-tl-gen --writers               # Standalone write functions
-td-tl-gen --tests                 # Round-trip serialization tests
-td-tl-gen --coverage              # Handler coverage validator
-td-tl-gen --return-types          # CID -> return type mapping
-td-tl-gen --layer-aliases         # Layer CID alias mapping
-td-tl-gen --client-cids           # Client-side CID constants
-td-tl-gen --client-parsers        # Response parser types
-
-# Custom overrides
-td-tl-gen --overrides path/to/overrides.toml
+td-tl-gen \
+  --schema cached/api.tl \
+  --output ./Generated \
+  --namespace MyApp.Serialization \
+  --overrides path/to/overrides.toml \
+  --target cid,types,writers,coverage,return-types
 ```
 
-The generator downloads TL schemas from [core.telegram.org](https://core.telegram.org/schema) on first run and caches them locally.
+| Target | Output file | Notes |
+|---|---|---|
+| `cid` | `GeneratedCid.g.fs` | Constructor ID literals — also needs `--mtproto-schema` |
+| `types` | `GeneratedTlRequests.g.fs` | Whitelist-filtered request types with `Serialize`/`Deserialize` |
+| `writers` | `GeneratedTlWriters.g.fs` | Standalone `write{X}` functions and `Write*` DUs |
+| `coverage` | `GeneratedCoverageValidator.g.fs` | Handler coverage validator |
+| `return-types` | `GeneratedReturnTypes.g.fs` | CID → return type lookup |
+| `tests` | `GeneratedRoundTripTests.g.fs` | Round-trip tests for whitelisted requests |
+| `layer-aliases` | `GeneratedLayerAliases.g.fs` | Cross-layer CID aliases — needs `--layer-base-schema` |
+| `client-cids` | `GeneratedClientCid.g.fs` | Flat literal CID table for clients |
+| `client-parsers` | `GeneratedResponseParsers.g.fs` | Driven by `[whitelists].client_parsers` |
+| `all` | (multi) | Equivalent to `cid,types,writers,coverage,return-types` |
+
+Optional flags:
+- `--mtproto-schema <path>` — required by the `cid` target
+- `--layer-base-schema <path>` — required by the `layer-aliases` target
+- `--tests-namespace <ns>` — module name for the `tests` target (default `<namespace>.Tests.GeneratedRoundTripTests`)
+- `--client-namespace <ns>` — namespace for `client-cids`/`client-parsers` (default `<namespace>.Client.Api`)
+
+Schemas are not downloaded automatically — fetch them manually from
+[core.telegram.org/schema](https://core.telegram.org/schema) or your TL source.
+
+### Override TOML
+
+The TOML file controls which TL types/functions get generated and how layer-dependent
+CIDs are resolved at runtime. See [`samples/SedBotOverrides/sedbot-overrides.toml`](samples/SedBotOverrides/sedbot-overrides.toml)
+for a fully worked example. Sections:
+
+- `[[layer_variants]]` — CIDs that vary by negotiated protocol layer
+- `[[aliases]]` — multiple known CIDs for one method (older client layers)
+- `[[extras]]` — undocumented CIDs not in the public schema
+- `[layer_type_info.<TypeName>]` — per-type layer metadata (e.g. `flags2_min_layer`)
+- `[whitelists]` — `types` / `writers` / `writer_layer_types` / `stub_types` / `client_parsers`
 
 ## Generator architecture
 
@@ -100,7 +130,8 @@ TL schema text
 |--------|-------------|
 | [CSharpParser](samples/CSharpParser) | C# API: `TlParser.Parse()`, extension methods |
 | [FSharpParser](samples/FSharpParser) | F# API: `AstFactory.parse`, pattern matching on AST |
-| [CustomOverrides](samples/CustomOverrides) | TOML override configuration for code generation |
+| [CustomOverrides](samples/CustomOverrides) | F# library API: load TOML overrides and generate from code |
+| [SedBotOverrides](samples/SedBotOverrides) | Real-world overrides TOML used by the SedBot MTProto server |
 | [PingPongBot](samples/PingPongBot) | End-to-end: TL parsing -> serialization -> real MTProto handshake with Telegram DC |
 
 ## Building

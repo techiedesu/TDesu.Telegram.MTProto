@@ -39,10 +39,6 @@
     </ItemGroup>
 
     <ItemGroup>
-        <EmbeddedResource Include="Overrides\DefaultOverrides.toml" />
-    </ItemGroup>
-
-    <ItemGroup>
         <ProjectReference Include="..\TDesu.Telegram.TL\TDesu.Telegram.TL.fsproj" />
         <PackageReference Include="TDesu.FSharp" />
         <PackageReference Include="Microsoft.Extensions.Logging" />

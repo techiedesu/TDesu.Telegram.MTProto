@@ -1,5 +1,5 @@
 // Auto-generated RPC return type mapping. Do not edit manually.
-// Re-generate with: dotnet run --project src/MTProto.TL.Generator -- --return-types
+// Re-generate with: td-tl-gen --target return-types --overrides <your.toml>
 
 namespace TDesu.Serialization
 
