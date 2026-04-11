@@ -332,12 +332,27 @@ let mkParsedInput (contents: SynModuleOrNamespace list) =
         )
     )
 
+/// Fantomas configuration for emitted `.g.fs` files.
+///
+/// **Policy for generated code**: we want regeneration to be idempotent
+/// across Fantomas version bumps. Line-length-driven wrapping is the main
+/// source of drift (different versions pick different wrap points), so we
+/// disable it with a very high `MaxLineLength`. Indentation, spacing, and
+/// bracket style remain deterministic across versions.
+///
+/// Consumers who want prettier output can post-process `.g.fs` through their
+/// own Fantomas config — but the contract this generator offers is *stable*,
+/// not *pretty*.
 let formatAst (parsedInput: ParsedInput) =
     let config =
         { FormatConfig.Default with
             ExperimentalElmish = true
             MultilineBracketStyle = MultilineBracketStyle.Stroustrup
             SpaceBeforeParameter = true
-            MaxLineLength = 120 }
+            // Effectively disable line-length-based wrapping. Long DU cases,
+            // record expressions and function signatures stay on one line;
+            // they're not meant to be hand-read anyway. Bump only if you
+            // hit a real Fantomas limit (it currently tops out around 30k).
+            MaxLineLength = 10000 }
 
     CodeFormatter.FormatASTAsync(parsedInput, config)
