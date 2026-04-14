@@ -304,6 +304,7 @@ module EmitWriters =
         (whitelist: Set<string>)
         (layerTypes: Set<string>)
         (layerVariants: LayerVariant list)
+        (recordPerCaseUnions: Set<string>)
         : string =
 
         // ---- Filter & group ----
@@ -332,17 +333,31 @@ module EmitWriters =
 
         let needsLayerSet = computeNeedsLayer groups layerTypes
 
+        // Per-case record name for a union case in `recordPerCaseUnions`:
+        // `Write{TypeName}{CaseName}Params`. For a multi-case union *not* in
+        // the set, cases stay positional (the historical default).
+        let perCaseRecordName (typeName: string) (caseName: string) =
+            $"%s{typeName}%s{caseName}"
+
         let recordTypesToEmit =
             groups
-            |> List.choose (fun (_, cs) ->
+            |> List.collect (fun (rt, cs) ->
                 if cs.Length = 1 then
                     let c = cs.Head
                     let name = combinatorPascalName c
                     let fields = c.Params |> List.map CodeModelMapping.mapParam
                     let dfs = dataFields fields
-                    if dfs.IsEmpty then None
-                    else Some(name, dfs)
-                else None)
+                    if dfs.IsEmpty then [] else [ name, dfs ]
+                elif recordPerCaseUnions.Contains rt then
+                    // Emit one record per case so callers can use record-with
+                    // syntax instead of positional union construction.
+                    cs
+                    |> List.map (fun c ->
+                        let caseName = combinatorPascalName c
+                        let fields = c.Params |> List.map CodeModelMapping.mapParam
+                        let dfs = dataFields fields
+                        perCaseRecordName rt caseName, dfs)
+                else [])
 
         let allRecordNames = recordTypesToEmit |> List.map fst |> Set.ofList
 
@@ -362,16 +377,27 @@ module EmitWriters =
                             SynTypeDefnLeadingKeyword.Type r
                         else
                             SynTypeDefnLeadingKeyword.And r
+                    let isRecordPerCase = recordPerCaseUnions.Contains rt
                     let cases = [
                         for c in constructors do
                             let caseName = combinatorPascalName c
                             let fields = c.Params |> List.map CodeModelMapping.mapParam |> dataFields
-                            let synFields = [
-                                for f in fields do
-                                    let resolved = resolveFieldType f.FSharpType unionResultTypes singleResultTypes
-                                    SynField.Create(fieldType = toSynType resolved, idOpt = Ident.Create f.Name)
-                            ]
-                            mkUnionCase caseName synFields
+                            if isRecordPerCase && not fields.IsEmpty then
+                                // Reference the per-case record type (emitted
+                                // alongside in `recordTypesToEmit`).
+                                let recName = perCaseRecordName rt caseName
+                                let synField =
+                                    SynField.Create(
+                                        fieldType = toSynType $"Write%s{recName}Params",
+                                        idOpt = Ident.Create "value")
+                                mkUnionCase caseName [ synField ]
+                            else
+                                let synFields = [
+                                    for f in fields do
+                                        let resolved = resolveFieldType f.FSharpType unionResultTypes singleResultTypes
+                                        SynField.Create(fieldType = toSynType resolved, idOpt = Ident.Create f.Name)
+                                ]
+                                mkUnionCase caseName synFields
                     ]
                     mkUnionType $"Write%s{rt}" cases [] keyword [ mkRequireQualifiedAccessAttr () ]
 
@@ -425,6 +451,8 @@ module EmitWriters =
                         mkParenTypedPat "p" $"Write%s{rt}"
                     ]
 
+                    let isRecordPerCase = recordPerCaseUnions.Contains rt
+
                     let clauses = [
                         for c in constructors do
                             let caseName = combinatorPascalName c
@@ -432,16 +460,23 @@ module EmitWriters =
                             let ffs = flagFieldNames fields
                             let dfs = dataFields fields
 
-                            let pat =
+                            let pat, fieldAccess =
                                 if dfs.IsEmpty then
-                                    mkPatLongIdentSimple [ $"Write%s{rt}"; caseName ]
+                                    mkPatLongIdentSimple [ $"Write%s{rt}"; caseName ],
+                                    (fun name -> mkIdent name)
+                                elif isRecordPerCase then
+                                    // Bind the per-case record value as `p_`
+                                    // and access fields via `p_.{name}`.
+                                    let bindName = "p_"
+                                    mkPatLongIdent [ $"Write%s{rt}"; caseName ] [ mkPatNamed bindName ],
+                                    (fun name -> mkDotGet (mkIdent bindName) name)
                                 else
                                     mkPatLongIdent
                                         [ $"Write%s{rt}"; caseName ]
-                                        (dfs |> List.map (fun f -> mkPatNamed f.Name))
+                                        (dfs |> List.map (fun f -> mkPatNamed f.Name)),
+                                    (fun name -> mkIdent name)
 
                             let cidExpr = makeCidExpr c caseName
-                            let fieldAccess name = mkIdent name
 
                             let flagGroups =
                                 ffs |> List.map (fun ff -> ff, buildFlagConditions ff fields fieldAccess)

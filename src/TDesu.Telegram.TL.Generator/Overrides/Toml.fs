@@ -95,8 +95,9 @@ module Toml =
             let writerLayerTypes = wl |> getStringArray "writer_layer_types" |> Set.ofList
             let stubTypes = wl |> getStringArray "stub_types" |> Set.ofList
             let clientParsers = wl |> getStringArray "client_parsers" |> Set.ofList
-            types, writers, writerLayerTypes, stubTypes, clientParsers
-        | _ -> Set.empty, Set.empty, Set.empty, Set.empty, Set.empty
+            let writerRecordPerCaseUnions = wl |> getStringArray "writer_record_per_case_unions" |> Set.ofList
+            types, writers, writerLayerTypes, stubTypes, clientParsers, writerRecordPerCaseUnions
+        | _ -> Set.empty, Set.empty, Set.empty, Set.empty, Set.empty, Set.empty
 
     /// Parse TOML string into OverrideConfig.
     let load (toml: string) : OverrideConfig =
@@ -106,7 +107,7 @@ module Toml =
         let aliases = doc |> getTableArray "aliases" |> List.map parseAlias
         let extras = doc |> getTableArray "extras" |> List.map parseExtra
         let layerTypeInfo = doc |> parseLayerTypeInfo
-        let typeWhitelist, writerWhitelist, writerLayerTypes, stubTypes, clientParsers =
+        let typeWhitelist, writerWhitelist, writerLayerTypes, stubTypes, clientParsers, writerRecordPerCaseUnions =
             doc |> parseWhitelists
 
         { LayerVariants = layerVariants
@@ -117,7 +118,8 @@ module Toml =
           WriterWhitelist = writerWhitelist
           WriterLayerTypes = writerLayerTypes
           StubTypes = stubTypes
-          ClientParserWhitelist = clientParsers }
+          ClientParserWhitelist = clientParsers
+          WriterRecordPerCaseUnions = writerRecordPerCaseUnions }
 
     /// Load OverrideConfig from a TOML file.
     let loadFile (path: string) : OverrideConfig =

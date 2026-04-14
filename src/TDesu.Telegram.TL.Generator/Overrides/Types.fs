@@ -48,6 +48,14 @@ module Types =
         /// module. Replaces the previously hardcoded ["Message"; "User"; "Chat"]
         /// in Pipeline.generateClientParsers.
         ClientParserWhitelist: Set<string>
+        /// PascalCase result-type names for which the writers target should
+        /// emit a per-case record `Write{Type}{Case}Params` and reference it
+        /// from the union case (`| {Case} of Write{Type}{Case}Params`),
+        /// instead of the default positional union form
+        /// (`| {Case} of f1: T1 * ... * fn: Tn`). Useful for unions with many
+        /// fields where positional construction at callsites is unreadable
+        /// — callers can use record-with syntax instead.
+        WriterRecordPerCaseUnions: Set<string>
     }
 
     module OverrideConfig =
@@ -61,6 +69,7 @@ module Types =
             WriterLayerTypes = Set.empty
             StubTypes = Set.empty
             ClientParserWhitelist = Set.empty
+            WriterRecordPerCaseUnions = Set.empty
         }
 
         /// Merge overlay on top of base config.
@@ -76,4 +85,5 @@ module Types =
             WriterLayerTypes = Set.union baseConfig.WriterLayerTypes overlay.WriterLayerTypes
             StubTypes = Set.union baseConfig.StubTypes overlay.StubTypes
             ClientParserWhitelist = Set.union baseConfig.ClientParserWhitelist overlay.ClientParserWhitelist
+            WriterRecordPerCaseUnions = Set.union baseConfig.WriterRecordPerCaseUnions overlay.WriterRecordPerCaseUnions
         }

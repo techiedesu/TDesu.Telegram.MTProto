@@ -1,5 +1,39 @@
 # Release notes
 
+## 0.1.6
+
+New writer-target feature: **per-case records for multi-case unions**, opt-in
+via `[whitelists].writer_record_per_case_unions = ["Message", ...]` in the
+override TOML.
+
+By default, a multi-case union `WriteX` is emitted with positional case
+constructors:
+
+```fsharp
+type WriteX =
+    | Foo of a: int * b: string * ... 40 fields
+    | Bar of x: int * y: int
+```
+
+For unions whose F# result-type name (PascalCase) appears in the
+`writer_record_per_case_unions` whitelist, the generator instead emits a
+record per case and references it from the union:
+
+```fsharp
+type WriteXFooParams = { a: int; b: string; ...; (40 fields) }
+type WriteXBarParams = { x: int; y: int }
+type WriteX =
+    | Foo of value: WriteXFooParams
+    | Bar of value: WriteXBarParams
+```
+
+This makes record-with construction syntax usable at callsites
+(`WriteX.Foo({ defaultFoo with a = ... })`) instead of forcing positional
+spelling of every field. Useful for unions like the schema's `Message`
+that have many fields per case.
+
+Backwards-compatible: unions not listed keep their existing shape.
+
 ## 0.1.5
 
 Fix `WriteVector` emission in `EmitTypes.serializeExprFor`: the previous
