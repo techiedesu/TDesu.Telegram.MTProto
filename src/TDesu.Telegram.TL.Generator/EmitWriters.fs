@@ -333,11 +333,23 @@ module EmitWriters =
 
         let needsLayerSet = computeNeedsLayer groups layerTypes
 
-        // Per-case record name for a union case in `recordPerCaseUnions`:
-        // `Write{TypeName}{CaseName}Params`. For a multi-case union *not* in
-        // the set, cases stay positional (the historical default).
+        // Per-case record name for a union case in `recordPerCaseUnions`.
+        // - Default: `Write{TypeName}{CaseName}Params`.
+        // - Smart suffixing: if `caseName` starts with `typeName` (which is
+        //   the common case — e.g. type `Message` has cases `Message` and
+        //   `MessageService`), the prefix is dropped: `MessageService` →
+        //   `Service`. So `Write{TypeName}{Suffix}Params`. This keeps the
+        //   single-case name `WriteMessageParams` stable across a single→
+        //   multi-case migration: existing record-with callsites still
+        //   type-check, only the union-case wrap becomes necessary at the
+        //   point of consumption.
         let perCaseRecordName (typeName: string) (caseName: string) =
-            $"%s{typeName}%s{caseName}"
+            if caseName = typeName then
+                typeName
+            elif caseName.StartsWith(typeName) then
+                typeName + caseName.Substring(typeName.Length)
+            else
+                $"%s{typeName}%s{caseName}"
 
         let recordTypesToEmit =
             groups

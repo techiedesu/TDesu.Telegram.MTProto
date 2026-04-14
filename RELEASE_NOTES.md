@@ -1,5 +1,17 @@
 # Release notes
 
+## 0.1.7
+
+Refines the per-case record naming added in 0.1.6: when a case name starts
+with the type name, the duplicated prefix is dropped. So instead of
+`WriteMessageMessageParams` and `WriteMessageMessageServiceParams`, the
+generator now emits `WriteMessageParams` and `WriteMessageServiceParams`.
+
+This keeps the single-case record name `Write{TypeName}Params` stable
+across a single→multi-case migration: existing record-with construction
+still type-checks, only the union-case wrap becomes necessary at the
+point of consumption.
+
 ## 0.1.6
 
 New writer-target feature: **per-case records for multi-case unions**, opt-in
