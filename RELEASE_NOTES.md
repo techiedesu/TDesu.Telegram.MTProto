@@ -1,5 +1,31 @@
 # Release notes
 
+## 0.1.8
+
+Wire-format fix: opaque-type-ref `byte[]` fields now serialize with
+`WriteRawBytes` (raw blob — caller provides a complete pre-serialized TL
+value) instead of `WriteBytes` (TL `bytes` primitive — length-prefixed).
+
+The bug was: the generator's "fallback to byte[]" for unwhitelisted /
+hardcoded-opaque types (`Page`, `RichText`, `MediaArea`, …) emitted a
+field type of `byte[]` and a write call of `WriteBytes`. For a TL `bytes`
+primitive that's correct, but for a boxed type ref it produces wrong wire
+output (extra `bytes`-ctor + length + padding wrapped around the value).
+
+Implementation: `CodeModel.mapPrimitiveType` now returns the internal
+sentinel `"rawBytes"` for opaque types instead of `"byte[]"`. The
+sentinel collapses back to `byte[]` at F# emit time (`mkSynType`,
+`toSynType`) but the writer-call path checks for it and emits
+`WriteRawBytes` instead of `WriteBytes`.
+
+Read side stays on `ReadBytes` for opaque refs — without schema knowledge
+the reader can't structurally parse a boxed type ref. Callers that need
+to deserialize must whitelist the opaque type's constructors.
+
+In practice: SedBot always passes `None` / `[||]` for opaque-typed
+fields, so this bug never fired at runtime. Future consumers that
+actually populate these fields now get correct wire output.
+
 ## 0.1.7
 
 Refines the per-case record naming added in 0.1.6: when a case name starts

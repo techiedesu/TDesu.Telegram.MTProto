@@ -123,16 +123,17 @@ module CodeModelMapping =
     let private pascalCase = Naming.pascalCase
     let private camelCase name = Naming.camelCase name |> Naming.escapeKeyword
 
-    /// Types mapped to byte[] to avoid recursion/deep nesting in codegen.
+    /// Types mapped to opaque raw bytes to avoid recursion/deep nesting in
+    /// codegen.
     ///
-    /// Caveat: `byte[]` fields emit `WriteBytes` (TL bytes primitive,
-    /// length-prefixed) — which is WRONG for boxed TL type refs. In practice
-    /// this only bites when a caller actually passes non-empty data; all
-    /// current use sites pass `None`/`[||]` for these fields. To serialize
-    /// one of these types, either (a) whitelist all its constructors so the
-    /// generator emits a structured `Write{X}` union, or (b) do not list it
-    /// here and pre-serialize it into a full TL blob written via
-    /// `w.WriteRawBytes` in a hand-written helper.
+    /// At the F# emit layer these become `byte[]` (same as the TL `bytes`
+    /// primitive), but the generator marks them with the internal `rawBytes`
+    /// sentinel so that **writers emit `WriteRawBytes`** (raw blob — the
+    /// caller is expected to provide a complete pre-serialized TL value)
+    /// instead of `WriteBytes` (length-prefixed TL `bytes` primitive). Read
+    /// side can't structurally parse opaque refs, so `ReadBytes` stays —
+    /// callers that need to deserialize one of these types must whitelist
+    /// its constructors.
     let private opaqueTypes = set [
         "PageBlock"; "RichText"; "Page"
         "StoryItem"; "StoryViews"; "StoryFwdHeader"
@@ -141,6 +142,13 @@ module CodeModelMapping =
         "BotApp"; "BotInlineResult"; "BotInlineMessage"
         "SecureValueError"; "SecureValue"
     ]
+
+    /// Internal sentinel for opaque-type-ref `byte[]` fields; the F# type
+    /// emitted is still `byte[]` but the writer chooses `WriteRawBytes`
+    /// instead of `WriteBytes`. Recognized in `mkSynType`, the writer/reader
+    /// emit functions, and the writer-target's `isPrimitive` set.
+    [<Literal>]
+    let RawBytesSentinel = "rawBytes"
 
     let rec mapPrimitiveType (name: string) : string =
         match name.ToLowerInvariant() with
@@ -157,7 +165,7 @@ module CodeModelMapping =
         | "object" | "!x" -> "obj"
         | _ ->
             let pc = pascalCase name
-            if opaqueTypes.Contains pc then "byte[]" else pc
+            if opaqueTypes.Contains pc then RawBytesSentinel else pc
 
     let rec private mapTypeExpr (expr: TlTypeExpr) : string =
         match expr with

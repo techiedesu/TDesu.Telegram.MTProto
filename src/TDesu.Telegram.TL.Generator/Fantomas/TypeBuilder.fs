@@ -11,7 +11,15 @@ let r = Range.Zero
 
 // --- Type helpers ---
 
-let mkSynType (name: string) = SynLongIdent.CreateSingleIdent name
+/// Internal sentinel emitted by `CodeModel.mapPrimitiveType` for opaque type
+/// references. At F# emit time it collapses back to `byte[]`, but
+/// distinguishes from the TL `bytes` primitive in writer-call selection.
+[<Literal>]
+let RawBytesSentinel = "rawBytes"
+
+let mkSynType (name: string) =
+    let name = if name = RawBytesSentinel then "byte[]" else name
+    SynLongIdent.CreateSingleIdent name
 
 let mkSynTypeApp (name: string) (args: SynType list) =
     SynType.App(

@@ -24,6 +24,9 @@ module EmitTypes =
         | "bool" -> mkApp (mkDotGet writer "WriteBool") (mkParen valueExpr)
         | "string" -> mkApp (mkDotGet writer "WriteString") (mkParen valueExpr)
         | "byte[]" -> mkApp (mkDotGet writer "WriteBytes") (mkParen valueExpr)
+        // Opaque type ref — caller provides a complete pre-serialized TL
+        // value; write it raw without the bytes-primitive length prefix.
+        | "rawBytes" -> mkApp (mkDotGet writer "WriteRawBytes") (mkParen valueExpr)
         | t when t.EndsWith(" option") ->
             let inner = t[.. t.Length - 8]
             let innerCall = serializeExprFor inner (mkIdent "v")
@@ -56,6 +59,10 @@ module EmitTypes =
         | "bool" -> mkApp (mkDotGet reader "ReadBool") mkUnit
         | "string" -> mkApp (mkDotGet reader "ReadString") mkUnit
         | "byte[]" -> mkApp (mkDotGet reader "ReadBytes") mkUnit
+        // Opaque type ref — read side can't structurally parse it without
+        // the schema; ReadBytes preserves prior behavior. Callers that need
+        // structured access should whitelist the opaque type's constructors.
+        | "rawBytes" -> mkApp (mkDotGet reader "ReadBytes") mkUnit
         | t when t.EndsWith(" array") ->
             let inner = t[.. t.Length - 7]
             let innerCall = deserializeExprFor inner

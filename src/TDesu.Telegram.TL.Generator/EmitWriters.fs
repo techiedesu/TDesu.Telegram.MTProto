@@ -27,7 +27,7 @@ module EmitWriters =
     let private getCombinatorId = Combinator.id
     let private getResultTypePascalName = Combinator.resultTypePascalName
 
-    let private primitives = set [ "int32"; "int64"; "double"; "bool"; "string"; "byte[]" ]
+    let private primitives = set [ "int32"; "int64"; "double"; "bool"; "string"; "byte[]"; "rawBytes" ]
     let private isPrimitive t = primitives.Contains t
 
     let private flagFieldNames = FieldHelpers.flagFieldNames
@@ -155,7 +155,10 @@ module EmitWriters =
         elif t.EndsWith(" array") then
             mkSynTypeArray (toSynType (t[.. t.Length - 7]))
         else
-            SynLongIdent.CreateSingleIdent t
+            // Collapse the `rawBytes` opaque-type-ref sentinel back to `byte[]`
+            // for F# emission. The distinction only matters in primitiveWriteExpr.
+            let asFSharp = if t = "rawBytes" then "byte[]" else t
+            SynLongIdent.CreateSingleIdent asFSharp
 
     // ----------------------------------------------------------------
     // AST helpers: write expressions
@@ -173,6 +176,9 @@ module EmitWriters =
             | "bool" -> "WriteBool"
             | "string" -> "WriteString"
             | "byte[]" -> "WriteBytes"
+            // Opaque type ref — caller provides a complete pre-serialized TL
+            // value, write raw without the bytes-primitive length prefix.
+            | "rawBytes" -> "WriteRawBytes"
             | _ -> failwith $"Unknown primitive: %s{t}"
         mkApp (mkDotGet wExpr methodName) (mkParen valueExpr)
 
