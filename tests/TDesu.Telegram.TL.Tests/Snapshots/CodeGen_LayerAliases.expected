@@ -8,8 +8,7 @@ namespace TDesu.Serialization
 module GeneratedLayerAliases =
 
     /// All L223→L216 function CID aliases (0 total).
-    let aliases : (uint32 * uint32) array = [|
-    |]
+    let aliases : (uint32 * uint32) array = [||]
 
     /// NotModified constructor CIDs (0 total).
     /// tdesktop rejects these when client sends hash=0 (first request).

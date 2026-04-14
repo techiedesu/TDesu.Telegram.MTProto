@@ -1,5 +1,18 @@
 # Release notes
 
+## 0.1.4
+
+Two emit fixes that previously required hand-restoring `.g.fs` files after
+running the generator:
+
+- **Empty `aliases` array offside.** `EmitTemplates.generateLayerAliases`
+  emitted `[|\n    |]` when the alias list was empty, which F# parses as
+  offside and breaks the build. Now collapses to a single-line `[||]`.
+- **`get` accessor for keyword-named fields.** `EmitTypes.mkFieldAccessors`
+  pascal-cased keyword-escaped field names like `` ``type`` `` directly,
+  producing invalid `` get``type`` `` member names. Now strips the
+  surrounding backticks before pascal-casing, yielding `getType`.
+
 ## 0.1.3
 
 Allow `GeoPoint` to resolve structurally when its constructors are in the

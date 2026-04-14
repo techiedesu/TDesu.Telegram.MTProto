@@ -380,11 +380,15 @@ module EmitTemplates =
         let sorted = aliases |> List.sortBy (fun (_, _, newName, _) -> newName)
 
         ln $"    /// All L223→L216 function CID aliases ({sorted.Length} total)."
-        ln "    let aliases : (uint32 * uint32) array = [|"
-        for (newCid, baseCid, newName, baseName) in sorted do
-            let comment = if newName = baseName then newName else $"{newName} -> {baseName}"
-            ln $"        0x%08X{newCid}u, 0x%08X{baseCid}u // {comment}"
-        ln "    |]"
+        if sorted.IsEmpty then
+            // F# parses `[|\n    |]` as offside; emit a single-line empty literal.
+            ln "    let aliases : (uint32 * uint32) array = [||]"
+        else
+            ln "    let aliases : (uint32 * uint32) array = [|"
+            for (newCid, baseCid, newName, baseName) in sorted do
+                let comment = if newName = baseName then newName else $"{newName} -> {baseName}"
+                ln $"        0x%08X{newCid}u, 0x%08X{baseCid}u // {comment}"
+            ln "    |]"
         ln0 ()
 
         // 3. NotModified constructor CIDs -- server should avoid returning these on first request (hash=0)

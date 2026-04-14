@@ -412,11 +412,20 @@ module EmitTypes =
             |> List.distinctBy fst
 
         [ for fieldName, fieldType in allFieldNames do
-              let pascalName =
-                  if fieldName.Length > 0 then
-                      string (System.Char.ToUpperInvariant(fieldName[0])) + fieldName[1..]
+              // Strip backticks if the F# field name is keyword-escaped (e.g. ``type``)
+              // before pascal-casing — otherwise the accessor name comes out as
+              // `get``type``` which is a syntax error.
+              let unescapedName =
+                  if fieldName.StartsWith("``") && fieldName.EndsWith("``") && fieldName.Length > 4 then
+                      fieldName.Substring(2, fieldName.Length - 4)
                   else
                       fieldName
+
+              let pascalName =
+                  if unescapedName.Length > 0 then
+                      string (System.Char.ToUpperInvariant(unescapedName[0])) + unescapedName[1..]
+                  else
+                      unescapedName
 
               let inAllCases =
                   caseRecordFields
