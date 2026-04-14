@@ -124,10 +124,19 @@ module CodeModelMapping =
     let private camelCase name = Naming.camelCase name |> Naming.escapeKeyword
 
     /// Types mapped to byte[] to avoid recursion/deep nesting in codegen.
+    ///
+    /// Caveat: `byte[]` fields emit `WriteBytes` (TL bytes primitive,
+    /// length-prefixed) — which is WRONG for boxed TL type refs. In practice
+    /// this only bites when a caller actually passes non-empty data; all
+    /// current use sites pass `None`/`[||]` for these fields. To serialize
+    /// one of these types, either (a) whitelist all its constructors so the
+    /// generator emits a structured `Write{X}` union, or (b) do not list it
+    /// here and pre-serialize it into a full TL blob written via
+    /// `w.WriteRawBytes` in a hand-written helper.
     let private opaqueTypes = set [
         "PageBlock"; "RichText"; "Page"
         "StoryItem"; "StoryViews"; "StoryFwdHeader"
-        "MediaArea"; "GeoPoint"
+        "MediaArea"
         "MessageExtendedMedia"
         "BotApp"; "BotInlineResult"; "BotInlineMessage"
         "SecureValueError"; "SecureValue"

@@ -1,5 +1,28 @@
 # Release notes
 
+## 0.1.3
+
+Allow `GeoPoint` to resolve structurally when its constructors are in the
+writers/types whitelist.
+
+Until this release `GeoPoint` was hardcoded in the generator's `opaqueTypes`
+list, forcing every field referencing it to emit as `byte[]` regardless of
+whitelist — i.e. there was no way to get `WriteGeoPoint.GeoPoint(lon, lat, …)`
+out of `td-tl-gen`. `GeoPoint` is a small, non-recursive type with only two
+constructors, so the recursion-avoidance rationale that applies to `Page` /
+`PageBlock` / `RichText` doesn't hold. `GeoPoint` is now structural by default.
+
+Callers that referenced `geo: byte[]` via the old opaque path do not break on
+the package upgrade alone, but the next time they regen writers (whitelist
+includes `geoPoint` / `geoPointEmpty`) the field type will change; update
+callsites accordingly.
+
+Known issue (pre-existing, not fixed here): `byte[]` fields from remaining
+opaque refs (`Page`, `RichText`, `MediaArea`, `MessageExtendedMedia`, …) are
+serialized with `WriteBytes` (TL `bytes` primitive, length-prefixed) rather
+than `WriteRawBytes`. This is a wire-format bug that only bites if you pass
+non-empty data; `None` / empty vectors are safe. Planned fix in 0.2.0.
+
 ## 0.1.2
 
 Release plumbing fix — no API changes. Adds `MinVerTagPrefix=v` to
