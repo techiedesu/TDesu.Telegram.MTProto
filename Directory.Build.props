@@ -7,5 +7,6 @@
         <OtherFlags>--warnon:1182 --warnon:3218 --warnon:3366 --warnon:3390 --warnon:3391 --warnon:3395</OtherFlags>
         <NoWarn>FS3511;$(NoWarn)</NoWarn>
         <WarningsNotAsErrors>NU1902;NU1903</WarningsNotAsErrors>
+        <MinVerTagPrefix>v</MinVerTagPrefix>
     </PropertyGroup>
 </Project>

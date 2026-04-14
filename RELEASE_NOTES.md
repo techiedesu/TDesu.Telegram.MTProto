@@ -1,5 +1,14 @@
 # Release notes
 
+## 0.1.2
+
+Release plumbing fix — no API changes. Adds `MinVerTagPrefix=v` to
+`Directory.Build.props` so the release workflow actually computes the version
+from `v*` tags. Prior `v0.1.0` and `v0.1.1` tags were packed as
+`0.0.0-alpha.0.2` because MinVer ignored the `v` prefix with no configuration.
+Consumers on 0.1.x should install 0.1.2 (first correctly-versioned 0.1
+release on NuGet).
+
 ## 0.1.0
 
 First proper release. The 0.0.0-alpha.0 generator was a private SedBot helper that
