@@ -1,5 +1,20 @@
 # Release notes
 
+## 0.1.9
+
+Fix for `writer_record_per_case_unions` when a union has cases with no
+data fields. Previously the generator emitted an empty record
+(`type WriteFooBarParams = { }`) which F# rejects ("expecting record
+field"). Empty cases now skip the per-case record entirely and stay as
+bare `| CaseName` in the union.
+
+Also flags a known generator-emit gotcha (not fixed here): for unions
+NOT in `writer_record_per_case_unions`, fields are destructured
+positionally — if any case has a field named `w` (the write-buffer
+parameter name) or `h`, the destructuring shadows the outer scope. The
+existing workaround is to add the union to `writer_record_per_case_unions`,
+which switches dispatch to record access (`p_.w`) and avoids shadowing.
+
 ## 0.1.8
 
 Wire-format fix: opaque-type-ref `byte[]` fields now serialize with

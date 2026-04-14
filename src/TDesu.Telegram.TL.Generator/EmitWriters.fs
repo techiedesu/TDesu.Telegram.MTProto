@@ -368,13 +368,16 @@ module EmitWriters =
                     if dfs.IsEmpty then [] else [ name, dfs ]
                 elif recordPerCaseUnions.Contains rt then
                     // Emit one record per case so callers can use record-with
-                    // syntax instead of positional union construction.
+                    // syntax instead of positional union construction. Empty
+                    // cases (no data fields) get no record — they stay as a
+                    // bare `| CaseName` in the union.
                     cs
-                    |> List.map (fun c ->
+                    |> List.choose (fun c ->
                         let caseName = combinatorPascalName c
                         let fields = c.Params |> List.map CodeModelMapping.mapParam
                         let dfs = dataFields fields
-                        perCaseRecordName rt caseName, dfs)
+                        if dfs.IsEmpty then None
+                        else Some(perCaseRecordName rt caseName, dfs))
                 else [])
 
         let allRecordNames = recordTypesToEmit |> List.map fst |> Set.ofList
