@@ -63,9 +63,13 @@ type Message = {
 
         match value.entities with
         | Some(v) ->
-            writer.WriteVector (v) (fun w item ->
-                let writer = w
-                MessageEntity.Serialize(writer, item))
+            writer
+                .WriteVector(
+                    v,
+                    fun w item ->
+                        let writer = w
+                        MessageEntity.Serialize(writer, item)
+                )
         | None -> ()
 
     static member Deserialize(reader: TlReadBuffer) : Message =
