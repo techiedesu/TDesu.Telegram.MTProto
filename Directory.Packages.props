@@ -4,7 +4,7 @@
     </PropertyGroup>
     <ItemGroup>
         <PackageVersion Include="FSharp.Core" Version="10.0.103" />
-        <PackageVersion Include="TDesu.FSharp" Version="0.0.0-alpha.0.8" />
+        <PackageVersion Include="TDesu.FSharp" Version="1.1.0" />
         <PackageVersion Include="FParsec" Version="1.1.1" />
         <PackageVersion Include="Fantomas.Core" Version="7.0.5" />
         <PackageVersion Include="Fantomas.FCS" Version="7.0.5" />
