@@ -1,5 +1,17 @@
 # Release notes
 
+## 0.1.5
+
+Fix `WriteVector` emission in `EmitTypes.serializeExprFor`: the previous
+form `writer.WriteVector (v) (lambda)` is parsed by F# as a curried call,
+but `TlWriteBuffer.WriteVector` is a tuple-taking member
+(`WriteVector(items: 'a[], writeItem: ...)`) — so the generated code didn't
+type-check at the consumer. Now emits `writer.WriteVector(v, lambda)`.
+
+This bug only surfaces when the generated `*.Serialize` member contains a
+`Vector<T>` field, so it didn't trip the generator's snapshot tests.
+Caught downstream when the SedBot regen produced ~100 build errors.
+
 ## 0.1.4
 
 Two emit fixes that previously required hand-restoring `.g.fs` files after

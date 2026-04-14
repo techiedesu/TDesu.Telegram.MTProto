@@ -38,9 +38,11 @@ module EmitTypes =
             let lambdaBody = mkLet "writer" (mkIdent "w") innerCall
             let lambda = mkLambda [ "w"; "item" ] lambdaBody
 
+            // WriteVector takes a tuple `(items, writeItem)` — emit a single
+            // tupled call, not a curried one.
             mkApp
-                (mkApp (mkDotGet writer "WriteVector") (mkParen valueExpr))
-                (mkParen lambda)
+                (mkDotGet writer "WriteVector")
+                (mkParen (mkTuple [ valueExpr; lambda ]))
         | typeName ->
             mkApp
                 (mkLongIdent [ typeName; "Serialize" ])
