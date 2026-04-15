@@ -1,5 +1,26 @@
 # Release notes
 
+## 0.1.10
+
+Fix for `rawBytes` sentinel inside composite type spellings. `mkSynType` in
+`Fantomas/TypeBuilder.fs` only collapsed bare `"rawBytes"` → `"byte[]"`; for
+DU case fields whose F# type was a composite string like `"rawBytes option"`
+or `"rawBytes array"`, the sentinel survived emission and produced
+`type X = { f: rawBytes option }` which doesn't compile.
+
+`mkSynType` is now recursive and parses ` option`/` array` suffixes the same
+way `EmitWriters.toSynType` already did, so the sentinel collapses correctly
+inside composites.
+
+Consumers can drop the `: rawBytes option` → `: byte[] option` /
+`: rawBytes array` → `: byte[] array` post-processing they may have added
+as a workaround (SedBot had this in `tools/regen-tl.fsx#patchRawBytes`).
+
+Snapshot tests updated accordingly: arrays in record fields now render as
+`T[]` (the SynType.Array AST node) instead of being passed through as raw
+text — both spellings are equivalent F#, but the previous output was a
+side effect of the buggy passthrough.
+
 ## 0.1.9
 
 Fix for `writer_record_per_case_unions` when a union has cases with no

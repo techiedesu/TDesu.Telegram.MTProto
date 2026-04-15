@@ -17,9 +17,29 @@ let r = Range.Zero
 [<Literal>]
 let RawBytesSentinel = "rawBytes"
 
-let mkSynType (name: string) =
-    let name = if name = RawBytesSentinel then "byte[]" else name
-    SynLongIdent.CreateSingleIdent name
+let mkSynTypeArray (elementType: SynType) =
+    SynType.Array(rank = 1, elementType = elementType, range = r)
+
+/// Convert a TL F#-type spelling into a SynType. Handles composite type
+/// suffixes (` option`, ` array`) recursively so the `rawBytes` sentinel
+/// inside a composite (e.g. `rawBytes option`, `rawBytes array`) collapses
+/// to `byte[]` as expected. Bare `rawBytes` also becomes `byte[]`.
+let rec mkSynType (name: string) : SynType =
+    if name.EndsWith(" option") then
+        SynType.App(
+            typeName = SynType.LongIdent(SynLongIdent.Create([ Ident.Create "option" ])),
+            typeArgs = [ mkSynType (name[.. name.Length - 8]) ],
+            commaRanges = [],
+            isPostfix = true,
+            lessRange = None,
+            greaterRange = None,
+            range = r
+        )
+    elif name.EndsWith(" array") then
+        mkSynTypeArray (mkSynType (name[.. name.Length - 7]))
+    else
+        let name = if name = RawBytesSentinel then "byte[]" else name
+        SynLongIdent.CreateSingleIdent name
 
 let mkSynTypeApp (name: string) (args: SynType list) =
     SynType.App(
@@ -31,9 +51,6 @@ let mkSynTypeApp (name: string) (args: SynType list) =
         greaterRange = Some r,
         range = r
     )
-
-let mkSynTypeArray (elementType: SynType) =
-    SynType.Array(rank = 1, elementType = elementType, range = r)
 
 // --- Record type ---
 

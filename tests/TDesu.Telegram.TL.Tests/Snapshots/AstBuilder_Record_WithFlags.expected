@@ -1,7 +1,7 @@
 type Message = {
     out: bool
     text: string
-    entities: MessageEntity array option
+    entities: MessageEntity[] option
 } with
 
     static member ConstructorId: uint32 = 1516793212u
