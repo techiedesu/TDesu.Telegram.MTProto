@@ -1,5 +1,47 @@
 # Release notes
 
+## 0.1.11
+
+**Type-level bundling for shared-flag-bit fields** in writer DUs and per-case records.
+
+Multiple fields that share the same `flags.N?` bit (e.g. `codeSettings#ad253d78
+token:flags.8?string app_sandbox:flags.8?Bool`) are now collapsed into a single
+`(T1 * T2) option` in the generated DU case / record. Previously they were
+emitted as independent options, allowing the impossible state
+`{ token = Some "x"; appSandbox = None }` which silently corrupted wire format.
+
+Generated code now reads:
+
+```
+type WriteCodeSettings = {
+    ...
+    tokenAndappSandbox: (string * bool) option
+}
+```
+
+with the writer destructuring the tuple via `match`:
+
+```
+match p.tokenAndappSandbox with
+| Some (_b0, _b1) -> w.WriteString(_b0); w.WriteBool(_b1)
+| None -> ()
+```
+
+This is a **breaking change** for callers that previously constructed records or
+DU cases with the now-merged fields. Migration is mechanical: replace
+`{ ...; field1 = a; field2 = b; ... }` with
+`{ ...; field1Andfield2 = Some (aValue, bValue); ... }`.
+
+10 bundled fields appear across the SedBot whitelist after this change.
+Affected upstream constructors (when whitelisted): `message` (views/forwards),
+`channelFull` (kickedCount/bannedCount, requestsPending/recentRequesters,
+migratedFromChatId/migratedFromMaxId), `pollResults` (solution/solutionEntities),
+`webPage` (embedUrl/embedType, embedWidth/embedHeight),
+`peerSettings` (requestChatTitle/requestChatDate, businessBotId/businessBotManageUrl),
+`availableReaction` (aroundAnimation/centerIcon).
+
+Naming convention: first field's name + `And` + second field's name (camel-cased).
+
 ## 0.1.10
 
 Fix for `rawBytes` sentinel inside composite type spellings. `mkSynType` in
