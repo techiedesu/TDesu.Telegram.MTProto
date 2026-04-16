@@ -439,17 +439,38 @@ module EmitTemplates =
                 let name = match f.Id.Namespace with Some ns -> $"%s{ns}.%s{f.Id.Name}" | None -> f.Id.Name
                 cid, name)
 
-        ln $"    /// All {functions.Length} API function CIDs with their TL names."
+        // Aliases in tl-overrides.toml cover both type constructors and function
+        // variants. Only the function ones belong here; including type aliases
+        // (e.g. InputPeerUser, InputReplyToMessage) inflates the missing count
+        // with CIDs that no caller would ever register as a handler.
+        // Build a Pascal-name → tlName map of real functions so aliases can be
+        // resolved to functions by name and type aliases can be filtered out.
+        let pascalOf (tlName: string) =
+            // "messages.sendMessage" -> "MessagesSendMessage"
+            tlName.Split('.')
+            |> Array.map (fun s -> if s.Length = 0 then s else string (System.Char.ToUpperInvariant(s[0])) + s[1..])
+            |> String.concat ""
+        let funcByPascal =
+            functions
+            |> List.map (fun (_, name) -> pascalOf name, name)
+            |> Map.ofList
+
+        let functionAliases =
+            config.Aliases
+            |> List.choose (fun a ->
+                Map.tryFind a.Name funcByPascal
+                |> Option.map (fun tlName -> tlName, a.Cids))
+
+        let entries =
+            [ yield! functions
+              for tlName, cids in functionAliases do
+                  for cid in cids do
+                      yield cid, tlName ]
+
+        ln $"    /// All {functions.Length} API function CIDs (+{entries.Length - functions.Length} alias CIDs)."
         ln $"    let allFunctions : (uint32 * string)[] = [|"
-        for cid, name in functions do
+        for cid, name in entries do
             ln $"        0x%08X{cid}u, \"%s{name}\""
-        // Add aliases
-        for a in config.Aliases do
-            for cid in a.Cids do
-                let name =
-                    functions |> List.tryFind (fun (c, _) -> c = cid) |> Option.map snd
-                    |> Option.defaultValue a.Name
-                ln $"        0x%08X{cid}u, \"%s{name}\""
         ln "    |]"
         ln0 ()
 

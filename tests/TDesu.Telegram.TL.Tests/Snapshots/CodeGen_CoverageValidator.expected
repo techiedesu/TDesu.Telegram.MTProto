@@ -7,7 +7,7 @@ namespace TDesu.Serialization
 [<RequireQualifiedAccess>]
 module GeneratedCoverageValidator =
 
-    /// All 2 API function CIDs with their TL names.
+    /// All 2 API function CIDs (+0 alias CIDs).
     let allFunctions : (uint32 * string)[] = [|
         0xDFF8042Cu, "messages.sendMessage"
         0x8D52A951u, "auth.signIn"
