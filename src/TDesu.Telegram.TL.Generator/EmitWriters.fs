@@ -90,6 +90,43 @@ module EmitWriters =
                 items |> List.map (fun (f, _) -> f.Name, bName))
         |> Map.ofList
 
+    /// For each non-presence optional data field, find a presence-flag (`bare true`)
+    /// field that shares its (flagField, bit). Returns Map<dataFieldName, presenceField>.
+    /// Used by buildFieldWriteExprs to emit `if p.<bool> then w.WriteX(defaultArg p.<data>
+    /// <default>)` instead of `p.<data> |> Option.iter`, since the spec couples the two:
+    /// presence of the int (or whatever data) is gated by the bool, not by the F# Option
+    /// being Some.
+    let private findSharedPresenceFlags (fields: GeneratedField list)
+        : Map<string, GeneratedField> =
+        let presenceByBit =
+            fields
+            |> List.choose (fun f ->
+                match f.FlagField, f.FlagBit with
+                | Some ff, Some bit when isPresenceFlag f -> Some ((ff, bit), f)
+                | _ -> None)
+            |> Map.ofList
+        fields
+        |> List.choose (fun f ->
+            match f.FlagField, f.FlagBit with
+            | Some ff, Some bit when f.IsOptional && not (isPresenceFlag f) ->
+                Map.tryFind (ff, bit) presenceByBit |> Option.map (fun pf -> f.Name, pf)
+            | _ -> None)
+        |> Map.ofList
+
+    /// Default-value AST for a primitive resolved type (without ` option` suffix).
+    /// Used when a data field's bit is set by a paired presence flag and the F#
+    /// Option is None — we still need to write SOMETHING because the wire format
+    /// (driven by the bit) expects bytes. Returns None for unsupported types so
+    /// the caller can fall back to the old Option.iter behaviour.
+    let private defaultValueForPrimitive (resolvedType: string) : SynExpr option =
+        match resolvedType with
+        | "int32" | "int" -> Some (mkInt32 0)
+        | "int64" -> Some (mkInt64 0L)
+        | "string" -> Some (mkString "")
+        | "double" -> Some (mkConst (SynConst.Double 0.0))
+        | "byte[]" | "rawBytes" -> Some (mkApp (mkLongIdent ["Array"; "empty"]) mkUnit)
+        | _ -> None
+
     // ----------------------------------------------------------------
     // Type resolution (unchanged)
     // ----------------------------------------------------------------
@@ -285,6 +322,7 @@ module EmitWriters =
         (resolvedType: string)
         (fieldAccess: string -> SynExpr)
         (needsLayer: Set<string>)
+        (sharedPresenceFlag: GeneratedField option)
         : SynExpr list =
         if isPresenceFlag f then
             []
@@ -293,22 +331,53 @@ module EmitWriters =
             if innerResolved.EndsWith(" array") then
                 let arrayInner = innerResolved[.. innerResolved.Length - 7]
                 let itemExpr = innerWriteAstExpr arrayInner (mkIdent "item") needsLayer
-                [ mkMatch (fieldAccess f.Name) [
-                    mkMatchClause
-                        (mkPatLongIdent [ "Some" ] [ mkPatNamed "arr" ])
-                        (mkSeq [
-                            mkApp (mkDotGet wExpr "WriteConstructorId") (mkParen (mkHexUInt32 0x1CB5C415u))
-                            mkApp (mkDotGet wExpr "WriteInt32") (mkParen (mkDotGet (mkIdent "arr") "Length"))
-                            mkForEach "item" (mkIdent "arr") itemExpr
-                        ])
-                    mkMatchClause (mkPatLongIdentSimple [ "None" ]) mkUnit
-                ] ]
+                let writeArr arrName =
+                    mkSeq [
+                        mkApp (mkDotGet wExpr "WriteConstructorId") (mkParen (mkHexUInt32 0x1CB5C415u))
+                        mkApp (mkDotGet wExpr "WriteInt32") (mkParen (mkDotGet (mkIdent arrName) "Length"))
+                        mkForEach "item" (mkIdent arrName) itemExpr
+                    ]
+                match sharedPresenceFlag with
+                | Some pf ->
+                    // Bit is set by the presence flag — write empty vector when
+                    // bool is true and Option is None so the wire matches the bit.
+                    [ mkIf (fieldAccess pf.Name)
+                        (mkMatch (fieldAccess f.Name) [
+                            mkMatchClause
+                                (mkPatLongIdent [ "Some" ] [ mkPatNamed "arr" ])
+                                (writeArr "arr")
+                            mkMatchClause (mkPatLongIdentSimple [ "None" ]) (mkSeq [
+                                mkApp (mkDotGet wExpr "WriteConstructorId") (mkParen (mkHexUInt32 0x1CB5C415u))
+                                mkApp (mkDotGet wExpr "WriteInt32") (mkParen (mkInt32 0))
+                            ])
+                        ]) None ]
+                | None ->
+                    [ mkMatch (fieldAccess f.Name) [
+                        mkMatchClause
+                            (mkPatLongIdent [ "Some" ] [ mkPatNamed "arr" ])
+                            (writeArr "arr")
+                        mkMatchClause (mkPatLongIdentSimple [ "None" ]) mkUnit
+                    ] ]
             else
                 let wExprInner = innerWriteAstExpr innerResolved (mkIdent "v") needsLayer
-                [ mkInfixApp "|>"
-                    (fieldAccess f.Name)
-                    (mkApp (mkLongIdent [ "Option"; "iter" ]) (mkParen (mkLambda [ "v" ] wExprInner)))
-                ]
+                match sharedPresenceFlag, defaultValueForPrimitive innerResolved with
+                | Some pf, Some defVal ->
+                    // Couple to presence flag: when bool=true, write the int (or
+                    // string/etc.) using the supplied Option value, defaulting to
+                    // the primitive zero/empty when None. This keeps the wire
+                    // format honest: the bit is set, so reader expects bytes.
+                    let writeWithDefault =
+                        let defaulted =
+                            mkApp
+                                (mkApp (mkIdent "defaultArg") (fieldAccess f.Name))
+                                (mkParen defVal)
+                        innerWriteAstExpr innerResolved (mkParen defaulted) needsLayer
+                    [ mkIf (fieldAccess pf.Name) writeWithDefault None ]
+                | _ ->
+                    [ mkInfixApp "|>"
+                        (fieldAccess f.Name)
+                        (mkApp (mkLongIdent [ "Option"; "iter" ]) (mkParen (mkLambda [ "v" ] wExprInner)))
+                    ]
         else
             if resolvedType.EndsWith(" array") then
                 let arrayInner = resolvedType[.. resolvedType.Length - 7]
@@ -582,6 +651,7 @@ module EmitWriters =
                             let nameRemap = buildNameRemap bundled
                             let flagGroups =
                                 ffs |> List.map (fun ff -> ff, buildFlagConditions ff fields fieldAccess nameRemap)
+                            let presenceMap = findSharedPresenceFlags fields
 
                             // Field write expressions — bundle-aware
                             let fieldExprs = [
@@ -590,7 +660,8 @@ module EmitWriters =
                                     | Single(f, _) ->
                                         if not (isFlagInt f ffs) then
                                             let resolved = resolve f
-                                            yield! buildFieldWriteExprs f resolved fieldAccess needsLayerSet
+                                            let pf = Map.tryFind f.Name presenceMap
+                                            yield! buildFieldWriteExprs f resolved fieldAccess needsLayerSet pf
                                     | Bundle(bName, items, _, _) ->
                                         // Destructure tuple option and write each component
                                         let destructNames = items |> List.mapi (fun i _ -> $"_b%d{i}")
@@ -651,6 +722,7 @@ module EmitWriters =
                     let resolve f = resolveFieldType f.FSharpType unionResultTypes singleResultTypes
                     let bundled = bundleFields dfs resolve
                     let nameRemap = buildNameRemap bundled
+                    let presenceMap = findSharedPresenceFlags fields
 
                     let flagGroups =
                         ffs |> List.map (fun ff -> ff, buildFlagConditions ff fields fieldAccess nameRemap)
@@ -660,7 +732,8 @@ module EmitWriters =
                             match fb with
                             | Single(f, _) ->
                                 if not (isFlagInt f ffs) then
-                                    yield! buildFieldWriteExprs f (resolve f) fieldAccess needsLayerSet
+                                    let pf = Map.tryFind f.Name presenceMap
+                                    yield! buildFieldWriteExprs f (resolve f) fieldAccess needsLayerSet pf
                             | Bundle(bName, items, _, _) ->
                                 let destructNames = items |> List.mapi (fun i _ -> $"_b%d{i}")
                                 let writes = [
