@@ -36,6 +36,61 @@ module EmitWriters =
     let private dataFields = FieldHelpers.dataFields
 
     // ----------------------------------------------------------------
+    // Shared-flag-bit bundling
+    // ----------------------------------------------------------------
+
+    /// A field or a bundle of fields that share the same flags.N? bit.
+    /// Bundles are emitted as a single `(T1 * T2 * ...) option` in the DU case.
+    type private FieldOrBundle =
+        | Single of field: GeneratedField * resolvedType: string
+        | Bundle of name: string * items: (GeneratedField * string) list * flagField: string * bit: int
+
+    /// Detect optional fields sharing `(flagField, bit)` and merge them into bundles.
+    /// Presence-flag fields (bare `true` types) are excluded — they map to DU bools.
+    let private bundleFields
+        (fields: GeneratedField list)
+        (resolver: GeneratedField -> string)
+        : FieldOrBundle list =
+        let sharedBits =
+            fields
+            |> List.choose (fun f ->
+                match f.FlagField, f.FlagBit with
+                | Some ff, Some bit when f.IsOptional && not (isPresenceFlag f) -> Some ((ff, bit), f)
+                | _ -> None)
+            |> List.groupBy fst
+            |> List.filter (fun (_, group) -> group.Length > 1)
+            |> List.map (fun (key, group) -> key, group |> List.map snd)
+            |> Map.ofList
+        let consumed = System.Collections.Generic.HashSet<string>()
+        [
+            for f in fields do
+                if not (consumed.Contains f.Name) then
+                    match f.FlagField, f.FlagBit with
+                    | Some ff, Some bit when f.IsOptional && not (isPresenceFlag f) && sharedBits.ContainsKey (ff, bit) ->
+                        let group = sharedBits[(ff, bit)]
+                        for gf in group do consumed.Add gf.Name |> ignore
+                        let items = group |> List.map (fun gf -> gf, resolver gf)
+                        let name = group |> List.map (fun gf -> gf.Name) |> String.concat "And"
+                        Bundle(name, items, ff, bit)
+                    | _ ->
+                        Single(f, resolver f)
+        ]
+
+    /// Strip ` option` suffix from a resolved type string.
+    let private stripOption (t: string) =
+        if t.EndsWith " option" then t[.. t.Length - 8] else t
+
+    /// Build a name remap: original field name → bundle name, for shared-bit fields.
+    let private buildNameRemap (bundled: FieldOrBundle list) : Map<string, string> =
+        bundled
+        |> List.collect (fun fb ->
+            match fb with
+            | Single _ -> []
+            | Bundle(bName, items, _, _) ->
+                items |> List.map (fun (f, _) -> f.Name, bName))
+        |> Map.ofList
+
+    // ----------------------------------------------------------------
     // Type resolution (unchanged)
     // ----------------------------------------------------------------
 
@@ -196,44 +251,16 @@ module EmitWriters =
         else
             primitiveWriteExpr resolvedType valueExpr
 
+    /// Build flag-computation expressions. `nameRemap` maps original field names
+    /// to their bundle name when shared-bit fields have been merged into tuples.
     let private buildFlagConditions
         (flagField: string)
         (fields: GeneratedField list)
         (fieldAccess: string -> SynExpr)
+        (nameRemap: Map<string, string>)
         : SynExpr list =
-        // Detect shared-bit groups: multiple fields that share the same (flagField, bit).
-        // When present, emit a runtime assertion that all fields in the group have
-        // matching presence (all Some or all None) — prevents silent wire corruption.
-        let flaggedFields =
-            fields
-            |> List.choose (fun f ->
-                match f.FlagField, f.FlagBit with
-                | Some ff, Some bit when ff = flagField -> Some (bit, f)
-                | _ -> None)
-        let groupsByBit =
-            flaggedFields
-            |> List.groupBy fst
-            |> List.map (fun (bit, pairs) -> bit, pairs |> List.map snd)
-        let assertions = [
-            for (bit, group) in groupsByBit do
-                if group.Length > 1 then
-                    let optionals = group |> List.filter (fun f -> f.IsOptional)
-                    if optionals.Length > 1 then
-                        let first = optionals[0]
-                        for other in optionals[1..] do
-                            let names = $"%s{first.Name}, %s{other.Name}"
-                            let msg = $"Shared-bit fields %s{names} (flags.%d{bit}) must be both present or both absent"
-                            mkIf
-                                (mkInfixApp "<>"
-                                    (mkDotGet (fieldAccess first.Name) "IsSome")
-                                    (mkDotGet (fieldAccess other.Name) "IsSome"))
-                                (mkApp (mkIdent "failwith") (mkParen (mkString msg)))
-                                None
-        ]
-        let conditions = [
-            // Track which bits we've already emitted a flag-set for, so shared-bit
-            // fields don't OR the same bit twice (harmless but noisy).
-            let emittedBits = System.Collections.Generic.HashSet<int>()
+        let emittedBits = System.Collections.Generic.HashSet<int>()
+        [
             for f in fields do
                 match f.FlagField, f.FlagBit with
                 | Some ff, Some bit when ff = flagField ->
@@ -245,13 +272,13 @@ module EmitWriters =
                         )
                     if f.IsOptional then
                         if emittedBits.Add(bit) then
-                            mkIf (mkDotGet (fieldAccess f.Name) "IsSome") setExpr None
+                            let accessName = nameRemap |> Map.tryFind f.Name |> Option.defaultValue f.Name
+                            mkIf (mkDotGet (fieldAccess accessName) "IsSome") setExpr None
                     elif isPresenceFlag f then
                         if emittedBits.Add(bit) then
                             mkIf (fieldAccess f.Name) setExpr None
                 | _ -> ()
         ]
-        assertions @ conditions
 
     let private buildFieldWriteExprs
         (f: GeneratedField)
@@ -448,10 +475,16 @@ module EmitWriters =
                                         idOpt = Ident.Create "value")
                                 mkUnionCase caseName [ synField ]
                             else
+                                let resolve f = resolveFieldType f.FSharpType unionResultTypes singleResultTypes
+                                let bundled = bundleFields fields resolve
                                 let synFields = [
-                                    for f in fields do
-                                        let resolved = resolveFieldType f.FSharpType unionResultTypes singleResultTypes
-                                        SynField.Create(fieldType = toSynType resolved, idOpt = Ident.Create f.Name)
+                                    for fb in bundled do
+                                        match fb with
+                                        | Single(f, resolved) ->
+                                            SynField.Create(fieldType = toSynType resolved, idOpt = Ident.Create f.Name)
+                                        | Bundle(name, items, _, _) ->
+                                            let inner = items |> List.map (fun (_, rt) -> stripOption rt) |> String.concat " * "
+                                            SynField.Create(fieldType = toSynType $"(%s{inner}) option", idOpt = Ident.Create name)
                                 ]
                                 mkUnionCase caseName synFields
                     ]
@@ -465,10 +498,16 @@ module EmitWriters =
                         SynTypeDefnLeadingKeyword.Type r
                     else
                         SynTypeDefnLeadingKeyword.And r
+                let resolve f = resolveFieldType f.FSharpType unionResultTypes singleResultTypes
+                let bundled = bundleFields dFields resolve
                 let fields = [
-                    for f in dFields do
-                        let resolved = resolveFieldType f.FSharpType unionResultTypes singleResultTypes
-                        mkRecordField f.Name (toSynType resolved)
+                    for fb in bundled do
+                        match fb with
+                        | Single(f, resolved) ->
+                            mkRecordField f.Name (toSynType resolved)
+                        | Bundle(bName, items, _, _) ->
+                            let inner = items |> List.map (fun (_, rt) -> stripOption rt) |> String.concat " * "
+                            mkRecordField bName (toSynType $"(%s{inner}) option")
                 ]
                 mkRecordType $"Write%s{name}Params" fields [] keyword []
         ]
@@ -516,32 +555,58 @@ module EmitWriters =
                             let ffs = flagFieldNames fields
                             let dfs = dataFields fields
 
+                            let resolve f = resolveFieldType f.FSharpType unionResultTypes singleResultTypes
+                            let bundled = bundleFields dfs resolve
+
+                            // Bundle-aware pattern + field access
                             let pat, fieldAccess =
                                 if dfs.IsEmpty then
                                     mkPatLongIdentSimple [ $"Write%s{rt}"; caseName ],
                                     (fun name -> mkIdent name)
                                 elif isRecordPerCase then
-                                    // Bind the per-case record value as `p_`
-                                    // and access fields via `p_.{name}`.
                                     let bindName = "p_"
                                     mkPatLongIdent [ $"Write%s{rt}"; caseName ] [ mkPatNamed bindName ],
                                     (fun name -> mkDotGet (mkIdent bindName) name)
                                 else
-                                    mkPatLongIdent
-                                        [ $"Write%s{rt}"; caseName ]
-                                        (dfs |> List.map (fun f -> mkPatNamed f.Name)),
+                                    let patFields = [
+                                        for fb in bundled do
+                                            match fb with
+                                            | Single(f, _) -> mkPatNamed f.Name
+                                            | Bundle(bName, _, _, _) -> mkPatNamed bName
+                                    ]
+                                    mkPatLongIdent [ $"Write%s{rt}"; caseName ] patFields,
                                     (fun name -> mkIdent name)
 
                             let cidExpr = makeCidExpr c caseName
 
+                            let nameRemap = buildNameRemap bundled
                             let flagGroups =
-                                ffs |> List.map (fun ff -> ff, buildFlagConditions ff fields fieldAccess)
+                                ffs |> List.map (fun ff -> ff, buildFlagConditions ff fields fieldAccess nameRemap)
 
+                            // Field write expressions — bundle-aware
                             let fieldExprs = [
-                                for f in fields do
-                                    if not (isFlagInt f ffs) then
-                                        let resolved = resolveFieldType f.FSharpType unionResultTypes singleResultTypes
-                                        yield! buildFieldWriteExprs f resolved fieldAccess needsLayerSet
+                                for fb in bundled do
+                                    match fb with
+                                    | Single(f, _) ->
+                                        if not (isFlagInt f ffs) then
+                                            let resolved = resolve f
+                                            yield! buildFieldWriteExprs f resolved fieldAccess needsLayerSet
+                                    | Bundle(bName, items, _, _) ->
+                                        // Destructure tuple option and write each component
+                                        let destructNames = items |> List.mapi (fun i _ -> $"_b%d{i}")
+                                        let writes = [
+                                            for (_, rt), dName in List.zip items destructNames do
+                                                let innerType = stripOption rt
+                                                yield innerWriteAstExpr innerType (mkIdent dName) needsLayerSet
+                                        ]
+                                        let tuplePat =
+                                            SynPat.CreateParen(SynPat.CreateTuple(destructNames |> List.map mkPatNamed))
+                                        yield mkMatch (fieldAccess bName) [
+                                            mkMatchClause
+                                                (mkPatLongIdent [ "Some" ] [ tuplePat ])
+                                                (mkSeq writes)
+                                            mkMatchClause (mkPatLongIdentSimple [ "None" ]) mkUnit
+                                        ]
                             ]
 
                             let body = buildBodyWithFlags cidExpr flagGroups fieldExprs
@@ -583,14 +648,41 @@ module EmitWriters =
                         if dfs.IsEmpty then mkIdent name
                         else mkDotGet pExpr name
 
+                    let resolve f = resolveFieldType f.FSharpType unionResultTypes singleResultTypes
+                    let bundled = bundleFields dfs resolve
+                    let nameRemap = buildNameRemap bundled
+
                     let flagGroups =
-                        ffs |> List.map (fun ff -> ff, buildFlagConditions ff fields fieldAccess)
+                        ffs |> List.map (fun ff -> ff, buildFlagConditions ff fields fieldAccess nameRemap)
 
                     let fieldExprs = [
-                        for f in fields do
-                            if not (isFlagInt f ffs) then
-                                let resolved = resolveFieldType f.FSharpType unionResultTypes singleResultTypes
-                                yield! buildFieldWriteExprs f resolved fieldAccess needsLayerSet
+                        for fb in bundled do
+                            match fb with
+                            | Single(f, _) ->
+                                if not (isFlagInt f ffs) then
+                                    yield! buildFieldWriteExprs f (resolve f) fieldAccess needsLayerSet
+                            | Bundle(bName, items, _, _) ->
+                                let destructNames = items |> List.mapi (fun i _ -> $"_b%d{i}")
+                                let writes = [
+                                    for (_, rt), dName in List.zip items destructNames do
+                                        let innerType = stripOption rt
+                                        if innerType.EndsWith(" array") then
+                                            let arrayInner = innerType[.. innerType.Length - 7]
+                                            let itemExpr = innerWriteAstExpr arrayInner (mkIdent "item") needsLayerSet
+                                            yield mkApp (mkDotGet wExpr "WriteConstructorId") (mkParen (mkHexUInt32 0x1CB5C415u))
+                                            yield mkApp (mkDotGet wExpr "WriteInt32") (mkParen (mkDotGet (mkIdent dName) "Length"))
+                                            yield mkForEach "item" (mkIdent dName) itemExpr
+                                        else
+                                            yield innerWriteAstExpr innerType (mkIdent dName) needsLayerSet
+                                ]
+                                let tuplePat =
+                                    SynPat.CreateParen(SynPat.CreateTuple(destructNames |> List.map mkPatNamed))
+                                yield mkMatch (fieldAccess bName) [
+                                    mkMatchClause
+                                        (mkPatLongIdent [ "Some" ] [ tuplePat ])
+                                        (mkSeq writes)
+                                    mkMatchClause (mkPatLongIdentSimple [ "None" ]) mkUnit
+                                ]
                     ]
 
                     let body = buildBodyWithFlags cidExpr flagGroups fieldExprs
