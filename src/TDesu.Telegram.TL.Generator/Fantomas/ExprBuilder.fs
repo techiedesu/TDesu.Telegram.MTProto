@@ -233,7 +233,9 @@ let mkRecordExpr (fields: (string list * SynExpr) list) =
 // --- Array ---
 
 let mkArrayExpr (items: SynExpr list) =
-    SynExpr.ArrayOrListComputed(isArray = true, expr = mkSeq items, range = r)
+    match items with
+    | [] -> SynExpr.ArrayOrList(isArray = true, exprs = [], range = r)
+    | _ -> SynExpr.ArrayOrListComputed(isArray = true, expr = mkSeq items, range = r)
 
 // --- Set ---
 

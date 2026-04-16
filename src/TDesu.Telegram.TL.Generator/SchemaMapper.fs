@@ -37,6 +37,7 @@ module SchemaMapper =
                 {
                     Name = name
                     ConstructorId = Combinator.id f
+                    AliasCids = []
                     Params = f.Params |> List.map CodeModelMapping.mapParam
                     ReturnType = CodeModelMapping.mapTypeExprPublic f.ResultType
                 }
@@ -158,6 +159,13 @@ module SchemaMapper =
         let filteredFunctions =
             functions
             |> List.filter (fun f -> resolvedNames.Contains f.Name)
-            |> List.map (fun f -> { f with Params = f.Params |> List.map rewriteStubField })
+            |> List.map (fun f ->
+                let withAliases =
+                    match aliasMap |> Map.tryFind f.Name with
+                    | Some cids ->
+                        let extras = cids |> List.filter (fun cid -> cid <> f.ConstructorId)
+                        { f with AliasCids = extras }
+                    | None -> f
+                { withAliases with Params = withAliases.Params |> List.map rewriteStubField })
 
         (topSortTypes filteredTypes, filteredFunctions)

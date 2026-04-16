@@ -157,6 +157,7 @@ type MessagesSendMessage = {
 } with
 
     static member ConstructorId: uint32 = 3757573164u
+    static member AliasCids: uint32[] = [||]
 
     static member Serialize(writer: TlWriteBuffer, value: MessagesSendMessage) : unit =
         writer.WriteConstructorId(3757573164u)
@@ -180,6 +181,7 @@ type AuthSignIn = {
 } with
 
     static member ConstructorId: uint32 = 2371004753u
+    static member AliasCids: uint32[] = [||]
 
     static member Serialize(writer: TlWriteBuffer, value: AuthSignIn) : unit =
         writer.WriteConstructorId(2371004753u)

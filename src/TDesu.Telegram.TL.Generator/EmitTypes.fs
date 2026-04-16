@@ -237,6 +237,14 @@ module EmitTypes =
     let private mkConstructorIdMember (ctorId: uint32) =
         mkStaticProperty "ConstructorId" (Some(mkSynType "uint32")) (mkUInt32 ctorId)
 
+    /// Emit `static member AliasCids: uint32[] = [| ... |]` listing any
+    /// additional wire CIDs that should dispatch to the same handler.
+    /// Populated from `[[aliases]]` TOML entries. For types with no aliases
+    /// the array is empty (callers can still read the member unconditionally).
+    let private mkAliasCidsMember (aliasCids: uint32 list) =
+        let arr = aliasCids |> List.map mkUInt32 |> mkArrayExpr
+        mkStaticProperty "AliasCids" (Some(mkSynTypeArray (mkSynType "uint32"))) arr
+
     // --- Record type ---
 
     let buildRecordDecl (name: string) (fields: GeneratedField list) (constructorId: uint32) : SynTypeDefn =
@@ -565,6 +573,7 @@ module EmitTypes =
 
         let members =
             [ mkConstructorIdMember func.ConstructorId
+              mkAliasCidsMember func.AliasCids
               mkSerializeMember func.Name func.Params func.ConstructorId
               deserializeFieldsMember
               deserializeMember ]

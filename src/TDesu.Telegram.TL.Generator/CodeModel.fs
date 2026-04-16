@@ -29,6 +29,7 @@ and UnionCase = {
 type GeneratedFunction = {
     Name: string
     ConstructorId: uint32
+    AliasCids: uint32 list
     Params: GeneratedField list
     ReturnType: string
 }
