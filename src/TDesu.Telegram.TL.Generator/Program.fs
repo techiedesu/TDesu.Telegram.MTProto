@@ -115,7 +115,11 @@ Sample overrides config: samples/SedBotOverrides/sedbot-overrides.toml
 
                 match parseSchema log "API" schemaPath with
                 | None -> 1
-                | Some apiSchema ->
+                | Some baseApiSchema ->
+                    // Fold `[[extra_combinators]]` from the overrides into the
+                    // parsed schema so downstream targets see them uniformly.
+                    let apiSchema = SchemaAugment.fold config baseApiSchema
+
                     if not (Directory.Exists outputDir) then
                         Directory.CreateDirectory(outputDir) |> ignore
 

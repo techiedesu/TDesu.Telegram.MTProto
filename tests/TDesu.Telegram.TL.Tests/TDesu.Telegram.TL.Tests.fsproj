@@ -16,6 +16,7 @@
         <Compile Include="Crc32Tests.fs" />
         <Compile Include="AstBuilderTests.fs" />
         <Compile Include="CodeGeneratorTests.fs" />
+        <Compile Include="SchemaAugmentTests.fs" />
         <Compile Include="WriterGeneratorTests.fs" />
     </ItemGroup>
 

@@ -27,6 +27,7 @@
         <Compile Include="Naming.fs" />
         <Compile Include="CodeModel.fs" />
         <Compile Include="SchemaMapper.fs" />
+        <Compile Include="SchemaAugment.fs" />
         <Compile Include="Fantomas\Extensions.fs" />
         <Compile Include="Fantomas\ExprBuilder.fs" />
         <Compile Include="Fantomas\TypeBuilder.fs" />

@@ -27,6 +27,26 @@ module Types =
         Comment: string
     }
 
+    /// Which section of the TL schema an extra combinator belongs to.
+    type SchemaSection =
+        | Constructors
+        | Functions
+
+    /// A full TL combinator (`name#cid f:T ... = Result;`) not present in the
+    /// primary schema, contributed via overrides. Parsed at load time by the
+    /// same `CombinatorParsers.combinator` used for the main schema, then
+    /// folded into `TlSchema.Constructors` or `.Functions` based on `Section`.
+    type ExtraCombinator = {
+        /// The raw TL combinator syntax. Parsed verbatim; the leading `---types---`
+        /// / `---functions---` framing is NOT supported here — use `Section` instead.
+        Raw: string
+        /// Which list to fold this combinator into. Required because the
+        /// combinator grammar alone doesn't carry that distinction.
+        Section: SchemaSection
+        /// Optional human-readable note (not emitted anywhere).
+        Comment: string
+    }
+
     /// Layer-dependent type metadata for response serialization.
     type LayerTypeFlags2 = {
         /// Minimum layer at which flags2 field exists.
@@ -38,6 +58,7 @@ module Types =
         LayerVariants: LayerVariant list
         Aliases: CidAlias list
         Extras: ExtraCid list
+        ExtraCombinators: ExtraCombinator list
         LayerTypeInfo: Map<string, LayerTypeFlags2>
         TypeWhitelist: Set<string>
         WriterWhitelist: Set<string>
@@ -63,6 +84,7 @@ module Types =
             LayerVariants = []
             Aliases = []
             Extras = []
+            ExtraCombinators = []
             LayerTypeInfo = Map.empty
             TypeWhitelist = Set.empty
             WriterWhitelist = Set.empty
@@ -78,6 +100,7 @@ module Types =
             LayerVariants = baseConfig.LayerVariants @ overlay.LayerVariants
             Aliases = baseConfig.Aliases @ overlay.Aliases
             Extras = baseConfig.Extras @ overlay.Extras
+            ExtraCombinators = baseConfig.ExtraCombinators @ overlay.ExtraCombinators
             LayerTypeInfo =
                 Map.fold (fun acc k v -> Map.add k v acc) baseConfig.LayerTypeInfo overlay.LayerTypeInfo
             TypeWhitelist = Set.union baseConfig.TypeWhitelist overlay.TypeWhitelist

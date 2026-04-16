@@ -76,6 +76,18 @@ module Toml =
           Cid = table |> getUint32 "cid"
           Comment = table |> getStringOr "comment" "" }
 
+    let private parseSchemaSection (raw: string) : SchemaSection =
+        match raw.Trim().ToLowerInvariant() with
+        | "types" | "constructors" -> Constructors
+        | "functions" | "methods" -> Functions
+        | other ->
+            failwith $"[[extra_combinators]] section must be \"types\" or \"functions\" (got \"{other}\")"
+
+    let private parseExtraCombinator (table: TomlTable) : ExtraCombinator =
+        { Raw = table |> getString "raw"
+          Section = table |> getString "section" |> parseSchemaSection
+          Comment = table |> getStringOr "comment" "" }
+
     let private parseLayerTypeInfo (table: TomlTable) : Map<string, LayerTypeFlags2> =
         match table.TryGetValue("layer_type_info") with
         | true, (:? TomlTable as info) ->
@@ -106,6 +118,7 @@ module Toml =
         let layerVariants = doc |> getTableArray "layer_variants" |> List.map parseLayerVariant
         let aliases = doc |> getTableArray "aliases" |> List.map parseAlias
         let extras = doc |> getTableArray "extras" |> List.map parseExtra
+        let extraCombinators = doc |> getTableArray "extra_combinators" |> List.map parseExtraCombinator
         let layerTypeInfo = doc |> parseLayerTypeInfo
         let typeWhitelist, writerWhitelist, writerLayerTypes, stubTypes, clientParsers, writerRecordPerCaseUnions =
             doc |> parseWhitelists
@@ -113,6 +126,7 @@ module Toml =
         { LayerVariants = layerVariants
           Aliases = aliases
           Extras = extras
+          ExtraCombinators = extraCombinators
           LayerTypeInfo = layerTypeInfo
           TypeWhitelist = typeWhitelist
           WriterWhitelist = writerWhitelist

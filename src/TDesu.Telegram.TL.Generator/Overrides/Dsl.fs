@@ -21,6 +21,12 @@ module Dsl =
             { config with
                 Extras = config.Extras @ [ { Name = name; Cid = cid; Comment = comment } ] }
 
+        [<CustomOperation("extraCombinator")>]
+        member _.ExtraCombinator(config, raw: string, section: SchemaSection, comment: string) =
+            { config with
+                ExtraCombinators =
+                    config.ExtraCombinators @ [ { Raw = raw; Section = section; Comment = comment } ] }
+
         [<CustomOperation("layerTypeInfo")>]
         member _.LayerTypeInfo(config, name, flags2MinLayer) =
             { config with
