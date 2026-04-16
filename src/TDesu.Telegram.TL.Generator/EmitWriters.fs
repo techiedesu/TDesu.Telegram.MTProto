@@ -201,7 +201,39 @@ module EmitWriters =
         (fields: GeneratedField list)
         (fieldAccess: string -> SynExpr)
         : SynExpr list =
-        [
+        // Detect shared-bit groups: multiple fields that share the same (flagField, bit).
+        // When present, emit a runtime assertion that all fields in the group have
+        // matching presence (all Some or all None) — prevents silent wire corruption.
+        let flaggedFields =
+            fields
+            |> List.choose (fun f ->
+                match f.FlagField, f.FlagBit with
+                | Some ff, Some bit when ff = flagField -> Some (bit, f)
+                | _ -> None)
+        let groupsByBit =
+            flaggedFields
+            |> List.groupBy fst
+            |> List.map (fun (bit, pairs) -> bit, pairs |> List.map snd)
+        let assertions = [
+            for (bit, group) in groupsByBit do
+                if group.Length > 1 then
+                    let optionals = group |> List.filter (fun f -> f.IsOptional)
+                    if optionals.Length > 1 then
+                        let first = optionals[0]
+                        for other in optionals[1..] do
+                            let names = $"%s{first.Name}, %s{other.Name}"
+                            let msg = $"Shared-bit fields %s{names} (flags.%d{bit}) must be both present or both absent"
+                            mkIf
+                                (mkInfixApp "<>"
+                                    (mkDotGet (fieldAccess first.Name) "IsSome")
+                                    (mkDotGet (fieldAccess other.Name) "IsSome"))
+                                (mkApp (mkIdent "failwith") (mkParen (mkString msg)))
+                                None
+        ]
+        let conditions = [
+            // Track which bits we've already emitted a flag-set for, so shared-bit
+            // fields don't OR the same bit twice (harmless but noisy).
+            let emittedBits = System.Collections.Generic.HashSet<int>()
             for f in fields do
                 match f.FlagField, f.FlagBit with
                 | Some ff, Some bit when ff = flagField ->
@@ -212,11 +244,14 @@ module EmitWriters =
                                 (mkParen (mkInfixApp "<<<" (mkInt32 1) (mkInt32 bit)))
                         )
                     if f.IsOptional then
-                        mkIf (mkDotGet (fieldAccess f.Name) "IsSome") setExpr None
+                        if emittedBits.Add(bit) then
+                            mkIf (mkDotGet (fieldAccess f.Name) "IsSome") setExpr None
                     elif isPresenceFlag f then
-                        mkIf (fieldAccess f.Name) setExpr None
+                        if emittedBits.Add(bit) then
+                            mkIf (fieldAccess f.Name) setExpr None
                 | _ -> ()
         ]
+        assertions @ conditions
 
     let private buildFieldWriteExprs
         (f: GeneratedField)
