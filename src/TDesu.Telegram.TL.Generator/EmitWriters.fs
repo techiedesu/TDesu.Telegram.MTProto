@@ -244,6 +244,16 @@ module EmitWriters =
     // ----------------------------------------------------------------
 
     let rec private toSynType (t: string) : SynType =
+        // The `rawBytes` sentinel only steers the writer-call dispatch
+        // (WriteRawBytes vs WriteBytes); the F# type spelling is always
+        // `byte[]`. Collapse upfront so the sentinel can't leak into
+        // composite spellings — particularly bundled tuple strings like
+        // `(string * rawBytes array) option` which `toSynType` only
+        // recurses on at the option/array suffixes, not at tuple
+        // separators. Pre-2026-04-17 this produced
+        // `_b1: rawBytes array` which the F# compiler then inferred as
+        // `obj` and broke `for item in _b1`.
+        let t = t.Replace("rawBytes", "byte[]")
         if t.EndsWith(" option") then
             SynType.App(
                 typeName = SynType.LongIdent(SynLongIdent.Create([ Ident.Create "option" ])),
@@ -284,8 +294,24 @@ module EmitWriters =
             | _ -> failwith $"Unknown primitive: %s{t}"
         mkApp (mkDotGet wExpr methodName) (mkParen valueExpr)
 
-    let private innerWriteAstExpr (resolvedType: string) (valueExpr: SynExpr) (needsLayer: Set<string>) : SynExpr =
-        if isPrimitive resolvedType then
+    let rec private innerWriteAstExpr (resolvedType: string) (valueExpr: SynExpr) (needsLayer: Set<string>) : SynExpr =
+        if resolvedType.EndsWith(" array") then
+            // Vector<T> for any T (primitive or composite). Pre-2026-04-17 only
+            // the top-level required/optional field paths handled `T array`;
+            // when a bundled `Vector<long>` (e.g. `chatFull.recent_requesters`)
+            // reached this dispatch via the bundle-tuple destructure, the
+            // type "int64 array" fell through to primitiveWriteExpr → "Unknown
+            // primitive: int64 array". Now handled uniformly here so any
+            // call site (top-level, bundle, future paths) emits correct
+            // vector-header + foreach + per-item write.
+            let inner = resolvedType[.. resolvedType.Length - 7]
+            let itemExpr = innerWriteAstExpr inner (mkIdent "item") needsLayer
+            mkSeq [
+                mkApp (mkDotGet wExpr "WriteConstructorId") (mkParen (mkHexUInt32 0x1CB5C415u))
+                mkApp (mkDotGet wExpr "WriteInt32") (mkParen (mkDotGet valueExpr "Length"))
+                mkForEach "item" valueExpr itemExpr
+            ]
+        elif isPrimitive resolvedType then
             primitiveWriteExpr resolvedType valueExpr
         elif resolvedType.StartsWith "Write" then
             let name =
