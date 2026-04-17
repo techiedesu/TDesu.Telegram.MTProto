@@ -12,7 +12,14 @@ type GeneratedType =
     | Union of name: string * cases: UnionCase list
 
 and GeneratedField = {
+    /// F#-camelCase name, used for DU positional labels, pattern bindings,
+    /// local let bindings, and flag-field reference comparisons.
+    /// Backtick-escaped if the original TL name collides with an F# keyword.
     Name: string
+    /// F#-PascalCase record-field name. Used by the emitter at record
+    /// declaration sites and for `value.Field` dot-access in generated
+    /// code. Bindings + DU labels stay camelCase per F# convention.
+    RecordName: string
     FSharpType: string
     IsOptional: bool
     FlagField: string option
@@ -68,6 +75,11 @@ module Combinator =
 
 module FieldHelpers =
 
+    /// Raw flag-field names as they appear in the TL schema ("flags", "flags2").
+    /// These survive verbatim through `f.FlagField` on dependent fields; do NOT
+    /// case-convert here — callers use this string both to name local mutable
+    /// bindings in generated code (`let mutable flags = 0`) and to compare
+    /// against another field's FlagField reference.
     let flagFieldNames (fields: GeneratedField list) : string list =
         fields |> List.choose (fun f -> f.FlagField) |> List.distinct
 
@@ -184,7 +196,11 @@ module CodeModelMapping =
             | None -> id.Name
         mapPrimitiveType fullName
 
+    let private recordName (name: string) = Naming.pascalCase name
+
     let mapParam (p: TlParam) : GeneratedField =
+        let pascalName = recordName p.Name
+        let name = camelCase p.Name
         match p.Type with
         | TlTypeExpr.Conditional(fieldRef, bitIndex, innerType) ->
             let innerTypeStr = mapTypeExpr innerType
@@ -193,16 +209,17 @@ module CodeModelMapping =
                 | TlTypeExpr.Bare id when id.Name.ToLowerInvariant() = "true" -> true
                 | _ -> false
             {
-                Name = camelCase p.Name
+                Name = name
+                RecordName = pascalName
                 FSharpType = if isPresenceFlag then "bool" else $"%s{innerTypeStr} option"
                 IsOptional = not isPresenceFlag
                 FlagField = Some fieldRef
                 FlagBit = Some bitIndex
             }
         | TlTypeExpr.Nat ->
-            { Name = camelCase p.Name; FSharpType = "int32"; IsOptional = false; FlagField = None; FlagBit = None }
+            { Name = name; RecordName = pascalName; FSharpType = "int32"; IsOptional = false; FlagField = None; FlagBit = None }
         | _ ->
-            { Name = camelCase p.Name; FSharpType = mapTypeExpr p.Type; IsOptional = false; FlagField = None; FlagBit = None }
+            { Name = name; RecordName = pascalName; FSharpType = mapTypeExpr p.Type; IsOptional = false; FlagField = None; FlagBit = None }
 
     let internal getResultTypeName (expr: TlTypeExpr) : string =
         match expr with

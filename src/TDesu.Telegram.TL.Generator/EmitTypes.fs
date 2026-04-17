@@ -87,9 +87,9 @@ module EmitTypes =
                 | Some ff, Some bit when ff = flagField ->
                     let condition =
                         if f.IsOptional then
-                            mkDotGet (mkDotGet value f.Name) "IsSome"
+                            mkDotGet (mkDotGet value f.RecordName) "IsSome"
                         else
-                            mkDotGet value f.Name
+                            mkDotGet value f.RecordName
 
                     let setBit =
                         mkSet
@@ -114,7 +114,7 @@ module EmitTypes =
 
             Some(
                 mkMatch
-                    (mkDotGet value f.Name)
+                    (mkDotGet value f.RecordName)
                     [ mkMatchClause (mkPatLongIdent [ "Some" ] [ mkPatNamed "v" ]) innerCall
                       mkMatchClause (mkPatLongIdentSimple [ "None" ]) mkUnit ]
             )
@@ -122,7 +122,7 @@ module EmitTypes =
             // Presence flag (bool), no serialization needed
             None
         | _ ->
-            let valueExpr = mkDotGet value f.Name
+            let valueExpr = mkDotGet value f.RecordName
             Some(serializeExprFor f.FSharpType valueExpr)
 
     // --- Member builders ---
@@ -164,10 +164,12 @@ module EmitTypes =
         (flagFields: string list)
         (readCid: bool)
         =
+        // LHS is record-field label (PascalCase); RHS is the local binding
+        // introduced by mkLet below (camelCase, matches f.Name).
         let buildRecordExpr =
             mkRecordExpr (
                 recordFields
-                |> List.map (fun f -> [ f.Name ], mkIdent f.Name)
+                |> List.map (fun f -> [ f.RecordName ], mkIdent f.Name)
             )
 
         // Build nested let chain from bottom up
@@ -255,7 +257,7 @@ module EmitTypes =
 
         let synFields =
             recordFields
-            |> List.map (fun f -> mkRecordField f.Name (mkSynType f.FSharpType))
+            |> List.map (fun f -> mkRecordField f.RecordName (mkSynType f.FSharpType))
 
         let members =
             [ mkConstructorIdMember constructorId
@@ -532,7 +534,7 @@ module EmitTypes =
                 [ mkRecordField "_placeholder" (mkSynType "unit") ]
             else
                 recordFields
-                |> List.map (fun f -> mkRecordField f.Name (mkSynType f.FSharpType))
+                |> List.map (fun f -> mkRecordField f.RecordName (mkSynType f.FSharpType))
 
         // DeserializeFields member (reads params without CID)
         let deserializeFieldsBody =

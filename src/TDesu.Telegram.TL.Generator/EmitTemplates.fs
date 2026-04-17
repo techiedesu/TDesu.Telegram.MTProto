@@ -264,10 +264,13 @@ module EmitTemplates =
                             not (f.FSharpType = "int32" && flagFields |> List.contains f.Name))
                         Some(name, dataFields)
                     | _ -> None)
-            // Pass 1: build with simpleDefault
+            // Pass 1: build with simpleDefault. Record-field labels in
+            // construction expressions are PascalCase (f.RecordName) even
+            // though f.Name is camelCase — F# records use PascalCase
+            // labels and SedBot's callers now expect { FieldName = ... }.
             let pass1 =
                 records |> List.map (fun (name, fields) ->
-                    let inits = fields |> List.map (fun f -> $"%s{f.Name} = %s{simpleDefault f.FSharpType}") |> String.concat "; "
+                    let inits = fields |> List.map (fun f -> $"%s{f.RecordName} = %s{simpleDefault f.FSharpType}") |> String.concat "; "
                     name, $"{{ %s{name}.%s{inits} }}")
                 |> Map.ofList
             // Pass 2: rebuild using pass1 for nested record references
@@ -276,7 +279,7 @@ module EmitTemplates =
                 | Some e -> e
                 | None -> pass1 |> Map.tryFind t |> Option.defaultValue (simpleDefault t)
             records |> List.map (fun (name, fields) ->
-                let inits = fields |> List.map (fun f -> $"%s{f.Name} = %s{lookup f.FSharpType}") |> String.concat "; "
+                let inits = fields |> List.map (fun f -> $"%s{f.RecordName} = %s{lookup f.FSharpType}") |> String.concat "; "
                 name, $"{{ %s{name}.%s{inits} }}")
             |> Map.ofList
 
@@ -294,7 +297,7 @@ module EmitTemplates =
                         match recordDefaults |> Map.tryFind p.FSharpType with
                         | Some expr -> expr
                         | None -> simpleDefault p.FSharpType
-                    $"{p.Name} = {def}")
+                    $"{p.RecordName} = {def}")
                 |> String.concat "; "
 
             // Emitted request types with zero data fields get a synthetic

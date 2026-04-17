@@ -609,7 +609,7 @@ module EmitWriters =
                     for fb in bundled do
                         match fb with
                         | Single(f, resolved) ->
-                            mkRecordField f.Name (toSynType resolved)
+                            mkRecordField f.RecordName (toSynType resolved)
                         | Bundle(bName, items, _, _) ->
                             let inner = items |> List.map (fun (_, rt) -> stripOption rt) |> String.concat " * "
                             mkRecordField bName (toSynType $"(%s{inner}) option")
@@ -663,7 +663,14 @@ module EmitWriters =
                             let resolve f = resolveFieldType f.FSharpType unionResultTypes singleResultTypes
                             let bundled = bundleFields dfs resolve
 
-                            // Bundle-aware pattern + field access
+                            // Bundle-aware pattern + field access.
+                            // For isRecordPerCase, field access must use the
+                            // PascalCase record label (f.RecordName) even
+                            // though callers pass f.Name (camelCase).
+                            let dfsRecordMap =
+                                dfs
+                                |> List.map (fun f -> f.Name, f.RecordName)
+                                |> Map.ofList
                             let pat, fieldAccess =
                                 if dfs.IsEmpty then
                                     mkPatLongIdentSimple [ $"Write%s{rt}"; caseName ],
@@ -671,7 +678,10 @@ module EmitWriters =
                                 elif isRecordPerCase then
                                     let bindName = "p_"
                                     mkPatLongIdent [ $"Write%s{rt}"; caseName ] [ mkPatNamed bindName ],
-                                    (fun name -> mkDotGet (mkIdent bindName) name)
+                                    (fun name ->
+                                        let recordName =
+                                            Map.tryFind name dfsRecordMap |> Option.defaultValue name
+                                        mkDotGet (mkIdent bindName) recordName)
                                 else
                                     let patFields = [
                                         for fb in bundled do
@@ -751,9 +761,19 @@ module EmitWriters =
 
                     let cidExpr = makeCidExpr c name
 
+                    // Map camelCase f.Name (what callers pass) to the
+                    // PascalCase record-field label (f.RecordName).
+                    // Positional mode ignores the map — local bindings
+                    // keep camelCase.
+                    let fieldRecordMap =
+                        dfs
+                        |> List.map (fun f -> f.Name, f.RecordName)
+                        |> Map.ofList
                     let fieldAccess name =
                         if dfs.IsEmpty then mkIdent name
-                        else mkDotGet pExpr name
+                        else
+                            let recordName = Map.tryFind name fieldRecordMap |> Option.defaultValue name
+                            mkDotGet pExpr recordName
 
                     let resolve f = resolveFieldType f.FSharpType unionResultTypes singleResultTypes
                     let bundled = bundleFields dfs resolve
