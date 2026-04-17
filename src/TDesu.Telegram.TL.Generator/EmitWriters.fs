@@ -148,7 +148,17 @@ module EmitWriters =
             if isPrimitive baseType then baseType
             elif unionTypes.Contains baseType then $"Write%s{baseType}"
             elif singleTypes.ContainsKey baseType then $"Write%s{singleTypes[baseType]}Params"
-            else "byte[]"
+            // TL union/single ref not in the writers whitelist — caller is expected
+            // to pass a complete pre-serialized TL blob (constructor id + payload).
+            // Use the `rawBytes` sentinel so the writer emits `WriteRawBytes`; the
+            // F# field type still surfaces as `byte[]`. Pre-2026-04-17 this fell
+            // back to `"byte[]"` which routed through `WriteBytes` (length-prefixed
+            // TL `bytes` primitive) and corrupted every wire encoding — clients
+            // would read the 4-zero-byte length envelope as the next constructor
+            // id. SedBot's `documentAttributeSticker.stickerset:InputStickerSet`
+            // hit this; the symptom was Telethon
+            // `TypeNotFoundError(constructor=0x00000000)` in messages.getAvailableReactions.
+            else "rawBytes"
 
         let withArray = if hasArray then $"%s{resolved} array" else resolved
         if hasOption then $"%s{withArray} option" else withArray

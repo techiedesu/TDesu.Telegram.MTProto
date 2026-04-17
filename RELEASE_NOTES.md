@@ -1,5 +1,35 @@
 # Release notes
 
+## 0.1.16
+
+**Wire-format fix for opaque-ref union fields outside the writers whitelist.**
+
+When a writer-whitelisted record referenced a TL union/single that was not in
+the writers whitelist, `EmitWriters.resolveFieldType` fell back to the F# type
+`"byte[]"`, which routed the writer through `WriteBytes` (length-prefixed TL
+`bytes` primitive). For boxed-type-ref opaque payloads the wire format requires
+the bytes to be emitted *raw* (caller pre-serializes constructor id + payload),
+not wrapped in a bytes envelope.
+
+Symptom: clients reading such a field saw the 4-byte length envelope as the
+next constructor id and crashed. SedBot caught it as
+`TypeNotFoundError(constructor=0x00000000)` from Telethon parsing the
+`documentAttributeSticker.stickerset:InputStickerSet` field that
+`messages.getAvailableReactions` writes.
+
+Fix: the fallback now uses the existing `rawBytes` sentinel (introduced in
+0.1.5 for the hardcoded `opaqueTypes` set), so the writer emits
+`WriteRawBytes`. F# field type still surfaces as `byte[]` — caller-facing API
+is unchanged. Callers that previously worked around the bug with hand-written
+raw bytes followed by `WriteBytes` will need to drop the length-prefix
+preamble.
+
+Regression test: `WriterGeneratorTests.opaque-ref field outside writers
+whitelist emits WriteRawBytes`.
+
+Affects every writer-whitelisted record that has a field typed by a union
+not in the writers whitelist.
+
 ## 0.1.11
 
 **Type-level bundling for shared-flag-bit fields** in writer DUs and per-case records.
