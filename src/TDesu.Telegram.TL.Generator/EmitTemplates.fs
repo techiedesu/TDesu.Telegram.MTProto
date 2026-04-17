@@ -297,9 +297,17 @@ module EmitTemplates =
                     $"{p.Name} = {def}")
                 |> String.concat "; "
 
+            // Emitted request types with zero data fields get a synthetic
+            // `_placeholder: unit` field (F# records can't be empty). Round-
+            // trip tests for those types need to initialize that placeholder
+            // or emit `{ }` which the F# compiler rejects.
+            let recordBody =
+                if System.String.IsNullOrEmpty fieldInits then "_placeholder = ()"
+                else fieldInits
+
             ln $"    [<Test>]"
             ln $"    member _.``{f.Name} round-trip``() ="
-            ln $"        let v : {f.Name} = {{ {fieldInits} }}"
+            ln $"        let v : {f.Name} = {{ {recordBody} }}"
             ln $"        use w1 = new TlWriteBuffer()"
             ln $"        {f.Name}.Serialize(w1, v)"
             ln $"        let bytes1 = w1.ToArray()"
