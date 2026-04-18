@@ -818,12 +818,79 @@ module EmitWriters =
                     mkBinding $"write%s{name}" pats body keyword
         ]
 
+        // ---- Default-value records ----
+        // For every per-case record where every field has a trivial default,
+        // emit `let defaultWriteX : WriteXParams = { F1 = ...; F2 = ... }`.
+        // Trivial means: bool, primitive number, string, byte[]/rawBytes,
+        // option (→ None), array (→ [||]), or a nested WriteYParams whose
+        // own default has already been emitted (records were topologically
+        // sorted, so deps come first).
+        //
+        // Records with DU-typed fields (e.g. `WritePeer`, `WriteMessageAction`)
+        // are skipped — there's no schema-derivable sentinel; callers either
+        // hand-roll the record or use `Unchecked.defaultof<_>` themselves.
+        let mutable defaultsEmitted = Set.empty<string>
+
+        let rec tryDefaultExpr (resolvedType: string) : SynExpr option =
+            // Bundles emit as "(t1 * t2) option" — handle option suffix first.
+            if resolvedType.EndsWith(" option") then
+                Some (mkLongIdent [ "None" ])
+            elif resolvedType.EndsWith(" array") then
+                Some (mkArrayExpr [])
+            else
+                match resolvedType with
+                | "bool" -> Some (mkBool false)
+                | "int" | "int32" -> Some (mkInt32 0)
+                | "int64" -> Some (mkInt64 0L)
+                | "double" -> Some (mkConst (SynConst.Double 0.0))
+                | "string" -> Some (mkString "")
+                | "byte[]" | "rawBytes" -> Some (mkArrayExpr [])
+                | _ when resolvedType.StartsWith "Write" && resolvedType.EndsWith "Params" ->
+                    // Nested record — only usable if its default already exists.
+                    let inner = resolvedType.Substring(5, resolvedType.Length - 5 - 6)
+                    if defaultsEmitted.Contains inner then
+                        Some (mkIdent $"defaultWrite%s{inner}")
+                    else
+                        None
+                | _ -> None
+
+        let defaultBindings = [
+            for name, dFields in sortedRecords do
+                let resolve f = resolveFieldType f.FSharpType unionResultTypes singleResultTypes
+                let bundled = bundleFields dFields resolve
+                let fieldDefaults =
+                    bundled
+                    |> List.map (fun fb ->
+                        match fb with
+                        | Single(f, resolved) ->
+                            match tryDefaultExpr resolved with
+                            | Some expr -> Some (f.RecordName, expr)
+                            | None -> None
+                        | Bundle(bName, _, _, _) ->
+                            // Bundle fields are always `(t1 * t2) option` → None
+                            Some (bName, mkLongIdent [ "None" ]))
+                if fieldDefaults |> List.forall Option.isSome then
+                    let fields =
+                        fieldDefaults
+                        |> List.choose id
+                        |> List.map (fun (n, expr) -> [ n ], expr)
+                    let recordExpr = mkRecordExpr fields
+                    let typeAnnotated =
+                        SynExpr.Typed(recordExpr, toSynType $"Write%s{name}Params", r)
+                    defaultsEmitted <- defaultsEmitted.Add name
+                    yield mkBinding $"defaultWrite%s{name}" [] typeAnnotated (SynLeadingKeyword.Let r)
+        ]
+
         // ---- Assemble AST ----
         let moduleDecls = [
             if typeDefns.Length > 0 then
                 SynModuleDecl.Types(typeDefns, r)
             if bindings.Length > 0 then
                 SynModuleDecl.Let(true, bindings, r)
+            // One module decl per default binding so they emit as
+            // independent `let` lines rather than `let ... and ...`.
+            for b in defaultBindings do
+                SynModuleDecl.Let(false, [ b ], r)
         ]
 
         let nestedModule =
