@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <RootNamespace>TDesu.MTProto</RootNamespace>
+        <PackageId>TDesu.Telegram.Protocol</PackageId>
+        <Description>MTProto protocol core — encrypted/unencrypted message framing, session state, auth key Diffie–Hellman exchange, RPC dispatcher, and high-level client. Builds on TDesu.Telegram.Transport for TCP and TDesu.Telegram.Crypto for AES/RSA.</Description>
+        <PackageTags>mtproto;telegram;protocol;client</PackageTags>
+        <Authors>techiedesu</Authors>
+        <RepositoryUrl>https://github.com/techiedesu/TDesu.Telegram.MTProto</RepositoryUrl>
+        <PackageProjectUrl>https://github.com/techiedesu/TDesu.Telegram.MTProto</PackageProjectUrl>
+        <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <Compile Include="Types.fs" />
+        <Compile Include="UnencryptedMessage.fs" />
+        <Compile Include="MessageFraming.fs" />
+        <Compile Include="Session.fs" />
+        <Compile Include="Auth\AuthKeyExchange.fs" />
+        <Compile Include="RpcDispatcher.fs" />
+        <Compile Include="MtProtoClient.fs" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <PackageReference Include="TDesu.FSharp" />
+        <ProjectReference Include="..\TDesu.Telegram.TL\TDesu.Telegram.TL.fsproj" />
+        <PackageReference Include="TDesu.Telegram.Serialization" />
+        <PackageReference Include="TDesu.Telegram.Crypto" />
+        <ProjectReference Include="..\TDesu.Telegram.Transport\TDesu.Telegram.Transport.fsproj" />
+        <ProjectReference Include="..\TDesu.Common.Logging\TDesu.Common.Logging.fsproj" />
+    </ItemGroup>
+
+</Project>

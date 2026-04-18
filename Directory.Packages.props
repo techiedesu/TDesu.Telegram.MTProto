@@ -9,7 +9,7 @@
         <PackageVersion Include="TDesu.Telegram.Crypto" Version="0.2.0" />
         <PackageVersion Include="Serilog.Extensions.Logging" Version="10.0.0" />
         <PackageVersion Include="Serilog.Sinks.Console" Version="6.0.0" />
-        <PackageVersion Include="Serilog.Sinks.Grafana.Loki" Version="9.0.0" />
+        <PackageVersion Include="Serilog.Sinks.Grafana.Loki" Version="8.3.2" />
         <PackageVersion Include="FParsec" Version="1.1.1" />
         <PackageVersion Include="Fantomas.Core" Version="7.0.5" />
         <PackageVersion Include="Fantomas.FCS" Version="7.0.5" />

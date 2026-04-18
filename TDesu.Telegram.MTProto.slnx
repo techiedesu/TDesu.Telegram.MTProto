@@ -3,6 +3,8 @@
         <Project Path="src/TDesu.Telegram.TL/TDesu.Telegram.TL.fsproj" />
         <Project Path="src/TDesu.Telegram.TL.Generator/TDesu.Telegram.TL.Generator.fsproj" />
         <Project Path="src/TDesu.Telegram.Transport/TDesu.Telegram.Transport.fsproj" />
+        <Project Path="src/TDesu.Common.Logging/TDesu.Common.Logging.fsproj" />
+        <Project Path="src/TDesu.Telegram.Protocol/TDesu.Telegram.Protocol.fsproj" />
     </Folder>
     <Folder Name="/tests/">
         <Project Path="tests/TDesu.Telegram.TL.Tests/TDesu.Telegram.TL.Tests.fsproj" />
