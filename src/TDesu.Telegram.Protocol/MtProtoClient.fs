@@ -22,7 +22,7 @@ type MtProtoClient(dc: DataCenter, ?logger: ILogger) =
     let mutable receiveLoopCts: CancellationTokenSource option = None
     let mutable isReconnecting = false
     let reconnectLock = obj()
-    let log = defaultArg logger (TDesu.FSharp.Utilities.Logger.get "MtProtoClient")
+    let log = defaultArg logger (Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance :> Microsoft.Extensions.Logging.ILogger)
 
     let ensureSession () =
         match session with

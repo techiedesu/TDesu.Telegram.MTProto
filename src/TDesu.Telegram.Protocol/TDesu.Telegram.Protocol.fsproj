@@ -27,7 +27,7 @@
         <PackageReference Include="TDesu.Telegram.Serialization" />
         <PackageReference Include="TDesu.Telegram.Crypto" />
         <ProjectReference Include="..\TDesu.Telegram.Transport\TDesu.Telegram.Transport.fsproj" />
-        <ProjectReference Include="..\TDesu.Common.Logging\TDesu.Common.Logging.fsproj" />
+        <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
     </ItemGroup>
 
     <ItemGroup>
