@@ -91,18 +91,46 @@ module Pipeline =
         (apiSchema: TlSchema)
         (outputPath: string) =
 
-        let parserWhitelist = config.ClientParserWhitelist
-
         // Build alias map from layer variants — so Deserialize accepts all layer CIDs
         let aliasMap =
             config.LayerVariants
             |> List.map (fun lv -> lv.Name, lv.Variants |> List.map snd)
             |> Map.ofList
 
-        let (types, functions) =
-            SchemaMapper.mapSchemaWhitelisted apiSchema parserWhitelist Set.empty aliasMap
+        // Subtract types that will already be emitted in the shared Requests
+        // module — previous behaviour emitted e.g. `Peer` / `ChatAdminRights`
+        // in BOTH namespaces, so downstream files that needed both Request-
+        // side and Response-side types hit F# DU-case-name ambiguity and had
+        // to wrap one side in its own submodule. BFS-resolve both whitelists,
+        // emit only the response-only residual in ResponseParsers.
+        let (requestTypes, _) =
+            SchemaMapper.mapSchemaWhitelisted apiSchema config.TypeWhitelist config.StubTypes aliasMap
+        let requestTypeNames =
+            requestTypes
+            |> List.map (fun t ->
+                match t with
+                | Record(name, _, _) -> name
+                | Union(name, _) -> name)
+            |> Set.ofList
 
-        let code = EmitTypes.buildModule clientNs "ResponseParsers" types functions
+        let (allParserTypes, functions) =
+            SchemaMapper.mapSchemaWhitelisted apiSchema config.ClientParserWhitelist Set.empty aliasMap
+
+        let types =
+            allParserTypes
+            |> List.filter (fun t ->
+                let n =
+                    match t with
+                    | Record(name, _, _) -> name
+                    | Union(name, _) -> name
+                not (requestTypeNames.Contains n))
+
+        // Also open the Requests namespace so the response-only types can
+        // reference shared types (Peer / ChatAdminRights / …) that live there.
+        let code =
+            EmitTypes.buildModuleWithOpens
+                clientNs "ResponseParsers" [ "TDesu.Serialization.Requests" ]
+                types functions
         let header =
             "// Auto-generated response parsers. Do not edit manually.\n"
             + "// Re-generate with: td-tl-gen --target client-parsers --overrides <your.toml>\n"

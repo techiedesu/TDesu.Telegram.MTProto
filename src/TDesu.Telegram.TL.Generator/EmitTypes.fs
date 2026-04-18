@@ -679,9 +679,10 @@ module EmitTypes =
     let buildFunctionCode (func: GeneratedFunction) : string =
         buildFunctionDecl func |> formatSingleDecl
 
-    let buildModule
+    let buildModuleWithOpens
         (ns: string)
         (_moduleName: string)
+        (additionalOpens: string list)
         (types: GeneratedType list)
         (functions: GeneratedFunction list)
         : string =
@@ -696,8 +697,12 @@ module EmitTypes =
 
         let allDecls = typeDecls @ funcDecls
 
+        let openDecls =
+            ("TDesu.Serialization" :: additionalOpens)
+            |> List.map mkOpenDecl
+
         let moduleDecls =
-            [ mkOpenDecl "TDesu.Serialization" ]
+            openDecls
             @ (allDecls |> List.map (fun td -> SynModuleDecl.Types([ td ], r)))
 
         let nsNode = mkNamespace ns moduleDecls
@@ -708,3 +713,11 @@ module EmitTypes =
             $"// Auto-generated at %A{System.DateTimeOffset.Now}\n// Do not edit manually.\n\n"
 
         header + formatted
+
+    let buildModule
+        (ns: string)
+        (moduleName: string)
+        (types: GeneratedType list)
+        (functions: GeneratedFunction list)
+        : string =
+        buildModuleWithOpens ns moduleName [] types functions
