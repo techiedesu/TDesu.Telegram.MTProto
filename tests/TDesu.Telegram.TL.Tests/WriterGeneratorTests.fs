@@ -54,8 +54,9 @@ module WriterGeneratorTests =
         let whitelist = set [ "documentAttributeSticker"; "boolFalse"; "boolTrue" ]
         let actual = EmitWriters.generateWriterModule "TDesu.Serialization" parsed whitelist Set.empty [] Set.empty
         let containsAny (needles: string list) (s: string) = needles |> List.exists s.Contains
-        let writeRaw = [ "w.WriteRawBytes(p.stickerset)"; "w.WriteRawBytes(p_.stickerset)" ]
-        let writeLenPrefixed = [ "w.WriteBytes(p.stickerset)"; "w.WriteBytes(p_.stickerset)" ]
+        // Field labels are emitted in PascalCase since 2026-04-17.
+        let writeRaw = [ "w.WriteRawBytes(p.Stickerset)"; "w.WriteRawBytes(p_.Stickerset)" ]
+        let writeLenPrefixed = [ "w.WriteBytes(p.Stickerset)"; "w.WriteBytes(p_.Stickerset)" ]
         if not (containsAny writeRaw actual) then
             Assert.Fail("stickerset:InputStickerSet must use WriteRawBytes (raw blob), not WriteBytes (length-prefixed). Generated:\n" + actual)
         if containsAny writeLenPrefixed actual then

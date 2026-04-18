@@ -1,17 +1,17 @@
 type MessageEntity = {
-    offset: int32
-    length: int32
+    Offset: int32
+    Length: int32
 } with
 
     static member ConstructorId: uint32 = 3831077821u
 
     static member Serialize(writer: TlWriteBuffer, value: MessageEntity) : unit =
         writer.WriteConstructorId(3831077821u)
-        writer.WriteInt32(value.offset)
-        writer.WriteInt32(value.length)
+        writer.WriteInt32(value.Offset)
+        writer.WriteInt32(value.Length)
 
     static member Deserialize(reader: TlReadBuffer) : MessageEntity =
         let _cid = reader.ReadConstructorId()
         let offset = reader.ReadInt32()
         let length = reader.ReadInt32()
-        { offset = offset; length = length }
+        { Offset = offset; Length = length }

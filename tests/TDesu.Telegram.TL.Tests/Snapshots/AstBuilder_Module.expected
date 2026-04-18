@@ -23,27 +23,27 @@ type Bool =
         | _ -> failwith ("Unknown constructor id for Bool: 0x" + ctorId.ToString("X08"))
 
 type MessageEntity = {
-    offset: int32
-    length: int32
+    Offset: int32
+    Length: int32
 } with
 
     static member ConstructorId: uint32 = 3831077821u
 
     static member Serialize(writer: TlWriteBuffer, value: MessageEntity) : unit =
         writer.WriteConstructorId(3831077821u)
-        writer.WriteInt32(value.offset)
-        writer.WriteInt32(value.length)
+        writer.WriteInt32(value.Offset)
+        writer.WriteInt32(value.Length)
 
     static member Deserialize(reader: TlReadBuffer) : MessageEntity =
         let _cid = reader.ReadConstructorId()
         let offset = reader.ReadInt32()
         let length = reader.ReadInt32()
-        { offset = offset; length = length }
+        { Offset = offset; Length = length }
 
 type Message = {
-    out: bool
-    text: string
-    entities: MessageEntity[] option
+    Out: bool
+    Text: string
+    Entities: MessageEntity[] option
 } with
 
     static member ConstructorId: uint32 = 1516793212u
@@ -52,16 +52,16 @@ type Message = {
         let mutable flags = 0
         writer.WriteConstructorId(1516793212u)
 
-        if value.out then
+        if value.Out then
             flags <- flags ||| (1 <<< 1)
 
-        if value.entities.IsSome then
+        if value.Entities.IsSome then
             flags <- flags ||| (1 <<< 0)
 
         writer.WriteInt32(flags)
-        writer.WriteString(value.text)
+        writer.WriteString(value.Text)
 
-        match value.entities with
+        match value.Entities with
         | Some(v) ->
             writer
                 .WriteVector(
@@ -90,24 +90,24 @@ type Message = {
                 None
 
         {
-            out = out
-            text = text
-            entities = entities
+            Out = out
+            Text = text
+            Entities = entities
         }
 
 type User = {
-    id: int64
-    accessHash: int64
-    firstName: string
+    Id: int64
+    AccessHash: int64
+    FirstName: string
 } with
 
     static member ConstructorId: uint32 = 559694904u
 
     static member Serialize(writer: TlWriteBuffer, value: User) : unit =
         writer.WriteConstructorId(559694904u)
-        writer.WriteInt64(value.id)
-        writer.WriteInt64(value.accessHash)
-        writer.WriteString(value.firstName)
+        writer.WriteInt64(value.Id)
+        writer.WriteInt64(value.AccessHash)
+        writer.WriteString(value.FirstName)
 
     static member Deserialize(reader: TlReadBuffer) : User =
         let _cid = reader.ReadConstructorId()
@@ -116,9 +116,9 @@ type User = {
         let firstName = reader.ReadString()
 
         {
-            id = id
-            accessHash = accessHash
-            firstName = firstName
+            Id = id
+            AccessHash = accessHash
+            FirstName = firstName
         }
 
 type InputPeer =
@@ -152,8 +152,8 @@ type InputPeer =
         | InputPeerChat(chatId) -> ValueSome chatId
 
 type MessagesSendMessage = {
-    peer: InputPeer
-    message: string
+    Peer: InputPeer
+    Message: string
 } with
 
     static member ConstructorId: uint32 = 3757573164u
@@ -161,13 +161,13 @@ type MessagesSendMessage = {
 
     static member Serialize(writer: TlWriteBuffer, value: MessagesSendMessage) : unit =
         writer.WriteConstructorId(3757573164u)
-        InputPeer.Serialize(writer, value.peer)
-        writer.WriteString(value.message)
+        InputPeer.Serialize(writer, value.Peer)
+        writer.WriteString(value.Message)
 
     static member DeserializeFields(reader: TlReadBuffer) : MessagesSendMessage =
         let peer = InputPeer.Deserialize(reader)
         let message = reader.ReadString()
-        { peer = peer; message = message }
+        { Peer = peer; Message = message }
 
     static member Deserialize(body: byte[]) : MessagesSendMessage =
         use reader = new TlReadBuffer(body)
@@ -175,9 +175,9 @@ type MessagesSendMessage = {
         MessagesSendMessage.DeserializeFields(reader)
 
 type AuthSignIn = {
-    phoneNumber: string
-    phoneCodeHash: string
-    phoneCode: string
+    PhoneNumber: string
+    PhoneCodeHash: string
+    PhoneCode: string
 } with
 
     static member ConstructorId: uint32 = 2371004753u
@@ -185,9 +185,9 @@ type AuthSignIn = {
 
     static member Serialize(writer: TlWriteBuffer, value: AuthSignIn) : unit =
         writer.WriteConstructorId(2371004753u)
-        writer.WriteString(value.phoneNumber)
-        writer.WriteString(value.phoneCodeHash)
-        writer.WriteString(value.phoneCode)
+        writer.WriteString(value.PhoneNumber)
+        writer.WriteString(value.PhoneCodeHash)
+        writer.WriteString(value.PhoneCode)
 
     static member DeserializeFields(reader: TlReadBuffer) : AuthSignIn =
         let phoneNumber = reader.ReadString()
@@ -195,9 +195,9 @@ type AuthSignIn = {
         let phoneCode = reader.ReadString()
 
         {
-            phoneNumber = phoneNumber
-            phoneCodeHash = phoneCodeHash
-            phoneCode = phoneCode
+            PhoneNumber = phoneNumber
+            PhoneCodeHash = phoneCodeHash
+            PhoneCode = phoneCode
         }
 
     static member Deserialize(body: byte[]) : AuthSignIn =

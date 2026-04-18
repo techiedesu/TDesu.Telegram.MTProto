@@ -1,7 +1,7 @@
 type Message = {
-    out: bool
-    text: string
-    entities: MessageEntity[] option
+    Out: bool
+    Text: string
+    Entities: MessageEntity[] option
 } with
 
     static member ConstructorId: uint32 = 1516793212u
@@ -10,16 +10,16 @@ type Message = {
         let mutable flags = 0
         writer.WriteConstructorId(1516793212u)
 
-        if value.out then
+        if value.Out then
             flags <- flags ||| (1 <<< 1)
 
-        if value.entities.IsSome then
+        if value.Entities.IsSome then
             flags <- flags ||| (1 <<< 0)
 
         writer.WriteInt32(flags)
-        writer.WriteString(value.text)
+        writer.WriteString(value.Text)
 
-        match value.entities with
+        match value.Entities with
         | Some(v) ->
             writer
                 .WriteVector(
@@ -48,7 +48,7 @@ type Message = {
                 None
 
         {
-            out = out
-            text = text
-            entities = entities
+            Out = out
+            Text = text
+            Entities = entities
         }

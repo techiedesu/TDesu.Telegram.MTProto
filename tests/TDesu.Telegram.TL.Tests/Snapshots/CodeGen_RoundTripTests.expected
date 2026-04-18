@@ -12,7 +12,7 @@ type RoundTripTests() =
 
     [<Test>]
     member _.``MessagesSendMessage round-trip``() =
-        let v : MessagesSendMessage = { peer = InputPeer.InputPeerEmpty; message = "" }
+        let v : MessagesSendMessage = { Peer = InputPeer.InputPeerEmpty; Message = "" }
         use w1 = new TlWriteBuffer()
         MessagesSendMessage.Serialize(w1, v)
         let bytes1 = w1.ToArray()
@@ -24,7 +24,7 @@ type RoundTripTests() =
 
     [<Test>]
     member _.``AuthSignIn round-trip``() =
-        let v : AuthSignIn = { phoneNumber = ""; phoneCodeHash = ""; phoneCode = "" }
+        let v : AuthSignIn = { PhoneNumber = ""; PhoneCodeHash = ""; PhoneCode = "" }
         use w1 = new TlWriteBuffer()
         AuthSignIn.Serialize(w1, v)
         let bytes1 = w1.ToArray()

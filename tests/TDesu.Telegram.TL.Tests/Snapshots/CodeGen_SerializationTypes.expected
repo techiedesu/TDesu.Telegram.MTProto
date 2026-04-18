@@ -36,8 +36,8 @@ type InputPeer =
         | InputPeerChat(chatId) -> ValueSome chatId
 
 type MessagesSendMessage = {
-    peer: InputPeer
-    message: string
+    Peer: InputPeer
+    Message: string
 } with
 
     static member ConstructorId: uint32 = 3757573164u
@@ -45,13 +45,13 @@ type MessagesSendMessage = {
 
     static member Serialize(writer: TlWriteBuffer, value: MessagesSendMessage) : unit =
         writer.WriteConstructorId(3757573164u)
-        InputPeer.Serialize(writer, value.peer)
-        writer.WriteString(value.message)
+        InputPeer.Serialize(writer, value.Peer)
+        writer.WriteString(value.Message)
 
     static member DeserializeFields(reader: TlReadBuffer) : MessagesSendMessage =
         let peer = InputPeer.Deserialize(reader)
         let message = reader.ReadString()
-        { peer = peer; message = message }
+        { Peer = peer; Message = message }
 
     static member Deserialize(body: byte[]) : MessagesSendMessage =
         use reader = new TlReadBuffer(body)
@@ -59,9 +59,9 @@ type MessagesSendMessage = {
         MessagesSendMessage.DeserializeFields(reader)
 
 type AuthSignIn = {
-    phoneNumber: string
-    phoneCodeHash: string
-    phoneCode: string
+    PhoneNumber: string
+    PhoneCodeHash: string
+    PhoneCode: string
 } with
 
     static member ConstructorId: uint32 = 2371004753u
@@ -69,9 +69,9 @@ type AuthSignIn = {
 
     static member Serialize(writer: TlWriteBuffer, value: AuthSignIn) : unit =
         writer.WriteConstructorId(2371004753u)
-        writer.WriteString(value.phoneNumber)
-        writer.WriteString(value.phoneCodeHash)
-        writer.WriteString(value.phoneCode)
+        writer.WriteString(value.PhoneNumber)
+        writer.WriteString(value.PhoneCodeHash)
+        writer.WriteString(value.PhoneCode)
 
     static member DeserializeFields(reader: TlReadBuffer) : AuthSignIn =
         let phoneNumber = reader.ReadString()
@@ -79,9 +79,9 @@ type AuthSignIn = {
         let phoneCode = reader.ReadString()
 
         {
-            phoneNumber = phoneNumber
-            phoneCodeHash = phoneCodeHash
-            phoneCode = phoneCode
+            PhoneNumber = phoneNumber
+            PhoneCodeHash = phoneCodeHash
+            PhoneCode = phoneCode
         }
 
     static member Deserialize(body: byte[]) : AuthSignIn =

@@ -14,18 +14,18 @@ module GeneratedTlWriters =
         | InputPeerSelf
         | InputPeerChat of chatId: int64
 
-    and WriteMessageEntityParams = { offset: int32; length: int32 }
+    and WriteMessageEntityParams = { Offset: int32; Length: int32 }
 
     and WriteMessageParams = {
-        out: bool
-        text: string
-        entities: WriteMessageEntityParams[] option
+        Out: bool
+        Text: string
+        Entities: WriteMessageEntityParams[] option
     }
 
     and WriteUserParams = {
-        id: int64
-        accessHash: int64
-        firstName: string
+        Id: int64
+        AccessHash: int64
+        FirstName: string
     }
 
     let rec writeBool (w: TlWriteBuffer) (p: WriteBool) =
@@ -45,16 +45,16 @@ module GeneratedTlWriters =
         w.WriteConstructorId(0x5A686D7Cu)
         let mutable flags = 0
 
-        if p.out then
+        if p.Out then
             flags <- flags ||| (1 <<< 1)
 
-        if p.entities.IsSome then
+        if p.Entities.IsSome then
             flags <- flags ||| (1 <<< 0)
 
         w.WriteInt32(flags)
-        w.WriteString(p.text)
+        w.WriteString(p.Text)
 
-        match p.entities with
+        match p.Entities with
         | Some(arr) ->
             w.WriteConstructorId(0x1CB5C415u)
             w.WriteInt32(arr.Length)
@@ -65,11 +65,29 @@ module GeneratedTlWriters =
 
     and writeMessageEntity (w: TlWriteBuffer) (p: WriteMessageEntityParams) =
         w.WriteConstructorId(0xE4599BBDu)
-        w.WriteInt32(p.offset)
-        w.WriteInt32(p.length)
+        w.WriteInt32(p.Offset)
+        w.WriteInt32(p.Length)
 
     and writeUser (w: TlWriteBuffer) (p: WriteUserParams) =
         w.WriteConstructorId(0x215C4438u)
-        w.WriteInt64(p.id)
-        w.WriteInt64(p.accessHash)
-        w.WriteString(p.firstName)
+        w.WriteInt64(p.Id)
+        w.WriteInt64(p.AccessHash)
+        w.WriteString(p.FirstName)
+
+    let defaultWriteMessageEntity = { Offset = 0; Length = 0 }: WriteMessageEntityParams
+
+    let defaultWriteMessage =
+        {
+            Out = false
+            Text = ""
+            Entities = None
+        }
+        : WriteMessageParams
+
+    let defaultWriteUser =
+        {
+            Id = 0L
+            AccessHash = 0L
+            FirstName = ""
+        }
+        : WriteUserParams

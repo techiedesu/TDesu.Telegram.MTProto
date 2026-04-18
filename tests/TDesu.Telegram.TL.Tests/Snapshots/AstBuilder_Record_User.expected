@@ -1,16 +1,16 @@
 type User = {
-    id: int64
-    accessHash: int64
-    firstName: string
+    Id: int64
+    AccessHash: int64
+    FirstName: string
 } with
 
     static member ConstructorId: uint32 = 559694904u
 
     static member Serialize(writer: TlWriteBuffer, value: User) : unit =
         writer.WriteConstructorId(559694904u)
-        writer.WriteInt64(value.id)
-        writer.WriteInt64(value.accessHash)
-        writer.WriteString(value.firstName)
+        writer.WriteInt64(value.Id)
+        writer.WriteInt64(value.AccessHash)
+        writer.WriteString(value.FirstName)
 
     static member Deserialize(reader: TlReadBuffer) : User =
         let _cid = reader.ReadConstructorId()
@@ -19,7 +19,7 @@ type User = {
         let firstName = reader.ReadString()
 
         {
-            id = id
-            accessHash = accessHash
-            firstName = firstName
+            Id = id
+            AccessHash = accessHash
+            FirstName = firstName
         }
