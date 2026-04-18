@@ -22,4 +22,8 @@
         <PackageReference Include="TDesu.Telegram.Serialization" />
     </ItemGroup>
 
+    <ItemGroup>
+        <PackageReference Include="MinVer" PrivateAssets="all" />
+    </ItemGroup>
+
 </Project>

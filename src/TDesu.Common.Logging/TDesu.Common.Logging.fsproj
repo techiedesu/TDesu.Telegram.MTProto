@@ -27,4 +27,8 @@
       <PackageReference Include="TDesu.FSharp" />
     </ItemGroup>
 
+    <ItemGroup>
+        <PackageReference Include="MinVer" PrivateAssets="all" />
+    </ItemGroup>
+
 </Project>

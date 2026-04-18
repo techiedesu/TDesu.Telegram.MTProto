@@ -30,4 +30,8 @@
         <ProjectReference Include="..\TDesu.Common.Logging\TDesu.Common.Logging.fsproj" />
     </ItemGroup>
 
+    <ItemGroup>
+        <PackageReference Include="MinVer" PrivateAssets="all" />
+    </ItemGroup>
+
 </Project>
