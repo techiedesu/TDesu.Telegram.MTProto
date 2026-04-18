@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <RootNamespace>TDesu.Transport</RootNamespace>
+        <PackageId>TDesu.Telegram.Transport</PackageId>
+        <Description>MTProto TCP/intermediate transport — frame codec + TCP socket adapter. Used by clients to talk to MTProto endpoints.</Description>
+        <PackageTags>mtproto;telegram;transport;tcp</PackageTags>
+        <Authors>techiedesu</Authors>
+        <RepositoryUrl>https://github.com/techiedesu/TDesu.Telegram.MTProto</RepositoryUrl>
+        <PackageProjectUrl>https://github.com/techiedesu/TDesu.Telegram.MTProto</PackageProjectUrl>
+        <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <Compile Include="Types.fs" />
+        <Compile Include="FrameCodec.fs" />
+        <Compile Include="TcpTransport.fs" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <PackageReference Include="TDesu.FSharp" />
+        <PackageReference Include="TDesu.Telegram.Serialization" />
+    </ItemGroup>
+
+</Project>
