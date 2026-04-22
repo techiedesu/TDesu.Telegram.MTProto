@@ -18,9 +18,26 @@ module EmitTemplates =
     let private getCombinatorId = Combinator.id
 
     /// Build alias map from config for union case augmentation.
+    /// Merges `[[aliases]]` (explicit multi-CID methods) with `[[layer_variants]]`
+    /// (layer-dependent CIDs) so that both write-side dispatch and read-side
+    /// Deserialize accept every known CID for a given name.
     let buildAliasMap (config: OverrideConfig) : Map<string, uint32 list> =
-        config.Aliases
-        |> List.map (fun a -> a.Name, a.Cids)
+        let fromAliases =
+            config.Aliases
+            |> List.map (fun a -> a.Name, a.Cids)
+
+        let fromLayerVariants =
+            config.LayerVariants
+            |> List.map (fun v -> v.Name, v.Variants |> List.map snd)
+
+        (fromAliases @ fromLayerVariants)
+        |> List.groupBy fst
+        |> List.map (fun (name, entries) ->
+            let merged =
+                entries
+                |> List.collect snd
+                |> List.distinct
+            name, merged)
         |> Map.ofList
 
     /// Generate the Cid + LayerCid modules with overrides applied.

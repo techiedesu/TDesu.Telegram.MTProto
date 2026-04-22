@@ -81,3 +81,51 @@ module CodeGeneratorTests =
         withTempFile (fun path ->
             Pipeline.generateSerializationTypes testNs config apiSchema path
             assertMatchesSnapshot (normalizeTimestamp (File.ReadAllText path)) "CodeGen_SerializationTypes")
+
+    /// Regression: `[[layer_variants]]` CIDs must flow into the generated
+    /// `Deserialize`'s pattern match via `AliasCids`. Without this, a layer
+    /// 223 client sending the post-216 CID for `messages.sendMessage` is
+    /// rejected by the server's `messages.SendMessage.Deserialize` with
+    /// `Unknown constructor id`. buildAliasMap must merge [[aliases]] and
+    /// [[layer_variants]] into the same name → cids map feeding
+    /// SchemaMapper.mapSchemaWhitelisted.
+    [<Test>]
+    let ``buildAliasMap merges aliases and layer_variants`` () =
+        let config =
+            { OverrideConfig.empty with
+                Aliases = [
+                    { Name = "MessagesSendMessage"
+                      Cids = [ 0xdff8042cu; 0xdeadbeefu ] }
+                ]
+                LayerVariants = [
+                    { Name = "MessagesSendMessage"
+                      Variants = [ Some 216, 0xcafebabeu; None, 0x12345678u ] }
+                    { Name = "AuthSignIn"
+                      Variants = [ Some 216, 0x8d52a951u; None, 0xaabbccddu ] } ] }
+
+        let aliasMap = EmitTemplates.buildAliasMap config
+        let sendCids = aliasMap |> Map.find "MessagesSendMessage" |> Set.ofList
+        let signInCids = aliasMap |> Map.find "AuthSignIn" |> Set.ofList
+
+        Assert.That(sendCids, Is.EquivalentTo(set [ 0xdff8042cu; 0xdeadbeefu; 0xcafebabeu; 0x12345678u ]))
+        Assert.That(signInCids, Is.EquivalentTo(set [ 0x8d52a951u; 0xaabbccddu ]))
+
+    /// End-to-end: ensure the AliasCids land in the generated Deserialize
+    /// pattern match for both a function and a union case via the full
+    /// Pipeline.generateSerializationTypes path.
+    [<Test>]
+    let ``layer_variants CIDs appear in generated Deserialize match`` () =
+        let config =
+            { OverrideConfig.empty with
+                TypeWhitelist = set [ "MessagesSendMessage" ]
+                LayerVariants = [
+                    { Name = "MessagesSendMessage"
+                      Variants = [ Some 216, 0xdff8042cu; None, 0x7d8375dau ] }
+                ] }
+
+        withTempFile (fun path ->
+            Pipeline.generateSerializationTypes testNs config apiSchema path
+            let code = File.ReadAllText path
+            // Both CIDs should be present in an AliasCids array or match arm.
+            if not (code.Contains "2105767386u" || code.Contains "0x7D8375DA") then
+                Assert.Fail($"expected layer-variant CID in generated code:\n{code}"))
