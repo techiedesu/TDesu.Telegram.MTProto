@@ -24,6 +24,13 @@ and GeneratedField = {
     IsOptional: bool
     FlagField: string option
     FlagBit: int option
+    /// If Some(n), this field exists only at layer > n. The writer
+    /// emits its write expression inside `if layer > n then ...`, and
+    /// the struct exposes the field unconditionally (callers pass a
+    /// value; it's dropped on the wire for layers ≤ n). Populated from
+    /// `[[structural_overlays]]` in the overrides file; None for fields
+    /// that come straight from the primary schema.
+    LayerGate: int option
 }
 
 and UnionCase = {
@@ -92,6 +99,61 @@ module FieldHelpers =
     let dataFields (fields: GeneratedField list) =
         let ffs = flagFieldNames fields
         fields |> List.filter (fun f -> not (isRawFlagField ffs f))
+
+    /// Map a TL type name ("int", "long", "string", "bytes") to its F# equivalent.
+    /// Used by StructuralOverlay extras. Limited to wire-primitives; record/DU
+    /// fields in overlays would require richer type resolution (punted).
+    let private tlScalarToFSharp (t: string) =
+        match t.Trim().ToLowerInvariant() with
+        | "int" | "int32" | "nat" -> Some "int32"
+        | "long" | "int64" -> Some "int64"
+        | "double" -> Some "double"
+        | "string" -> Some "string"
+        | "bytes" -> Some "byte[]"
+        | "bool" -> Some "bool"
+        | _ -> None
+
+    /// Splice extras from a [[structural_overlays]] entry into a field list.
+    /// For each extra, find the field whose TL name matches `After` and insert
+    /// the extra immediately after it. Extras carry `LayerGate = Some maxOld`
+    /// so the writer wraps their writes in `if layer > maxOld then ...`.
+    /// Unknown `After` anchors are logged and skipped (schema drift signal).
+    ///
+    /// TOML `after` values are snake_case (matching the TL wire name); GeneratedField.Name
+    /// is camelCase (matching F# convention). Convert the lookup keys so the
+    /// two meet.
+    let applyStructuralExtras
+        (maxOldLayer: int)
+        (extras: (string * string * string) list) // (After, Name, TlType)
+        (fields: GeneratedField list)
+        : GeneratedField list =
+        let byAfter =
+            extras
+            |> List.groupBy (fun (a, _, _) -> Naming.camelCase a)
+            |> Map.ofList
+
+        let buildExtra (_, name, tlType) : GeneratedField option =
+            tlScalarToFSharp tlType
+            |> Option.map (fun fsharp ->
+                { Name = Naming.camelCase name
+                  RecordName = Naming.pascalCase name
+                  FSharpType = fsharp
+                  IsOptional = false
+                  FlagField = None
+                  FlagBit = None
+                  LayerGate = Some maxOldLayer })
+
+        [
+            for f in fields do
+                yield f
+                match Map.tryFind f.Name byAfter with
+                | Some es ->
+                    for e in es do
+                        match buildExtra e with
+                        | Some g -> yield g
+                        | None -> () // unsupported type — caller must hotfix
+                | None -> ()
+        ]
 
 // ----------------------------------------------------------------
 // Generic topological sort
@@ -215,11 +277,12 @@ module CodeModelMapping =
                 IsOptional = not isPresenceFlag
                 FlagField = Some fieldRef
                 FlagBit = Some bitIndex
+                LayerGate = None
             }
         | TlTypeExpr.Nat ->
-            { Name = name; RecordName = pascalName; FSharpType = "int32"; IsOptional = false; FlagField = None; FlagBit = None }
+            { Name = name; RecordName = pascalName; FSharpType = "int32"; IsOptional = false; FlagField = None; FlagBit = None; LayerGate = None }
         | _ ->
-            { Name = name; RecordName = pascalName; FSharpType = mapTypeExpr p.Type; IsOptional = false; FlagField = None; FlagBit = None }
+            { Name = name; RecordName = pascalName; FSharpType = mapTypeExpr p.Type; IsOptional = false; FlagField = None; FlagBit = None; LayerGate = None }
 
     let internal getResultTypeName (expr: TlTypeExpr) : string =
         match expr with

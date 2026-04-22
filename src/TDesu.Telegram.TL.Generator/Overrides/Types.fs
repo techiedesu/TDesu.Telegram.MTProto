@@ -53,9 +53,39 @@ module Types =
         Flags2MinLayer: int
     }
 
+    /// A scalar field that exists only at layer > MaxOldLayer, inserted in the
+    /// wire format after the named `After` field. Used for layer-223 additions
+    /// like `dialog.unread_poll_votes_count:int` that don't fit the CID-only
+    /// [[layer_variants]] mechanism because they add structural bytes.
+    ///
+    /// Supported scalar types: `int`, `long`, `string`, `bytes` (wire-level
+    /// primitives). Flag-bit additions + record/DU type insertions are NOT
+    /// handled here — those need codegen hand-off to a custom writer helper.
+    type StructuralExtraField = {
+        /// Primary-schema field name to insert AFTER. Camel-case, matches the
+        /// TL field name (generator resolves to the Pascal-case record label).
+        After: string
+        /// New field TL name (camel-case on the wire).
+        Name: string
+        /// TL type as it would appear in the schema. Generator maps to F#.
+        Type: string
+    }
+
+    type StructuralOverlay = {
+        /// PascalCase combinator name (matches `WriteXParams`).
+        Name: string
+        /// Highest layer that does NOT emit the extras. At `layer > MaxOldLayer`,
+        /// all ExtraFields are written; otherwise they're skipped.
+        MaxOldLayer: int
+        /// Ordered list of extras in the order they appear in the new layer's
+        /// wire format.
+        ExtraFields: StructuralExtraField list
+    }
+
     /// Complete override configuration.
     type OverrideConfig = {
         LayerVariants: LayerVariant list
+        StructuralOverlays: StructuralOverlay list
         Aliases: CidAlias list
         Extras: ExtraCid list
         ExtraCombinators: ExtraCombinator list
@@ -82,6 +112,7 @@ module Types =
     module OverrideConfig =
         let empty = {
             LayerVariants = []
+            StructuralOverlays = []
             Aliases = []
             Extras = []
             ExtraCombinators = []
@@ -98,6 +129,7 @@ module Types =
         /// Lists are concatenated, sets are unioned, maps are merged (overlay wins).
         let merge (baseConfig: OverrideConfig) (overlay: OverrideConfig) : OverrideConfig = {
             LayerVariants = baseConfig.LayerVariants @ overlay.LayerVariants
+            StructuralOverlays = baseConfig.StructuralOverlays @ overlay.StructuralOverlays
             Aliases = baseConfig.Aliases @ overlay.Aliases
             Extras = baseConfig.Extras @ overlay.Extras
             ExtraCombinators = baseConfig.ExtraCombinators @ overlay.ExtraCombinators

@@ -360,6 +360,17 @@ module EmitWriters =
         (needsLayer: Set<string>)
         (sharedPresenceFlag: GeneratedField option)
         : SynExpr list =
+        let gate (exprs: SynExpr list) =
+            match f.LayerGate with
+            | Some g ->
+                // Overlay-gated field: emitted only at layer > g. Callers still
+                // supply the value in the struct (it's just dropped on the wire
+                // below the gate).
+                [ mkIf
+                    (mkInfixApp ">" (mkIdent "layer") (mkInt32 g))
+                    (mkSeq exprs)
+                    None ]
+            | None -> exprs
         if isPresenceFlag f then
             []
         elif f.IsOptional then
@@ -377,7 +388,7 @@ module EmitWriters =
                 | Some pf ->
                     // Bit is set by the presence flag — write empty vector when
                     // bool is true and Option is None so the wire matches the bit.
-                    [ mkIf (fieldAccess pf.Name)
+                    gate [ mkIf (fieldAccess pf.Name)
                         (mkMatch (fieldAccess f.Name) [
                             mkMatchClause
                                 (mkPatLongIdent [ "Some" ] [ mkPatNamed "arr" ])
@@ -388,7 +399,7 @@ module EmitWriters =
                             ])
                         ]) None ]
                 | None ->
-                    [ mkMatch (fieldAccess f.Name) [
+                    gate [ mkMatch (fieldAccess f.Name) [
                         mkMatchClause
                             (mkPatLongIdent [ "Some" ] [ mkPatNamed "arr" ])
                             (writeArr "arr")
@@ -408,9 +419,9 @@ module EmitWriters =
                                 (mkApp (mkIdent "defaultArg") (fieldAccess f.Name))
                                 (mkParen defVal)
                         innerWriteAstExpr innerResolved (mkParen defaulted) needsLayer
-                    [ mkIf (fieldAccess pf.Name) writeWithDefault None ]
+                    gate [ mkIf (fieldAccess pf.Name) writeWithDefault None ]
                 | _ ->
-                    [ mkInfixApp "|>"
+                    gate [ mkInfixApp "|>"
                         (fieldAccess f.Name)
                         (mkApp (mkLongIdent [ "Option"; "iter" ]) (mkParen (mkLambda [ "v" ] wExprInner)))
                     ]
@@ -418,13 +429,13 @@ module EmitWriters =
             if resolvedType.EndsWith(" array") then
                 let arrayInner = resolvedType[.. resolvedType.Length - 7]
                 let itemExpr = innerWriteAstExpr arrayInner (mkIdent "item") needsLayer
-                [
+                gate [
                     mkApp (mkDotGet wExpr "WriteConstructorId") (mkParen (mkHexUInt32 0x1CB5C415u))
                     mkApp (mkDotGet wExpr "WriteInt32") (mkParen (mkDotGet (fieldAccess f.Name) "Length"))
                     mkForEach "item" (fieldAccess f.Name) itemExpr
                 ]
             else
-                [ innerWriteAstExpr resolvedType (fieldAccess f.Name) needsLayer ]
+                gate [ innerWriteAstExpr resolvedType (fieldAccess f.Name) needsLayer ]
 
     /// Wrap body expressions with mutable flag declarations (from innermost to outermost).
     let private buildBodyWithFlags
@@ -477,8 +488,28 @@ module EmitWriters =
         (whitelist: Set<string>)
         (layerTypes: Set<string>)
         (layerVariants: LayerVariant list)
+        (structuralOverlays: StructuralOverlay list)
         (recordPerCaseUnions: Set<string>)
         : string =
+
+        // Structural overlays: keyed by combinator PascalCase name → list of
+        // extras that splice into its field list. applyOverlays is called at
+        // every mapParam site below, so the overlay fields are visible both to
+        // struct emission and writer body emission.
+        let overlayMap =
+            structuralOverlays |> List.map (fun o -> o.Name, o) |> Map.ofList
+
+        let applyOverlays (c: TlCombinator) (fields: GeneratedField list) =
+            let name = combinatorPascalName c
+            match Map.tryFind name overlayMap with
+            | Some ov ->
+                let extras =
+                    ov.ExtraFields |> List.map (fun ef -> ef.After, ef.Name, ef.Type)
+                FieldHelpers.applyStructuralExtras ov.MaxOldLayer extras fields
+            | None -> fields
+
+        let hasOverlay (c: TlCombinator) =
+            Map.containsKey (combinatorPascalName c) overlayMap
 
         // ---- Filter & group ----
         let whitelisted =
@@ -504,7 +535,18 @@ module EmitWriters =
         let layerVariantMap =
             layerVariants |> List.map (fun v -> v.Name, v) |> Map.ofList
 
-        let needsLayerSet = computeNeedsLayer groups layerTypes
+        // Combinators that have structural overlays must also take a `layer`
+        // arg (the per-field write wraps in `if layer > gate`), so merge
+        // their TL names into the layer-type set for the layer-dependency
+        // propagation analysis below.
+        let overlayTypeNames =
+            schema.Constructors
+            |> List.choose (fun c ->
+                if hasOverlay c then Some(combinatorTlName c) else None)
+            |> Set.ofList
+        let effectiveLayerTypes = Set.union layerTypes overlayTypeNames
+
+        let needsLayerSet = computeNeedsLayer groups effectiveLayerTypes
 
         // Per-case record name for a union case in `recordPerCaseUnions`.
         // - Default: `Write{TypeName}{CaseName}Params`.
@@ -530,7 +572,7 @@ module EmitWriters =
                 if cs.Length = 1 then
                     let c = cs.Head
                     let name = combinatorPascalName c
-                    let fields = c.Params |> List.map CodeModelMapping.mapParam
+                    let fields = c.Params |> List.map CodeModelMapping.mapParam |> applyOverlays c
                     let dfs = dataFields fields
                     if dfs.IsEmpty then [] else [ name, dfs ]
                 elif recordPerCaseUnions.Contains rt then
@@ -541,7 +583,7 @@ module EmitWriters =
                     cs
                     |> List.choose (fun c ->
                         let caseName = combinatorPascalName c
-                        let fields = c.Params |> List.map CodeModelMapping.mapParam
+                        let fields = c.Params |> List.map CodeModelMapping.mapParam |> applyOverlays c
                         let dfs = dataFields fields
                         if dfs.IsEmpty then None
                         else Some(perCaseRecordName rt caseName, dfs))
@@ -569,7 +611,8 @@ module EmitWriters =
                     let cases = [
                         for c in constructors do
                             let caseName = combinatorPascalName c
-                            let fields = c.Params |> List.map CodeModelMapping.mapParam |> dataFields
+                            let fields =
+                                c.Params |> List.map CodeModelMapping.mapParam |> applyOverlays c |> dataFields
                             if isRecordPerCase && not fields.IsEmpty then
                                 // Reference the per-case record type (emitted
                                 // alongside in `recordTypesToEmit`).
@@ -656,7 +699,7 @@ module EmitWriters =
                     let clauses = [
                         for c in constructors do
                             let caseName = combinatorPascalName c
-                            let fields = c.Params |> List.map CodeModelMapping.mapParam
+                            let fields = c.Params |> List.map CodeModelMapping.mapParam |> applyOverlays c
                             let ffs = flagFieldNames fields
                             let dfs = dataFields fields
 
@@ -738,12 +781,16 @@ module EmitWriters =
                 if constructors.Length = 1 then
                     let c = constructors.Head
                     let name = combinatorPascalName c
-                    let fields = c.Params |> List.map CodeModelMapping.mapParam
+                    let fields = c.Params |> List.map CodeModelMapping.mapParam |> applyOverlays c
                     let ffs = flagFieldNames fields
                     let dfs = dataFields fields
 
                     let resultNeedsLayer = needsLayerSet.Contains(getResultTypePascalName c.ResultType)
-                    let fnNeedsLayer = layerTypes.Contains(combinatorTlName c) || resultNeedsLayer
+                    // Overlay-gated fields need the `layer` arg to branch at write time.
+                    let fnNeedsLayer =
+                        layerTypes.Contains(combinatorTlName c)
+                        || resultNeedsLayer
+                        || hasOverlay c
 
                     let keyword =
                         if isFirstFn then

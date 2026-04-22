@@ -62,6 +62,21 @@ module Toml =
             | _ -> []
         { Name = name; Variants = variants }
 
+    let private parseStructuralExtraField (table: TomlTable) : StructuralExtraField =
+        { After = table |> getString "after"
+          Name = table |> getString "name"
+          Type = table |> getString "type" }
+
+    let private parseStructuralOverlay (table: TomlTable) : StructuralOverlay =
+        let name = table |> getString "name"
+        let maxOldLayer = table |> getInt "max_old_layer"
+        let extras =
+            match table.TryGetValue("extra_fields") with
+            | true, (:? TomlArray as arr) ->
+                [ for item in arr -> parseStructuralExtraField (item :?> TomlTable) ]
+            | _ -> []
+        { Name = name; MaxOldLayer = maxOldLayer; ExtraFields = extras }
+
     let private parseAlias (table: TomlTable) : CidAlias =
         let name = table |> getString "name"
         let cids =
@@ -116,6 +131,7 @@ module Toml =
         let doc = Tomlyn.TomlSerializer.Deserialize<TomlTable>(toml)
 
         let layerVariants = doc |> getTableArray "layer_variants" |> List.map parseLayerVariant
+        let structuralOverlays = doc |> getTableArray "structural_overlays" |> List.map parseStructuralOverlay
         let aliases = doc |> getTableArray "aliases" |> List.map parseAlias
         let extras = doc |> getTableArray "extras" |> List.map parseExtra
         let extraCombinators = doc |> getTableArray "extra_combinators" |> List.map parseExtraCombinator
@@ -124,6 +140,7 @@ module Toml =
             doc |> parseWhitelists
 
         { LayerVariants = layerVariants
+          StructuralOverlays = structuralOverlays
           Aliases = aliases
           Extras = extras
           ExtraCombinators = extraCombinators

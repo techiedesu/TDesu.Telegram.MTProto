@@ -11,6 +11,12 @@ module Dsl =
             { config with
                 LayerVariants = config.LayerVariants @ [ { Name = name; Variants = variants } ] }
 
+        [<CustomOperation("structuralOverlay")>]
+        member _.StructuralOverlay(config, name, maxOldLayer, extras) =
+            { config with
+                StructuralOverlays =
+                    config.StructuralOverlays @ [ { Name = name; MaxOldLayer = maxOldLayer; ExtraFields = extras } ] }
+
         [<CustomOperation("alias")>]
         member _.Alias(config, name, cids) =
             { config with

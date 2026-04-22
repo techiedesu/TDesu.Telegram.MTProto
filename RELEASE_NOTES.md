@@ -1,5 +1,51 @@
 # Release notes
 
+## 0.2.3
+
+**Structural layer overlays** — write-side support for schema additions at a
+newer layer without a hand-rolled hotfix module.
+
+Before 0.2.3 the `[[layer_variants]]` mechanism could only dispatch different
+CIDs at runtime; the record shape was fixed to the primary schema. Layer 223
+of the Telegram API introduced a handful of constructors where the struct
+layout *itself* changed (e.g. `dialog` gained `unread_poll_votes_count:int`
+between `unread_reactions_count` and `notify_settings`). Emitting those
+constructors per-layer previously required maintaining a separate
+`LayerHotfix.fs` in downstream code that duplicated the writer body.
+
+New TOML section:
+
+```toml
+[[structural_overlays]]
+name = "Dialog"
+max_old_layer = 216
+extra_fields = [
+  { after = "unread_reactions_count", name = "unread_poll_votes_count", type = "int" },
+]
+```
+
+Generator behaviour:
+
+* The extra field is spliced into the combinator's field list immediately
+  after the named `after` anchor. It appears on `WriteDialogParams` as a
+  regular scalar (default `0` via `defaultWriteDialog`).
+* The writer function now takes `layer: int` (automatic — the generator
+  treats structural-overlay combinators as layer-aware for free). Writes
+  for overlay-only fields are wrapped in `if layer > max_old_layer then
+  ...`, emitted at the correct wire position. Callers ≤ `max_old_layer`
+  see byte-identical output to pre-0.2.3.
+* Combined with `[[layer_variants]]`, the result is: layer ≤ N callers
+  get the old CID + old struct bytes; layer > N callers get the new CID
+  + new struct bytes with the extra field slotted in.
+
+Supported scalar types: `int`, `long`, `string`, `bytes`, `bool`, `double`.
+Flag-bit additions and record/DU-typed insertions are not handled by
+`structural_overlays` — those still need a hand-rolled hotfix or a future
+generator extension.
+
+Regression test: `WriterGeneratorTests.structural overlay splices extra
+scalar and layer-gates the write`.
+
 ## 0.1.16
 
 **Wire-format fix for opaque-ref union fields outside the writers whitelist.**

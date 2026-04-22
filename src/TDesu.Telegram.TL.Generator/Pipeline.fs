@@ -71,6 +71,7 @@ module Pipeline =
                 config.WriterWhitelist
                 config.WriterLayerTypes
                 config.LayerVariants
+                config.StructuralOverlays
                 config.WriterRecordPerCaseUnions
 
         let dir = System.IO.Path.GetDirectoryName(outputPath)
