@@ -1,5 +1,13 @@
 # Release notes
 
+## 0.2.6
+
+**Hotfix.** 0.2.5's `Requests.targets` header contained `--` inside the
+XML comment body (`<!-- ... --target types --split-by-domain. -->`), which
+violates the XML 1.0 spec and is rejected by MSBuild
+(`An XML comment cannot contain "--"`). 0.2.6 replaces the comment with a
+`--`-free phrasing. No other changes.
+
 ## 0.2.5
 
 **Per-domain split for the `types` target.** `td-tl-gen --target types
