@@ -721,3 +721,180 @@ module EmitTypes =
         (functions: GeneratedFunction list)
         : string =
         buildModuleWithOpens ns moduleName [] types functions
+
+    // --- Per-domain split ---
+
+    /// Result of `buildPerDomainModules`: one entry per non-empty TL domain.
+    /// `Filename` is just the leaf (e.g. `Base.g.fs`); the caller decides
+    /// the directory. Order is topological — `Base` first, then domains
+    /// reachable only from already-emitted ones.
+    type PerDomainOutput = {
+        Domain: string
+        Filename: string
+        Code: string
+    }
+
+    /// Default TL request domains. Detected via leading PascalCase prefix
+    /// in the F# type name (`MessagesSendMessage` → "Messages"). Anything
+    /// without a recognized prefix falls into `Base`.
+    let defaultRequestDomains = [
+        "Account"; "Auth"; "Bots"; "Channels"; "Chatlists"; "Contacts"
+        "Fragment"; "Help"; "LangPack"; "Messages"; "Payments"; "Phone"
+        "Photos"; "Premium"; "SmsJobs"; "Stats"; "Stickers"; "Stories"
+        "Updates"; "Upload"; "Users"
+    ]
+
+    let private extractTypeRefsLocal (fsharpType: string) =
+        let mutable s = fsharpType
+        if s.EndsWith(" option") then s <- s[.. s.Length - 8]
+        if s.EndsWith(" array") then s <- s[.. s.Length - 7]
+        match s with
+        | "int32" | "int64" | "double" | "bool" | "string" | "byte[]" | "obj" | "unit" -> []
+        | _ -> [ s ]
+
+    /// Build per-domain F# source files from a single types/functions input.
+    /// Cycle resolution: any non-Base type referenced from a Base type is
+    /// promoted to Base (transitively). Typical TL schemas need this for at
+    /// most one or two types — currently `MessagesEmojiGameOutcome` (referenced
+    /// by `Base.MessageMedia`).
+    let buildPerDomainModules
+        (ns: string)
+        (additionalOpens: string list)
+        (domains: string list)
+        (types: GeneratedType list)
+        (functions: GeneratedFunction list)
+        : PerDomainOutput list =
+
+        let nameOf =
+            function
+            | Record(n, _, _) -> n
+            | Union(n, _) -> n
+
+        let allNames =
+            (types |> List.map nameOf)
+            @ (functions |> List.map (fun f -> f.Name))
+            |> Set.ofList
+
+        let domainOf (typeName: string) : string =
+            domains
+            |> List.tryFind (fun d ->
+                typeName.StartsWith(d, System.StringComparison.Ordinal)
+                && typeName.Length > d.Length
+                && System.Char.IsUpper(typeName[d.Length]))
+            |> Option.defaultValue "Base"
+
+        let typeRefsOf =
+            function
+            | Record(_, fields, _) -> fields |> List.collect (fun f -> extractTypeRefsLocal f.FSharpType)
+            | Union(_, cases) ->
+                cases
+                |> List.collect (fun c ->
+                    c.Fields |> List.collect (fun f -> extractTypeRefsLocal f.FSharpType))
+
+        let funcRefsOf (f: GeneratedFunction) =
+            f.Params |> List.collect (fun p -> extractTypeRefsLocal p.FSharpType)
+
+        let refs = System.Collections.Generic.Dictionary<string, string list>()
+        for t in types do
+            refs[nameOf t] <- typeRefsOf t |> List.filter allNames.Contains
+        for f in functions do
+            refs[f.Name] <- funcRefsOf f |> List.filter allNames.Contains
+
+        let mutable assignment =
+            (types |> List.map (fun t -> nameOf t, domainOf (nameOf t)))
+            @ (functions |> List.map (fun f -> f.Name, domainOf f.Name))
+            |> Map.ofList
+
+        // Promote any non-Base node referenced from a Base node into Base.
+        let mutable changed = true
+        while changed do
+            changed <- false
+            for kv in refs do
+                if assignment[kv.Key] = "Base" then
+                    for r' in kv.Value do
+                        if assignment[r'] <> "Base" then
+                            assignment <- Map.add r' "Base" assignment
+                            changed <- true
+
+        let topoTypes = topoSortTypes types
+        let typesByDomain =
+            topoTypes
+            |> List.groupBy (fun t -> assignment[nameOf t])
+            |> Map.ofList
+        let funcsByDomain =
+            functions
+            |> List.groupBy (fun f -> assignment[f.Name])
+            |> Map.ofList
+
+        // Domain-level dependency edges.
+        let edges = System.Collections.Generic.HashSet<string * string>()
+        for kv in refs do
+            let s = assignment[kv.Key]
+            for r' in kv.Value do
+                let d = assignment[r']
+                if s <> d then
+                    edges.Add((s, d)) |> ignore
+
+        let allDomains =
+            assignment
+            |> Map.toSeq
+            |> Seq.map snd
+            |> Seq.distinct
+            |> Seq.toList
+
+        // Topological order: Base first, then alphabetical among ready nodes.
+        let mutable remaining = Set.ofList allDomains
+        let ordered = System.Collections.Generic.List<string>()
+        while not (Set.isEmpty remaining) do
+            let ready =
+                remaining
+                |> Seq.filter (fun d ->
+                    edges
+                    |> Seq.filter (fun (s, _) -> s = d)
+                    |> Seq.forall (fun (_, dst) -> not (Set.contains dst remaining)))
+                |> Seq.sortWith (fun a b ->
+                    if a = "Base" then -1
+                    elif b = "Base" then 1
+                    else System.StringComparer.Ordinal.Compare(a, b))
+                |> Seq.toList
+            match ready with
+            | [] ->
+                failwithf
+                    "buildPerDomainModules: cyclic domain graph after promotion. Remaining: %A. Edges: %A"
+                    (Set.toList remaining)
+                    (edges |> Seq.toList)
+            | x :: _ ->
+                ordered.Add(x)
+                remaining <- Set.remove x remaining
+
+        let header =
+            $"// Auto-generated at %A{System.DateTimeOffset.Now}\n// Do not edit manually.\n\n"
+
+        [
+            for dom in ordered do
+                let domTypes = typesByDomain |> Map.tryFind dom |> Option.defaultValue []
+                let domFuncs = funcsByDomain |> Map.tryFind dom |> Option.defaultValue []
+                if not (List.isEmpty domTypes && List.isEmpty domFuncs) then
+                    let typeDecls =
+                        domTypes
+                        |> List.map (fun t ->
+                            match t with
+                            | Record(name, fields, ctorId) -> buildRecordDecl name fields ctorId
+                            | Union(name, cases) -> buildUnionDecl name cases)
+                    let funcDecls = domFuncs |> List.map buildFunctionDecl
+                    let allDecls = typeDecls @ funcDecls
+                    let openDecls =
+                        ("TDesu.Serialization" :: additionalOpens)
+                        |> List.map mkOpenDecl
+                    let moduleDecls =
+                        openDecls
+                        @ (allDecls |> List.map (fun td -> SynModuleDecl.Types([ td ], r)))
+                    let nsNode = mkNamespace ns moduleDecls
+                    let parsed = mkParsedInput [ nsNode ]
+                    let formatted = runFormat parsed
+                    yield {
+                        Domain = dom
+                        Filename = dom + ".g.fs"
+                        Code = header + formatted
+                    }
+        ]

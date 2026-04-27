@@ -129,3 +129,52 @@ module CodeGeneratorTests =
             // Both CIDs should be present in an AliasCids array or match arm.
             if not (code.Contains "2105767386u" || code.Contains "0x7D8375DA") then
                 Assert.Fail($"expected layer-variant CID in generated code:\n{code}"))
+
+    /// `buildPerDomainModules` should produce one file per non-empty TL
+    /// domain, with `Base` first and the remaining domains in topological
+    /// order. For the test schema we have:
+    ///   * `MessagesSendMessage` (function, → Messages)
+    ///   * `AuthSignIn` (function, → Auth)
+    ///   * `Message`, `MessageEntity`, `User`, `InputPeer` (records/DUs, → Base)
+    [<Test>]
+    let ``buildPerDomainModules splits by TL domain prefix`` () =
+        let config =
+            { OverrideConfig.empty with
+                TypeWhitelist = set [ "MessagesSendMessage"; "AuthSignIn" ] }
+        let aliasMap = EmitTemplates.buildAliasMap config
+        let types, functions =
+            SchemaMapper.mapSchemaWhitelisted apiSchema config.TypeWhitelist config.StubTypes aliasMap
+
+        let outputs =
+            EmitTypes.buildPerDomainModules
+                "TDesu.Serialization.Requests"
+                []
+                EmitTypes.defaultRequestDomains
+                types
+                functions
+
+        let domains = outputs |> List.map (fun o -> o.Domain)
+        // Base must be the first emitted domain (others depend on it).
+        Assert.That(List.head domains, Is.EqualTo "Base")
+        // Both function-bearing domains must show up.
+        Assert.That(domains, Does.Contain "Messages")
+        Assert.That(domains, Does.Contain "Auth")
+
+        // Each output's namespace declaration must match.
+        for o in outputs do
+            if not (o.Code.Contains "namespace TDesu.Serialization.Requests") then
+                Assert.Fail($"missing namespace in {o.Filename}:\n{o.Code}")
+            Assert.That(o.Filename, Does.EndWith ".g.fs")
+
+        // The Messages domain must contain MessagesSendMessage; Auth must
+        // contain AuthSignIn. (Functions get sorted into their domain bucket.)
+        let messagesCode =
+            outputs |> List.find (fun o -> o.Domain = "Messages") |> fun o -> o.Code
+        let authCode =
+            outputs |> List.find (fun o -> o.Domain = "Auth") |> fun o -> o.Code
+        Assert.That(messagesCode, Does.Contain "MessagesSendMessage")
+        Assert.That(authCode, Does.Contain "AuthSignIn")
+        // And the Base file must carry InputPeer (referenced by both functions).
+        let baseCode =
+            outputs |> List.find (fun o -> o.Domain = "Base") |> fun o -> o.Code
+        Assert.That(baseCode, Does.Contain "type InputPeer")

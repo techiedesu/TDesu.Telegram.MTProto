@@ -1,5 +1,46 @@
 # Release notes
 
+## 0.2.5
+
+**Per-domain split for the `types` target.** `td-tl-gen --target types
+--split-by-domain` now emits one `<Domain>.g.fs` file per TL domain prefix
+(`Account.g.fs`, `Auth.g.fs`, … `Messages.g.fs`, plus `Base.g.fs` for
+unprefixed types) under `<output>/Requests/`, instead of a single 30K-line
+`GeneratedTlRequests.g.fs`. A `Requests.targets` MSBuild manifest is also
+emitted so consumers can `<Import Project="…\Requests.targets" />` to pick
+up the per-domain `<Compile Include>` entries in topological compile order
+(`Base` first; cross-domain refs are limited to `Base` ↔ specific domain by
+the splitter's cycle resolution).
+
+* Cycle resolution: any non-Base type referenced from a Base type is
+  promoted to Base transitively (today only `MessagesEmojiGameOutcome`
+  qualifies on the upstream tdesktop schema).
+* Default domain list: `Account, Auth, Bots, Channels, Chatlists, Contacts,
+  Fragment, Help, LangPack, Messages, Payments, Phone, Photos, Premium,
+  SmsJobs, Stats, Stickers, Stories, Updates, Upload, Users`. Override with
+  `--split-domains "A,B,C"` if you need a custom prefix list.
+* The default (no flag) is unchanged — single-file output for backwards
+  compatibility.
+
+Migration for downstream `.fsproj` (was: `<Compile
+Include="Generated\GeneratedTlRequests.g.fs" />`):
+
+```xml
+<Import Project="Generated\Requests\Requests.targets" />
+```
+
+`buildPerDomainModules` is also exposed as a public API on `EmitTypes` for
+callers that want to do their own writing.
+
+## 0.2.4
+
+**Auto-plumb `[[layer_variants]]` CIDs into `AliasCids`.** Previously
+declaring a `[[layer_variants]]` entry produced a runtime alias map but
+didn't set the static `AliasCids: uint32[]` member on the generated type.
+Pre-0.2.4 callers that walked `AliasCids` (e.g. for coverage or client-side
+dispatch) missed the per-layer CIDs. 0.2.4 unifies the two paths so both
+reflect every layer-variant CID.
+
 ## 0.2.3
 
 **Structural layer overlays** — write-side support for schema additions at a

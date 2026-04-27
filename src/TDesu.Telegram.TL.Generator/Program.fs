@@ -42,6 +42,14 @@ Optional flags:
   --tests-namespace <ns>      Override namespace for `tests` (defaults to <namespace>.Tests)
   --client-namespace <ns>     Override namespace for client-cids/client-parsers
                               (defaults to <namespace>.Client.Api)
+  --split-by-domain           For `types` target: emit one F# file per TL domain
+                              under <output>/Requests/, plus a Requests.targets
+                              MSBuild manifest, instead of a single
+                              GeneratedTlRequests.g.fs.
+  --split-domains <list>      Override the default domain prefix list when
+                              --split-by-domain is set (comma-separated, e.g.
+                              "Account,Auth,Channels"; default lists all known
+                              TL domains).
 
 Sample overrides config: samples/SedBotOverrides/sedbot-overrides.toml
 """
@@ -96,6 +104,8 @@ Sample overrides config: samples/SedBotOverrides/sedbot-overrides.toml
         let targetRaw = argv |> tryGetArg "--target"
         let testsNs = argv |> tryGetArg "--tests-namespace"
         let clientNs = argv |> tryGetArg "--client-namespace"
+        let splitByDomain = argv |> Array.exists (fun s -> s = "--split-by-domain")
+        let domainsOverride = argv |> tryGetArg "--split-domains"
 
         match schemaPath, outputDir, nsOpt, overridesPath, targetRaw with
         | None, _, _, _, _ -> fail log "--schema is required"
@@ -144,7 +154,17 @@ Sample overrides config: samples/SedBotOverrides/sedbot-overrides.toml
                                 log.LogInformation("Wrote {Path} ({Bytes} bytes)", outPath, code.Length)
 
                     if targets.Contains "types" then
-                        Pipeline.generateSerializationTypes ns config apiSchema (path "GeneratedTlRequests.g.fs")
+                        if splitByDomain then
+                            let domains =
+                                match domainsOverride with
+                                | Some raw ->
+                                    raw.Split([| ','; ' ' |], System.StringSplitOptions.RemoveEmptyEntries)
+                                    |> Array.map (fun s -> s.Trim())
+                                    |> Array.toList
+                                | None -> EmitTypes.defaultRequestDomains
+                            Pipeline.generateSerializationTypesSplit ns config apiSchema outputDir domains
+                        else
+                            Pipeline.generateSerializationTypes ns config apiSchema (path "GeneratedTlRequests.g.fs")
 
                     if targets.Contains "writers" then
                         Pipeline.generateWriterModule ns config apiSchema (path "GeneratedTlWriters.g.fs")
