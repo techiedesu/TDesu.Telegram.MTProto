@@ -1,5 +1,34 @@
 # Release notes
 
+## 0.2.8
+
+**Bugfix: SCC types now actually emit as `and`-chains.** 0.2.7 grouped
+mutually recursive types into one `SynModuleDecl.Types([t1; t2; t3], r)`
+block, but every emitted decl carried `SynTypeDefnLeadingKeyword.Type`,
+so Fantomas rendered the block as three independent `type X = ...`
+declarations instead of `type X = ... and Y = ... and Z = ...`. F# then
+treated each as a fresh scope, and forward references between them
+failed to compile (`error FS0039: The type 'X' is not defined` — the
+exact symptom 0.2.7 was meant to fix).
+
+Fix: `renderTypeSccs` (and the per-domain equivalent in
+`buildPerDomainModules`) now emits the first decl in each SCC with
+`SynTypeDefnLeadingKeyword.Type` and all subsequent decls with
+`SynTypeDefnLeadingKeyword.And`. Singleton SCCs stay on `Type` (the
+common case). Verified on layer 225 against localgram: the
+`MessageMedia ↔ Poll ↔ PollAnswer` 3-cycle now collapses into one
+`type … and … and …` group at the correct topological position. 77/77
+generator tests still pass.
+
+The 0.2.7 changelog claimed this worked. It didn't — the SCC detection
+was correct (Tarjan is fine) but the AST construction layer dropped
+the recursion-keyword marker. 0.2.8 actually closes the loop.
+
+`buildRecordDecl` and `buildUnionDecl` keep the old `Type` default for
+single-decl callers; the new `buildRecordDeclWithKeyword` /
+`buildUnionDeclWithKeyword` are the SCC-aware variants used by the
+multi-decl path.
+
 ## 0.2.7
 
 **SCC-aware type emission for mutually recursive TL constructors.** Layer

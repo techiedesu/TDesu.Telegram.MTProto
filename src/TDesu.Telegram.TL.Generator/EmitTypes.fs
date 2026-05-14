@@ -249,7 +249,7 @@ module EmitTypes =
 
     // --- Record type ---
 
-    let buildRecordDecl (name: string) (fields: GeneratedField list) (constructorId: uint32) : SynTypeDefn =
+    let buildRecordDeclWithKeyword (keyword: SynTypeDefnLeadingKeyword) (name: string) (fields: GeneratedField list) (constructorId: uint32) : SynTypeDefn =
         let flagFields = flagFieldNames fields
 
         let recordFields =
@@ -268,8 +268,11 @@ module EmitTypes =
             name
             synFields
             members
-            (SynTypeDefnLeadingKeyword.Type r)
+            keyword
             []
+
+    let buildRecordDecl (name: string) (fields: GeneratedField list) (constructorId: uint32) : SynTypeDefn =
+        buildRecordDeclWithKeyword (SynTypeDefnLeadingKeyword.Type r) name fields constructorId
 
     // --- Union type ---
 
@@ -495,7 +498,7 @@ module EmitTypes =
               let xPat = mkPatTyped (mkPatNamed "x") (mkSynType name)
               yield mkInlineStaticMember $"get%s{pascalName}" [ xPat ] body ]
 
-    let buildUnionDecl (name: string) (cases: UnionCase list) : SynTypeDefn =
+    let buildUnionDeclWithKeyword (keyword: SynTypeDefnLeadingKeyword) (name: string) (cases: UnionCase list) : SynTypeDefn =
         let synCases =
             cases
             |> List.map (fun c ->
@@ -519,7 +522,10 @@ module EmitTypes =
               mkUnionDeserializeMember name cases ]
             @ mkFieldAccessors name cases
 
-        mkUnionType name synCases members (SynTypeDefnLeadingKeyword.Type r) []
+        mkUnionType name synCases members keyword []
+
+    let buildUnionDecl (name: string) (cases: UnionCase list) : SynTypeDefn =
+        buildUnionDeclWithKeyword (SynTypeDefnLeadingKeyword.Type r) name cases
 
     // --- Function type ---
 
@@ -770,13 +776,22 @@ module EmitTypes =
     /// `type X = ...`); multi-element SCCs become a single block of the
     /// component's types (which F# renders as `type X = ... and Y = ...`).
     let private renderTypeSccs (types: GeneratedType list) : SynModuleDecl list =
-        let toDecl t =
+        let toDecl (keyword: SynTypeDefnLeadingKeyword) t =
             match t with
-            | Record(name, fields, ctorId) -> buildRecordDecl name fields ctorId
-            | Union(name, cases) -> buildUnionDecl name cases
+            | Record(name, fields, ctorId) -> buildRecordDeclWithKeyword keyword name fields ctorId
+            | Union(name, cases) -> buildUnionDeclWithKeyword keyword name cases
         topoSortSCCs types
         |> List.map (fun scc ->
-            let decls = scc |> List.map toDecl
+            // First decl uses `type`, subsequent decls in the same SCC use
+            // `and` to express mutual recursion. Single-decl SCCs always use
+            // `type`.
+            let decls =
+                scc
+                |> List.mapi (fun i t ->
+                    let keyword =
+                        if i = 0 then SynTypeDefnLeadingKeyword.Type r
+                        else SynTypeDefnLeadingKeyword.And r
+                    toDecl keyword t)
             SynModuleDecl.Types(decls, r))
 
     let buildModuleWithOpens
@@ -972,10 +987,13 @@ module EmitTypes =
                         |> List.map (fun scc ->
                             let decls =
                                 scc
-                                |> List.map (fun t ->
+                                |> List.mapi (fun i t ->
+                                    let keyword =
+                                        if i = 0 then SynTypeDefnLeadingKeyword.Type r
+                                        else SynTypeDefnLeadingKeyword.And r
                                     match t with
-                                    | Record(name, fields, ctorId) -> buildRecordDecl name fields ctorId
-                                    | Union(name, cases) -> buildUnionDecl name cases)
+                                    | Record(name, fields, ctorId) -> buildRecordDeclWithKeyword keyword name fields ctorId
+                                    | Union(name, cases) -> buildUnionDeclWithKeyword keyword name cases)
                             SynModuleDecl.Types(decls, r))
                     let funcBlocks =
                         domFuncs
