@@ -1,5 +1,56 @@
 # Release notes
 
+## 0.2.7
+
+**SCC-aware type emission for mutually recursive TL constructors.** Layer
+225 (the upstream tdesktop `dev` branch as of May 2026) introduced two
+mutual cycles in the `Base` domain that broke the previous DAG-only topo
+sort:
+
+* `MessageMedia.MessageMediaPoll` carries `attached_media: MessageMedia option`
+  — a self-loop.
+* `PollResults.SolutionMedia: MessageMedia option` and
+  `MessageMedia.MessageMediaPoll(_, results: PollResults, _)` — a 2-cycle
+  between `MessageMedia` and `PollResults`.
+
+The old `topoSortTypes` walked the dependency graph DFS-style and emitted
+in reverse-finish order, which works for DAGs but produces forward
+references when nodes participate in a cycle. Compiling the result
+yielded ~20 `error FS0039: The type 'MessageMedia' is not defined` errors
+on `Base.g.fs`.
+
+0.2.7 replaces the topo sort with **Tarjan's strongly-connected-components
+algorithm** (`topoSortSCCs` in `EmitTypes.fs`). Each SCC is emitted as a
+single `SynModuleDecl.Types([t1; t2; ...], r)` block, which F# renders
+as `type X = ... and Y = ...`. Singleton SCCs (the common case) keep
+emitting as `type X = ...`. SCCs are returned in topological order of
+the condensation, so dependency direction is preserved between unrelated
+groups.
+
+The same change applies to the per-domain split path
+(`buildPerDomainModules`): within each domain group, types are now
+SCC-sorted before emission. The existing Base-promotion pass keeps
+cycles from crossing domain boundaries.
+
+**Idempotent structural overlays.** `[[structural_overlays]]` entries
+that target a field name already present on the base TL type are now
+silently skipped (`applyStructuralExtras` in `CodeModel.fs`). This lets
+old override files survive an upstream schema bump that pulled their
+extras into the base definition without producing duplicate-field
+compile errors. The redundant overlay entries can then be retired at
+the operator's leisure rather than emergency-removed during the bump.
+
+**Other:**
+
+* `extractTypeRefs` now strips ` option` and ` array` suffixes
+  iteratively so compound types like `X option array` resolve to `X`
+  (previously stopped after one strip). Dependency tracking is now
+  complete for any combination.
+* `nameOf`, `extractTypeRefs`, `depsOf` extracted as private
+  module-level helpers shared by both topo paths.
+
+77/77 generator tests still pass.
+
 ## 0.2.6
 
 **Hotfix.** 0.2.5's `Requests.targets` header contained `--` inside the

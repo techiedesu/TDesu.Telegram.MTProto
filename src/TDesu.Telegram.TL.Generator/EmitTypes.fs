@@ -584,62 +584,79 @@ module EmitTypes =
 
     // --- Topo sort ---
 
+    let private nameOf =
+        function
+        | Record(n, _, _) -> n
+        | Union(n, _) -> n
+
+    let private extractTypeRefs (fsharpType: string) =
+        let mutable s = fsharpType
+
+        // Strip ` option` / ` array` suffixes — may stack (`X option array`,
+        // `X array option`) so apply both repeatedly until stable.
+        let mutable changed = true
+
+        while changed do
+            changed <- false
+
+            if s.EndsWith(" option") then
+                s <- s[.. s.Length - 8]
+                changed <- true
+            elif s.EndsWith(" array") then
+                s <- s[.. s.Length - 7]
+                changed <- true
+
+        if
+            s = "int32"
+            || s = "int64"
+            || s = "double"
+            || s = "bool"
+            || s = "string"
+            || s = "byte[]"
+            || s = "obj"
+            || s = "unit"
+        then
+            []
+        else
+            [ s ]
+
+    let private depsOf t =
+        match t with
+        | Record(_, fields, _) -> fields |> List.collect (fun f -> extractTypeRefs f.FSharpType)
+        | Union(_, cases) ->
+            cases
+            |> List.collect (fun c -> c.Fields |> List.collect (fun f -> extractTypeRefs f.FSharpType))
+
+    /// Build the in-graph dependency map keyed by type name, with self-loops
+    /// stripped (recursive types reference themselves but that does not
+    /// affect ordering within an SCC). Edges that point outside `types`
+    /// (foreign refs to types declared elsewhere or built-ins) are dropped.
+    let private buildDepGraph (types: GeneratedType list) : Map<string, string list> =
+        let names = types |> List.map nameOf |> Set.ofList
+        types
+        |> List.map (fun t ->
+            let n = nameOf t
+            let ds =
+                depsOf t
+                |> List.filter (fun d -> d <> n && names.Contains d)
+                |> List.distinct
+            n, ds)
+        |> Map.ofList
+
+    /// Plain DFS topo sort — kept for the trivial cases where no cycles are
+    /// present. For schemas with mutually recursive types, prefer
+    /// `topoSortSCCs` which groups cycles into emit-time `and`-chains.
     let private topoSortTypes (types: GeneratedType list) : GeneratedType list =
-        let nameOf =
-            function
-            | Record(n, _, _) -> n
-            | Union(n, _) -> n
-
-        let depsOf t =
-            let extractTypeRefs (fsharpType: string) =
-                let mutable s = fsharpType
-
-                if s.EndsWith(" option") then
-                    s <- s[.. s.Length - 8]
-
-                if s.EndsWith(" array") then
-                    s <- s[.. s.Length - 7]
-
-                if
-                    s = "int32"
-                    || s = "int64"
-                    || s = "double"
-                    || s = "bool"
-                    || s = "string"
-                    || s = "byte[]"
-                    || s = "obj"
-                    || s = "unit"
-                then
-                    []
-                else
-                    [ s ]
-
-            match t with
-            | Record(_, fields, _) -> fields |> List.collect (fun f -> extractTypeRefs f.FSharpType)
-            | Union(_, cases) ->
-                cases
-                |> List.collect (fun c -> c.Fields |> List.collect (fun f -> extractTypeRefs f.FSharpType))
-
-        let typeNames = types |> List.map nameOf |> Set.ofList
-
-        let graph =
-            types
-            |> List.map (fun t -> nameOf t, depsOf t |> List.filter (fun d -> typeNames.Contains d))
-            |> Map.ofList
-
+        let graph = buildDepGraph types
         let mutable visited = Set.empty
         let mutable result = []
 
         let rec visit name =
             if not (visited.Contains name) then
                 visited <- visited.Add name
-
                 match graph.TryFind name with
-                | Some deps ->
-                    for d in deps do
-                        visit d
+                | Some deps -> for d in deps do visit d
                 | None -> ()
-
                 match types |> List.tryFind (fun t -> nameOf t = name) with
                 | Some t -> result <- t :: result
                 | None -> ()
@@ -648,6 +665,75 @@ module EmitTypes =
             visit (nameOf t)
 
         result |> List.rev
+
+    /// Tarjan's strongly-connected-component algorithm. Returns SCCs in
+    /// **reverse topological order** of the SCC condensation — i.e. an SCC
+    /// containing a node referenced from another SCC appears EARLIER in the
+    /// result list. That matches F#'s declaration order (dependencies must
+    /// be in scope before dependents).
+    ///
+    /// Within each SCC, nodes are returned in the order they were popped
+    /// from the Tarjan stack, which is stable across runs given a stable
+    /// input order.
+    ///
+    /// Singleton SCCs are emitted as one-element lists. Multi-node SCCs
+    /// represent mutually recursive types and must be emitted in F# as a
+    /// single `type A = ... and B = ... and C = ...` block.
+    let private topoSortSCCs (types: GeneratedType list) : GeneratedType list list =
+        let graph = buildDepGraph types
+        let nodeOrder = types |> List.map nameOf
+        let typesByName =
+            types |> List.map (fun t -> nameOf t, t) |> Map.ofList
+
+        let index = System.Collections.Generic.Dictionary<string, int>()
+        let lowlink = System.Collections.Generic.Dictionary<string, int>()
+        let onStack = System.Collections.Generic.HashSet<string>()
+        let stack = System.Collections.Generic.Stack<string>()
+        let mutable counter = 0
+        let sccs = System.Collections.Generic.List<string list>()
+
+        let rec strongconnect v =
+            index[v] <- counter
+            lowlink[v] <- counter
+            counter <- counter + 1
+            stack.Push v
+            onStack.Add v |> ignore
+
+            match graph.TryFind v with
+            | Some deps ->
+                for w in deps do
+                    if not (index.ContainsKey w) then
+                        strongconnect w
+                        lowlink[v] <- min lowlink[v] lowlink[w]
+                    elif onStack.Contains w then
+                        lowlink[v] <- min lowlink[v] index[w]
+            | None -> ()
+
+            if lowlink[v] = index[v] then
+                let comp = System.Collections.Generic.List<string>()
+                let mutable popped = ""
+                while popped <> v do
+                    popped <- stack.Pop()
+                    onStack.Remove popped |> ignore
+                    comp.Add popped
+                sccs.Add(List.ofSeq comp)
+
+        for n in nodeOrder do
+            if not (index.ContainsKey n) then
+                strongconnect n
+
+        // Tarjan emits SCCs in reverse topological order (sinks first), so
+        // we read them in the order they were added — that's exactly the
+        // F# declaration order we want.
+        sccs
+        |> Seq.map (fun names ->
+            // Within an SCC, preserve the original input order for stability.
+            let nameSet = Set.ofList names
+            nodeOrder
+            |> List.filter nameSet.Contains
+            |> List.choose typesByName.TryFind)
+        |> Seq.filter (fun lst -> not (List.isEmpty lst))
+        |> List.ofSeq
 
     // --- Format helpers ---
 
@@ -679,6 +765,20 @@ module EmitTypes =
     let buildFunctionCode (func: GeneratedFunction) : string =
         buildFunctionDecl func |> formatSingleDecl
 
+    /// Render a list of GeneratedType into SynModuleDecl entries grouped by
+    /// SCC. Single-element SCCs become a one-decl block (which F# renders as
+    /// `type X = ...`); multi-element SCCs become a single block of the
+    /// component's types (which F# renders as `type X = ... and Y = ...`).
+    let private renderTypeSccs (types: GeneratedType list) : SynModuleDecl list =
+        let toDecl t =
+            match t with
+            | Record(name, fields, ctorId) -> buildRecordDecl name fields ctorId
+            | Union(name, cases) -> buildUnionDecl name cases
+        topoSortSCCs types
+        |> List.map (fun scc ->
+            let decls = scc |> List.map toDecl
+            SynModuleDecl.Types(decls, r))
+
     let buildModuleWithOpens
         (ns: string)
         (_moduleName: string)
@@ -686,24 +786,16 @@ module EmitTypes =
         (types: GeneratedType list)
         (functions: GeneratedFunction list)
         : string =
-        let typeDecls =
-            topoSortTypes types
-            |> List.map (fun t ->
-                match t with
-                | Record(name, fields, ctorId) -> buildRecordDecl name fields ctorId
-                | Union(name, cases) -> buildUnionDecl name cases)
-
-        let funcDecls = functions |> List.map buildFunctionDecl
-
-        let allDecls = typeDecls @ funcDecls
+        let typeBlocks = renderTypeSccs types
+        let funcBlocks =
+            functions
+            |> List.map (fun f -> SynModuleDecl.Types([ buildFunctionDecl f ], r))
 
         let openDecls =
             ("TDesu.Serialization" :: additionalOpens)
             |> List.map mkOpenDecl
 
-        let moduleDecls =
-            openDecls
-            @ (allDecls |> List.map (fun td -> SynModuleDecl.Types([ td ], r)))
+        let moduleDecls = openDecls @ typeBlocks @ funcBlocks
 
         let nsNode = mkNamespace ns moduleDecls
         let parsed = mkParsedInput [ nsNode ]
@@ -765,11 +857,6 @@ module EmitTypes =
         (functions: GeneratedFunction list)
         : PerDomainOutput list =
 
-        let nameOf =
-            function
-            | Record(n, _, _) -> n
-            | Union(n, _) -> n
-
         let allNames =
             (types |> List.map nameOf)
             @ (functions |> List.map (fun f -> f.Name))
@@ -816,10 +903,15 @@ module EmitTypes =
                             assignment <- Map.add r' "Base" assignment
                             changed <- true
 
-        let topoTypes = topoSortTypes types
-        let typesByDomain =
-            topoTypes
+        // Within each domain, SCC-sort so mutually recursive types share an
+        // `and`-chain. Cross-domain cycles cannot be expressed in F#; the
+        // Base-promotion pass above pulls any node referenced from Base
+        // into Base, so any cycle that crosses domains ends up fully
+        // collapsed into Base.
+        let typeSccsByDomain =
+            types
             |> List.groupBy (fun t -> assignment[nameOf t])
+            |> List.map (fun (dom, ts) -> dom, topoSortSCCs ts)
             |> Map.ofList
         let funcsByDomain =
             functions
@@ -872,23 +964,26 @@ module EmitTypes =
 
         [
             for dom in ordered do
-                let domTypes = typesByDomain |> Map.tryFind dom |> Option.defaultValue []
+                let typeSccs = typeSccsByDomain |> Map.tryFind dom |> Option.defaultValue []
                 let domFuncs = funcsByDomain |> Map.tryFind dom |> Option.defaultValue []
-                if not (List.isEmpty domTypes && List.isEmpty domFuncs) then
-                    let typeDecls =
-                        domTypes
-                        |> List.map (fun t ->
-                            match t with
-                            | Record(name, fields, ctorId) -> buildRecordDecl name fields ctorId
-                            | Union(name, cases) -> buildUnionDecl name cases)
-                    let funcDecls = domFuncs |> List.map buildFunctionDecl
-                    let allDecls = typeDecls @ funcDecls
+                if not (List.isEmpty typeSccs && List.isEmpty domFuncs) then
+                    let typeBlocks =
+                        typeSccs
+                        |> List.map (fun scc ->
+                            let decls =
+                                scc
+                                |> List.map (fun t ->
+                                    match t with
+                                    | Record(name, fields, ctorId) -> buildRecordDecl name fields ctorId
+                                    | Union(name, cases) -> buildUnionDecl name cases)
+                            SynModuleDecl.Types(decls, r))
+                    let funcBlocks =
+                        domFuncs
+                        |> List.map (fun f -> SynModuleDecl.Types([ buildFunctionDecl f ], r))
                     let openDecls =
                         ("TDesu.Serialization" :: additionalOpens)
                         |> List.map mkOpenDecl
-                    let moduleDecls =
-                        openDecls
-                        @ (allDecls |> List.map (fun td -> SynModuleDecl.Types([ td ], r)))
+                    let moduleDecls = openDecls @ typeBlocks @ funcBlocks
                     let nsNode = mkNamespace ns moduleDecls
                     let parsed = mkParsedInput [ nsNode ]
                     let formatted = runFormat parsed

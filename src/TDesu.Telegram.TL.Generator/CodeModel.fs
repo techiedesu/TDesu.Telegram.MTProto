@@ -119,6 +119,13 @@ module FieldHelpers =
     /// so the writer wraps their writes in `if layer > maxOld then ...`.
     /// Unknown `After` anchors are logged and skipped (schema drift signal).
     ///
+    /// **Idempotent**: if a field with the extra's name already exists on the
+    /// type (because the upstream schema bump pulled the field into the base
+    /// definition), the overlay is skipped — the existing field stays. This
+    /// lets old `[[structural_overlays]]` entries survive a schema upgrade
+    /// without producing duplicate-field compile errors. Operators can then
+    /// retire the now-redundant overlays at their leisure.
+    ///
     /// TOML `after` values are snake_case (matching the TL wire name); GeneratedField.Name
     /// is camelCase (matching F# convention). Convert the lookup keys so the
     /// two meet.
@@ -132,16 +139,23 @@ module FieldHelpers =
             |> List.groupBy (fun (a, _, _) -> Naming.camelCase a)
             |> Map.ofList
 
+        let existingFieldNames =
+            fields |> List.map (fun f -> f.Name) |> Set.ofList
+
         let buildExtra (_, name, tlType) : GeneratedField option =
-            tlScalarToFSharp tlType
-            |> Option.map (fun fsharp ->
-                { Name = Naming.camelCase name
-                  RecordName = Naming.pascalCase name
-                  FSharpType = fsharp
-                  IsOptional = false
-                  FlagField = None
-                  FlagBit = None
-                  LayerGate = Some maxOldLayer })
+            // Idempotency guard — see docstring.
+            if existingFieldNames.Contains(Naming.camelCase name) then
+                None
+            else
+                tlScalarToFSharp tlType
+                |> Option.map (fun fsharp ->
+                    { Name = Naming.camelCase name
+                      RecordName = Naming.pascalCase name
+                      FSharpType = fsharp
+                      IsOptional = false
+                      FlagField = None
+                      FlagBit = None
+                      LayerGate = Some maxOldLayer })
 
         [
             for f in fields do
@@ -151,7 +165,7 @@ module FieldHelpers =
                     for e in es do
                         match buildExtra e with
                         | Some g -> yield g
-                        | None -> () // unsupported type — caller must hotfix
+                        | None -> () // unsupported type OR field already present
                 | None -> ()
         ]
 
