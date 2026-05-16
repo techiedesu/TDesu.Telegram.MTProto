@@ -78,8 +78,15 @@ module EmitTypes =
     let private flagFieldNames = FieldHelpers.flagFieldNames
     let private isRawFlagField = FieldHelpers.isRawFlagField
 
-    /// Build flags computation: mutable var, set bits, write
-    let private flagsComputationExprs (flagField: string) (fields: GeneratedField list) : SynExpr list =
+    /// Build flags computation: mutable var, set bits, write.
+    /// `fieldAccess` produces the expression that reads field `f` — for
+    /// records this is `value.X`, for union cases this is the locally-bound
+    /// destructured `f.Name`.
+    let private flagsComputationExprsWith
+        (fieldAccess: GeneratedField -> SynExpr)
+        (flagField: string)
+        (fields: GeneratedField list)
+        : SynExpr list =
         let setBitExprs =
             fields
             |> List.choose (fun f ->
@@ -87,9 +94,9 @@ module EmitTypes =
                 | Some ff, Some bit when ff = flagField ->
                     let condition =
                         if f.IsOptional then
-                            mkDotGet (mkDotGet value f.RecordName) "IsSome"
+                            mkDotGet (fieldAccess f) "IsSome"
                         else
-                            mkDotGet value f.RecordName
+                            fieldAccess f
 
                     let setBit =
                         mkSet
@@ -104,6 +111,10 @@ module EmitTypes =
 
         let writeFlags = mkApp (mkDotGet writer "WriteInt32") (mkParen (mkIdent flagField))
         setBitExprs @ [ writeFlags ]
+
+    /// Record-style flags computation (reads from `value.X`).
+    let private flagsComputationExprs (flagField: string) (fields: GeneratedField list) : SynExpr list =
+        flagsComputationExprsWith (fun f -> mkDotGet value f.RecordName) flagField fields
 
     /// Build a single field's serialize expression
     let private serializeFieldExpr (f: GeneratedField) : SynExpr option =
@@ -280,10 +291,15 @@ module EmitTypes =
         let clauses =
             cases
             |> List.map (fun c ->
+                // All fields including raw `flags:#` slots — we need them
+                // to detect flag fields, but they aren't carried in the F#
+                // union case payload (only optional/flag-optional fields are).
+                let allFields = c.Fields
+                let caseFlagFields = flagFieldNames allFields
+
                 let caseFields =
-                    c.Fields
-                    |> List.filter (fun f ->
-                        not (isRawFlagField (flagFieldNames c.Fields) f))
+                    allFields
+                    |> List.filter (fun f -> not (isRawFlagField caseFlagFields f))
 
                 let pat =
                     if caseFields.IsEmpty then
@@ -294,11 +310,42 @@ module EmitTypes =
                 let writeCtorId =
                     mkApp (mkDotGet writer "WriteConstructorId") (mkParen (mkUInt32 c.ConstructorId))
 
+                // Flag computation + write — per flag field, emit:
+                //   let mutable <flagField> = 0
+                //   if <field>.IsSome then <flagField> <- <flagField> ||| (1 <<< bit)
+                //   ...
+                //   writer.WriteInt32(<flagField>)
+                // For union cases the field access is the locally-destructured
+                // identifier, not `value.X`. Without this, Serialize emits
+                // bytes that our own Deserialize then misaligns on.
+                let unionFieldAccess (f: GeneratedField) : SynExpr = mkIdent f.Name
+
+                let flagExprs =
+                    caseFlagFields
+                    |> List.collect (fun ff ->
+                        flagsComputationExprsWith unionFieldAccess ff allFields)
+
+                // Field writes — Option fields emit a `match ... with Some v -> write v | None -> ()`
+                // pattern via serializeExprFor (which dispatches on the F#
+                // type signature including `option`). Flag-bound bool fields
+                // (presence-only flags like `noWebpage: bool`) contribute to
+                // the flags int32 only — no separate wire write.
                 let fieldWrites =
                     caseFields
-                    |> List.map (fun f -> serializeExprFor f.FSharpType (mkIdent f.Name))
+                    |> List.choose (fun f ->
+                        match f.FlagField, f.FlagBit with
+                        | Some _, Some _ when not f.IsOptional -> None
+                        | _ -> Some(serializeExprFor f.FSharpType (mkIdent f.Name)))
 
-                let body = mkSeq (writeCtorId :: fieldWrites)
+                let bodyParts = [ writeCtorId ] @ flagExprs @ fieldWrites
+                let innerSeq = mkSeq bodyParts
+
+                // Wrap in `let mutable <flagField> = 0` per flag field, in
+                // reverse so the resulting expression has them outermost.
+                let body =
+                    (innerSeq, caseFlagFields |> List.rev)
+                    ||> List.fold (fun acc ff -> mkLetMutable ff (mkInt32 0) acc)
+
                 mkMatchClause pat body)
 
         let body = mkMatch value clauses

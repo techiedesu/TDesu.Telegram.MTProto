@@ -1,5 +1,39 @@
 # Release notes
 
+## 0.2.9
+
+**Bugfix: union-case `Serialize` now emits the `flags:#` int32.**
+For union cases whose schema declares a `flags:#` integer with flag-bound
+optional or presence-bool fields (e.g. `inputBotInlineResult#88bf9319
+flags:# id:string type:string title:flags.1?string …`), the previous
+emitter went straight from `WriteConstructorId` to writing the first
+non-flag field. `Deserialize` on the other side dutifully called
+`ReadInt32()` for the flags slot, so round-trip through our own
+serializer was misaligned by 4–N bytes and the next struct CID came
+out as garbage (e.g. `0x6E656D75` — bytes of the *next* string instead
+of a real CID).
+
+Discovered while writing tests for the localgram inline-bot
+`messages.setInlineBotResults` handler: passing typed `InputBotInlineResult`
+values through `MessagesSetInlineBotResults.Serialize` produced bytes
+that the handler's own typed `Deserialize` couldn't parse with
+`Unknown constructor id for InputBotInlineMessage: 0x6E656D75`. Real
+clients (Telethon, tdesktop) emit the flags correctly, so the
+production parsing path was always fine — only own-Serialize → own-
+Deserialize round-trips broke.
+
+Fix: `mkUnionSerializeMember` in `EmitTypes.fs` now wraps each match
+clause in `let mutable <flagField> = 0`, emits the `if ... then flags
+<- flags ||| (1 <<< bit)` chain for flag-bound fields (optional →
+`field.IsSome`; presence-bool → the field itself), then `writer.WriteInt32(flags)`
+before the per-field writes. Presence-bool fields are dropped from the
+per-field write list — they contribute to the flags int32 only.
+
+`flagsComputationExprs` refactored into a `flagsComputationExprsWith`
+helper parameterized on field-access (records keep `value.X`; unions
+pass the locally destructured `f.Name`). 77/77 generator tests still
+pass.
+
 ## 0.2.8
 
 **Bugfix: SCC types now actually emit as `and`-chains.** 0.2.7 grouped
