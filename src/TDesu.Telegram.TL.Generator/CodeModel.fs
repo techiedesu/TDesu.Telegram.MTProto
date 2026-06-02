@@ -157,15 +157,34 @@ module FieldHelpers =
                       FlagBit = None
                       LayerGate = Some maxOldLayer })
 
+        // Fields the overlay declares that ALREADY exist in the base schema
+        // (the primary schema advanced past `max_old_layer` and pulled the
+        // field into the base definition). The field stays at its base
+        // position, but it must still be gated: a layer ≤ max_old_layer caller
+        // uses the OLD constructor CID whose wire shape lacks this field, so
+        // writing it unconditionally desyncs that reader. We therefore stamp
+        // `LayerGate = Some max_old_layer` onto the existing field so the
+        // writer wraps it in `if layer > max_old_layer`.
+        let gateExistingNames =
+            extras
+            |> List.choose (fun (_, name, _) ->
+                let camel = Naming.camelCase name
+                if existingFieldNames.Contains(camel) then Some camel else None)
+            |> Set.ofList
+
         [
             for f in fields do
-                yield f
+                if gateExistingNames.Contains(f.Name) && f.LayerGate.IsNone then
+                    yield { f with LayerGate = Some maxOldLayer }
+                else
+                    yield f
+
                 match Map.tryFind f.Name byAfter with
                 | Some es ->
                     for e in es do
                         match buildExtra e with
                         | Some g -> yield g
-                        | None -> () // unsupported type OR field already present
+                        | None -> () // unsupported type OR field already present (gated above)
                 | None -> ()
         ]
 

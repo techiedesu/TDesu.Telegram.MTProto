@@ -114,3 +114,67 @@ module WriterGeneratorTests =
         mustContain "w.WriteInt32(p.UnreadPollVotesCount)" "extra-field write under the gate"
         // CID dispatch via GeneratedLayerCid.
         mustContain "GeneratedLayerCid.dialog layer" "layer-variant CID dispatch"
+
+    /// Regression: when the primary schema advances PAST `max_old_layer` and
+    /// pulls the overlay field into the base combinator (e.g. layer-225
+    /// `dialog#fc89f7f3` already has `unread_poll_votes_count`), the overlay
+    /// must still GATE the existing field — not silently no-op. Otherwise a
+    /// layer ≤216 caller gets the old CID (`d58a08c6`, no poll-votes field)
+    /// but the new struct bytes, desyncing its reader (observed live as
+    /// TypeNotFoundError CID 0x00000000 on messages.getDialogs).
+    [<Test>]
+    let ``structural overlay gates a field already present in the base schema`` () =
+        // Base schema is the NEW layout: poll_votes already in the combinator.
+        let inlineSchema =
+            "boolFalse#bc799737 = Bool;\n\
+             boolTrue#997275b5 = Bool;\n\
+             dialog#fc89f7f3 unread_reactions_count:int unread_poll_votes_count:int = Dialog;\n"
+        let parsed =
+            match AstFactory.parse inlineSchema with
+            | Ok s -> s
+            | Error e -> failwith e
+        let overlay = {
+            Name = "Dialog"
+            MaxOldLayer = 216
+            ExtraFields = [
+                { After = "unread_reactions_count"
+                  Name = "unread_poll_votes_count"
+                  Type = "int" }
+            ]
+        }
+        let layerVariant = {
+            Name = "Dialog"
+            Variants = [ Some 216, 0xd58a08c6u; None, 0xfc89f7f3u ]
+        }
+        let whitelist = set [ "dialog"; "boolFalse"; "boolTrue" ]
+        let actual =
+            EmitWriters.generateWriterModule
+                "TDesu.Serialization"
+                parsed
+                whitelist
+                (set [ "dialog" ])
+                [ layerVariant ]
+                [ overlay ]
+                Set.empty
+
+        let mustContain (needle: string) (label: string) =
+            if not (actual.Contains needle) then
+                Assert.Fail($"expected generated output to contain %s{label}:\n%s{needle}\n---\n%s{actual}")
+        // The field is present exactly once (no duplicate from the overlay).
+        let occurrences (s: string) (sub: string) =
+            let mutable i = 0
+            let mutable c = 0
+            let mutable go = true
+            while go do
+                let j = s.IndexOf(sub, i, System.StringComparison.Ordinal)
+                if j < 0 then go <- false
+                else
+                    c <- c + 1
+                    i <- j + sub.Length
+            c
+        mustContain "UnreadPollVotesCount: int32" "single UnreadPollVotesCount field"
+        if occurrences actual "UnreadPollVotesCount: int32" <> 1 then
+            Assert.Fail("field must not be duplicated by the overlay:\n" + actual)
+        // The existing base field is now gated for ≤216 callers.
+        mustContain "if layer > 216 then" "layer-gate conditional on the base field"
+        mustContain "w.WriteInt32(p.UnreadPollVotesCount)" "gated write of the base field"

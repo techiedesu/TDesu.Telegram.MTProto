@@ -1,5 +1,25 @@
 # Release notes
 
+## 0.2.10
+
+**Bugfix: structural overlays now gate a field already present in the base
+schema.** When the primary schema advances past a `[[structural_overlays]]`
+entry's `max_old_layer` and pulls the overlay field into the base combinator
+(e.g. layer-225 `dialog#fc89f7f3` already carries `unread_poll_votes_count`),
+the idempotency guard skipped the overlay entirely — so the field lost its
+`LayerGate` and was written unconditionally. A caller at `layer <= max_old_layer`
+gets the OLD constructor CID via `[[layer_variants]]` (e.g. `dialog#d58a08c6`,
+whose wire shape has no `unread_poll_votes_count`) but the NEW struct bytes,
+desyncing the reader. Observed live as a Telethon (layer 216)
+`TypeNotFoundError` reading CID `0x00000000` on `messages.getDialogs`.
+
+`applyStructuralExtras` now stamps `LayerGate = Some max_old_layer` onto the
+pre-existing base field instead of no-op'ing, so the writer wraps it in
+`if layer > max_old_layer then …` at the correct wire position. Callers
+> `max_old_layer` are byte-identical; callers ≤ it no longer get the phantom
+field. Regression test: `WriterGeneratorTests.structural overlay gates a
+field already present in the base schema`.
+
 ## 0.2.9
 
 **Bugfix: union-case `Serialize` now emits the `flags:#` int32.**
