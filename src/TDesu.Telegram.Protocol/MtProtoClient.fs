@@ -121,22 +121,32 @@ type MtProtoClient(dc: DataCenter, ?logger: ILogger) =
                     | Error e ->
                         log.LogWarning("Reconnect attempt {Attempt} failed: {Error}", attempt + 1, e)
                     | Ok () ->
-                        match! AuthKeyExchange.performExchange transport ct with
-                        | Error e ->
-                            log.LogWarning("Auth key exchange failed on reconnect: {Error}", attempt + 1, e)
-                        | Ok (key, salt, timeOffset) ->
-                            authKey <- Some key
-                            let sess = Session.createSession ()
-                            sess.Salt <- salt
-                            sess.TimeOffset <- timeOffset
-                            session <- Some sess
-                            // Restart receive loop
+                        match authKey with
+                        | Some _ ->
+                            // The auth key is permanent per DC — reuse it on reconnect instead of
+                            // re-running DH, so a restored/persisted session keeps working.
                             let cts = new CancellationTokenSource()
                             receiveLoopCts <- Some cts
                             %Tasks.Task.Run(Func<Tasks.Task>(fun () -> receiveLoop cts.Token))
                             reconnected <- true
-                            log.LogInformation("Reconnected successfully")
+                            log.LogInformation("Reconnected (reused auth key)")
                             reconnectedEvent.Trigger()
+                        | None ->
+                            match! AuthKeyExchange.performExchange transport ct with
+                            | Error e ->
+                                log.LogWarning("Auth key exchange failed on reconnect: {Error}", attempt + 1, e)
+                            | Ok (key, salt, timeOffset) ->
+                                authKey <- Some key
+                                let sess = Session.createSession ()
+                                sess.Salt <- salt
+                                sess.TimeOffset <- timeOffset
+                                session <- Some sess
+                                let cts = new CancellationTokenSource()
+                                receiveLoopCts <- Some cts
+                                %Tasks.Task.Run(Func<Tasks.Task>(fun () -> receiveLoop cts.Token))
+                                reconnected <- true
+                                log.LogInformation("Reconnected successfully")
+                                reconnectedEvent.Trigger()
                 with
                 | :? OperationCanceledException -> ()
                 | ex -> log.LogWarning(ex, "Reconnect attempt {Attempt} error", attempt + 1)
@@ -145,6 +155,18 @@ type MtProtoClient(dc: DataCenter, ?logger: ILogger) =
         if not reconnected then
             log.LogError("All reconnect attempts failed")
     }
+
+    /// Set the auth key + a fresh session (carrying the given salt/time offset) and start the
+    /// receive loop. Shared by the fresh-DH connect path and the persisted-session restore path.
+    let startSession (key: AuthKey) (salt: int64) (timeOffset: int32) =
+        authKey <- Some key
+        let sess = Session.createSession ()
+        sess.Salt <- salt
+        sess.TimeOffset <- timeOffset
+        session <- Some sess
+        let cts = new CancellationTokenSource()
+        receiveLoopCts <- Some cts
+        %Task.Run(Func<Task>(fun () -> receiveLoop cts.Token))
 
     /// Connect to the DC and perform auth key exchange
     member _.ConnectAsync(ct: CancellationToken) : Task<Result<unit, MtProtoError>> = task {
@@ -158,21 +180,30 @@ type MtProtoClient(dc: DataCenter, ?logger: ILogger) =
         | Error e -> return Error e
         | Ok (key, salt, timeOffset) ->
 
-        authKey <- Some key
-        let sess = Session.createSession ()
-        sess.Salt <- salt
-        sess.TimeOffset <- timeOffset
-        session <- Some sess
-
+        startSession key salt timeOffset
         log.LogInformation("Auth key established, session created")
-
-        // Start receive loop
-        let cts = new CancellationTokenSource()
-        receiveLoopCts <- Some cts
-        %Task.Run(Func<Task>(fun () -> receiveLoop cts.Token))
-
         return Ok ()
     }
+
+    /// Connect to the DC reusing a previously established auth key (skips the DH exchange).
+    /// Use after restoring a persisted session so you don't have to re-login.
+    member _.ConnectWithAuthKeyAsync(key: AuthKey, salt: int64, timeOffset: int32, ct: CancellationToken) : Task<Result<unit, MtProtoError>> = task {
+        log.LogInformation("Connecting to DC{DcId} at {Address}:{Port} with persisted auth key", dc.Id, dc.Address, dc.Port)
+        match! transport.ConnectAsync(ct) with
+        | Error e -> return Error (MtProtoError.TransportError e)
+        | Ok () ->
+
+        startSession key salt timeOffset
+        log.LogInformation("Connected with persisted auth key (no DH)")
+        return Ok ()
+    }
+
+    /// Export the established auth key + server salt + time offset for persistence.
+    /// Returns None if not connected/authorized yet.
+    member _.ExportSession() : (AuthKey * int64 * int32) option =
+        match authKey, session with
+        | Some key, Some sess -> Some(key, sess.Salt, sess.TimeOffset)
+        | _ -> None
 
     /// Send an RPC request and await the response
     member _.RpcAsync(requestBody: byte[], ct: CancellationToken) = task {

@@ -13,6 +13,7 @@
 
     <ItemGroup>
         <Compile Include="Types.fs" />
+        <Compile Include="Persistence.fs" />
         <Compile Include="UnencryptedMessage.fs" />
         <Compile Include="MessageFraming.fs" />
         <Compile Include="Session.fs" />
