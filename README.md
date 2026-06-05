@@ -141,10 +141,6 @@ dotnet build
 dotnet test
 ```
 
-## Acknowledgments
-
-Built with assistance from [Claude](https://claude.ai) (Anthropic).
-
 ## License
 
 [Unlicense](LICENSE)
