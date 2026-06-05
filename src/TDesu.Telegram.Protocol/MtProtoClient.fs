@@ -39,6 +39,21 @@ type MtProtoClient(dc: DataCenter, ?logger: ILogger) =
         if not (dispatcher.CompleteRequest(reqMsgId, resultData)) then
             log.LogWarning("No pending request for msg_id {MsgId}", reqMsgId)
 
+    /// Re-send a still-pending request under a fresh msg_id (e.g. after bad_server_salt corrected
+    /// the salt). The response to the re-send completes the original caller's task via Rekey.
+    let resendRequest (oldMsgId: int64) = task {
+        match dispatcher.TryGetBody(oldMsgId), authKey, session with
+        | Some body, Some key, Some sess ->
+            let newMsgId = Session.generateMsgId sess
+            let seqNo = Session.nextSeqNo sess true
+            if dispatcher.Rekey(oldMsgId, newMsgId) then
+                let encrypted = MessageFraming.encrypt key sess newMsgId seqNo body
+                match! transport.SendAsync(encrypted, CancellationToken.None) with
+                | Ok() -> ()
+                | Error e -> %dispatcher.FailRequest(newMsgId, MtProtoError.TransportError e)
+        | _ -> ()
+    }
+
     let processInnerMessage (body: byte[]) (msgId: int64) =
         if body.Length >= 4 then
             use reader = new TlReadBuffer(body)
@@ -65,6 +80,29 @@ type MtProtoClient(dc: DataCenter, ?logger: ILogger) =
                             // Server push update inside container
                             log.LogDebug("Container update 0x{Constructor:x8}, msg_id={MsgId}", innerConstructor, innerMsgId)
                             updateEvent.Trigger(innerBody)
+            elif constructor = 0xedab447bu then
+                // bad_server_salt: bad_msg_id:long bad_msg_seqno:int error_code:int new_server_salt:long
+                let badMsgId = reader.ReadInt64()
+                %reader.ReadInt32()
+                %reader.ReadInt32()
+                let newSalt = reader.ReadInt64()
+                session |> Option.iter (fun s -> s.Salt <- newSalt)
+                log.LogWarning("bad_server_salt for msg_id {MsgId}; updated salt and re-sending", badMsgId)
+                %Task.Run(Func<Task>(fun () -> resendRequest badMsgId))
+            elif constructor = 0x9ec20908u then
+                // new_session_created: first_msg_id:long unique_id:long server_salt:long
+                %reader.ReadInt64()
+                %reader.ReadInt64()
+                let newSalt = reader.ReadInt64()
+                session |> Option.iter (fun s -> s.Salt <- newSalt)
+                log.LogInformation("new_session_created; server salt updated")
+            elif constructor = 0xa7eff811u then
+                // bad_msg_notification: bad_msg_id:long bad_msg_seqno:int error_code:int
+                let badMsgId = reader.ReadInt64()
+                %reader.ReadInt32()
+                let errCode = reader.ReadInt32()
+                log.LogWarning("bad_msg_notification {ErrCode} for msg_id {MsgId}", errCode, badMsgId)
+                %dispatcher.FailRequest(badMsgId, MtProtoError.InvalidResponse $"bad_msg_notification {errCode}")
             else
                 // Server push update (not RPC result, not container)
                 log.LogDebug("Push update 0x{Constructor:x8}, msg_id={MsgId}", constructor, msgId)
@@ -214,7 +252,7 @@ type MtProtoClient(dc: DataCenter, ?logger: ILogger) =
         let seqNo = Session.nextSeqNo sess true
 
         let encrypted = MessageFraming.encrypt key sess msgId seqNo requestBody
-        let responseTask = dispatcher.RegisterRequest(msgId)
+        let responseTask = dispatcher.RegisterRequest(msgId, requestBody)
 
         match! transport.SendAsync(encrypted, ct) with
         | Error e -> return Error (MtProtoError.TransportError e)

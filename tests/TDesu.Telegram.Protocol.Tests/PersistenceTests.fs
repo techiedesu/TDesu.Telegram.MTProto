@@ -56,3 +56,40 @@ module PersistenceTests =
             Assert.That(store.Load() |> Option.isNone, Is.True)
         finally
             if File.Exists path then File.Delete path
+
+    [<Test>]
+    let ``dispatcher rekey reroutes completion to the original task`` () =
+        let d = RpcDispatcher()
+        let body = [| 1uy; 2uy; 3uy |]
+        let pendingTask = d.RegisterRequest(100L, body)
+
+        match d.TryGetBody 100L with
+        | Some b -> CollectionAssert.AreEqual(body, b)
+        | None -> Assert.Fail("registered body should be retrievable")
+
+        Assert.That(d.Rekey(100L, 200L), Is.True)
+        Assert.That(d.TryGetBody 100L |> Option.isNone, Is.True)
+        // a response under the *new* msg_id must still complete the caller's original task
+        Assert.That(d.CompleteRequest(200L, [| 9uy |]), Is.True)
+        CollectionAssert.AreEqual([| 9uy |], pendingTask.Result)
+
+    [<Test>]
+    let ``directory store keeps one blob per key and lists them`` () =
+        let dir = Path.Combine(Path.GetTempPath(), $"dss-{Path.GetRandomFileName()}")
+        let store = DirectorySessionStore(dir)
+
+        try
+            Assert.That(store.Keys(), Is.Empty)
+            (store.For "111").Save(PersistedSession.serialize { sample with UserId = 111L })
+            (store.For "222").Save(PersistedSession.serialize { sample with UserId = 222L })
+            CollectionAssert.AreEqual([ "111"; "222" ], store.Keys() |> List.sort)
+
+            match (store.For "111").Load() |> Option.bind PersistedSession.tryDeserialize with
+            | Some s -> Assert.That(s.UserId, Is.EqualTo 111L)
+            | None -> Assert.Fail("saved session should load back")
+
+            store.Remove "111"
+            CollectionAssert.AreEqual([ "222" ], store.Keys())
+        finally
+            if Directory.Exists dir then
+                Directory.Delete(dir, true)

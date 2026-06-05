@@ -89,3 +89,28 @@ type FileSessionStore(path: string) =
         member _.Clear() =
             if File.Exists path then
                 File.Delete path
+
+/// Keeps one session blob per key (account) under `<dir>/<key>.session`. Use for multi-account
+/// setups: `store.For key` hands back a single-session store, and `store.Keys()` enumerates the
+/// accounts already saved (so an app can restore every logged-in account on startup).
+type DirectorySessionStore(dir: string) =
+    let ext = ".session"
+    let pathFor (key: string) = Path.Combine(dir, key + ext)
+
+    /// A single-session store bound to the given account key.
+    member _.For(key: string) : ISessionStore = FileSessionStore(pathFor key) :> ISessionStore
+
+    /// Keys of all currently saved sessions.
+    member _.Keys() : string list =
+        if Directory.Exists dir then
+            Directory.GetFiles(dir, "*" + ext)
+            |> Seq.map Path.GetFileNameWithoutExtension
+            |> List.ofSeq
+        else
+            []
+
+    member _.Remove(key: string) =
+        let p = pathFor key
+
+        if File.Exists p then
+            File.Delete p
