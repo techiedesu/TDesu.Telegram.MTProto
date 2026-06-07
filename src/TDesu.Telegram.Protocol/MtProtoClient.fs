@@ -1,6 +1,8 @@
 ﻿namespace TDesu.MTProto
 
 open System
+open System.IO
+open System.IO.Compression
 open System.Threading
 open System.Threading.Tasks
 open Microsoft.Extensions.Logging
@@ -34,8 +36,23 @@ type MtProtoClient(dc: DataCenter, ?logger: ILogger) =
         | Some k -> k
         | None -> failwith "Auth key not established"
 
+    /// Telegram wraps large results in gzip_packed#3072cfa1 packed_data:bytes — a gzip
+    /// stream carrying the real TL object. Unwrap it so callers see the plain object.
+    let ungzip (data: byte[]) : byte[] =
+        if data.Length >= 4 && BitConverter.ToUInt32(data, 0) = 0x3072cfa1u then
+            use reader = new TlReadBuffer(data)
+            %reader.ReadConstructorId()
+            let packed = reader.ReadBytes()
+            use input = new MemoryStream(packed)
+            use gz = new GZipStream(input, CompressionMode.Decompress)
+            use output = new MemoryStream()
+            gz.CopyTo(output)
+            output.ToArray()
+        else
+            data
+
     let processRpcResult (body: byte[]) (offset: int) (reqMsgId: int64) =
-        let resultData = body[offset..]
+        let resultData = ungzip body[offset..]
         if not (dispatcher.CompleteRequest(reqMsgId, resultData)) then
             log.LogWarning("No pending request for msg_id {MsgId}", reqMsgId)
 
@@ -54,11 +71,14 @@ type MtProtoClient(dc: DataCenter, ?logger: ILogger) =
         | _ -> ()
     }
 
-    let processInnerMessage (body: byte[]) (msgId: int64) =
+    let rec processInnerMessage (body: byte[]) (msgId: int64) =
         if body.Length >= 4 then
             use reader = new TlReadBuffer(body)
             let constructor = reader.ReadConstructorId()
-            if constructor = 0xf35c6d01u then
+            if constructor = 0x3072cfa1u then
+                // gzip_packed wrapping the whole message — decompress and re-dispatch.
+                processInnerMessage (ungzip body) msgId
+            elif constructor = 0xf35c6d01u then
                 // rpc_result: req_msg_id + result
                 let reqMsgId = reader.ReadInt64()
                 processRpcResult body 12 reqMsgId
