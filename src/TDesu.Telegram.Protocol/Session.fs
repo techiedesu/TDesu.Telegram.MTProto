@@ -13,16 +13,18 @@ module Session =
         BitConverter.ToInt64(buf, 0)
 
     /// Generate a monotonically increasing message ID.
-    /// msg_id must be divisible by 4 and roughly equal to unixtime * 2^32.
-    /// Lowest 2 bits encode direction: client→server uses 0b01 or 0b11.
+    /// Per MTProto, a client→server msg_id is approximately unixtime · 2^32 and MUST be
+    /// divisible by 4 (low two bits = 00); the server rejects anything else with
+    /// bad_msg_notification code 18. The high 32 bits hold the unix time, the low 32 the
+    /// sub-second fraction.
     let generateMsgId (session: SessionState) : int64 =
         let now = DateTimeOffset.UtcNow
         let unixTime = now.ToUnixTimeSeconds() + int64 session.TimeOffset
-        let fractional = int64 now.Millisecond * 0x100000000L / 1000L
-        let raw = (unixTime <<< 32) ||| (fractional &&& 0xFFFFFFFC00000000L)
-        // Ensure divisible by 4 and set client bit
-        let aligned = (raw &&& ~~~3L) ||| 1L
-        // Ensure monotonically increasing
+        let fractional = int64 now.Millisecond * 0x100000000L / 1000L // < 2^32
+        let raw = (unixTime <<< 32) ||| fractional
+        // Clear the low two bits → divisible by 4.
+        let aligned = raw &&& ~~~3L
+        // Ensure strictly monotonically increasing while preserving divisibility by 4.
         let newMsgId =
             if aligned <= session.LastMsgId then session.LastMsgId + 4L
             else aligned

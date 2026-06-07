@@ -74,6 +74,16 @@ module PersistenceTests =
         CollectionAssert.AreEqual([| 9uy |], pendingTask.Result)
 
     [<Test>]
+    let ``generateMsgId yields divisible-by-4, strictly increasing ids`` () =
+        // Regression: msg_id must be ≡ 0 (mod 4) for client→server messages, else the
+        // server rejects with bad_msg_notification 18. A prior version OR-ed in 1.
+        let sess = Session.createSession ()
+        let ids = [ for _ in 1..1000 -> Session.generateMsgId sess ]
+        Assert.That(ids |> List.forall (fun id -> id % 4L = 0L), Is.True)
+        let increasing = List.pairwise ids |> List.forall (fun (a, b) -> b > a)
+        Assert.That(increasing, Is.True)
+
+    [<Test>]
     let ``directory store keeps one blob per key and lists them`` () =
         let dir = Path.Combine(Path.GetTempPath(), $"dss-{Path.GetRandomFileName()}")
         let store = DirectorySessionStore(dir)
