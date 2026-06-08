@@ -384,56 +384,56 @@ module EmitTypes =
 
                         mkApp (mkIdent c.Name) (mkParen (mkTuple args))
 
-                // Build nested let chain for field reads
+                // Build the let-chain over ALL fields in declaration order, reading each raw
+                // `flags:#` int at its own position so a field that precedes it (e.g. a leading
+                // id:long) is read first rather than after the flags.
                 let withFieldReads =
-                    (buildCaseExpr, caseFields |> List.rev)
+                    (buildCaseExpr, c.Fields |> List.rev)
                     ||> List.fold (fun acc f ->
-                        match f.FlagField, f.FlagBit with
-                        | Some ff, Some bit when f.IsOptional ->
-                            let innerType = f.FSharpType[.. f.FSharpType.Length - 8]
-                            let desCall = deserializeExprFor innerType
+                        if isRawFlagField caseFlags f then
+                            mkLet f.Name (mkApp (mkDotGet reader "ReadInt32") mkUnit) acc
+                        else
+                            match f.FlagField, f.FlagBit with
+                            | Some ff, Some bit when f.IsOptional ->
+                                let innerType = f.FSharpType[.. f.FSharpType.Length - 8]
+                                let desCall = deserializeExprFor innerType
 
-                            let condExpr =
-                                mkInfixApp
-                                    "<>"
-                                    (mkParen (
-                                        mkInfixApp
-                                            "&&&"
-                                            (mkIdent ff)
-                                            (mkParen (mkInfixApp "<<<" (mkInt32 1) (mkInt32 bit)))
-                                    ))
-                                    (mkInt32 0)
+                                let condExpr =
+                                    mkInfixApp
+                                        "<>"
+                                        (mkParen (
+                                            mkInfixApp
+                                                "&&&"
+                                                (mkIdent ff)
+                                                (mkParen (mkInfixApp "<<<" (mkInt32 1) (mkInt32 bit)))
+                                        ))
+                                        (mkInt32 0)
 
-                            let rhs =
-                                mkIf
-                                    condExpr
-                                    (mkApp (mkIdent "Some") (mkParen desCall))
-                                    (Some(mkIdent "None"))
+                                let rhs =
+                                    mkIf
+                                        condExpr
+                                        (mkApp (mkIdent "Some") (mkParen desCall))
+                                        (Some(mkIdent "None"))
 
-                            mkLet f.Name rhs acc
-                        | Some ff, Some bit ->
-                            let condExpr =
-                                mkInfixApp
-                                    "<>"
-                                    (mkParen (
-                                        mkInfixApp
-                                            "&&&"
-                                            (mkIdent ff)
-                                            (mkParen (mkInfixApp "<<<" (mkInt32 1) (mkInt32 bit)))
-                                    ))
-                                    (mkInt32 0)
+                                mkLet f.Name rhs acc
+                            | Some ff, Some bit ->
+                                let condExpr =
+                                    mkInfixApp
+                                        "<>"
+                                        (mkParen (
+                                            mkInfixApp
+                                                "&&&"
+                                                (mkIdent ff)
+                                                (mkParen (mkInfixApp "<<<" (mkInt32 1) (mkInt32 bit)))
+                                        ))
+                                        (mkInt32 0)
 
-                            mkLet f.Name condExpr acc
-                        | _ ->
-                            let desCall = deserializeExprFor f.FSharpType
-                            mkLet f.Name desCall acc)
+                                mkLet f.Name condExpr acc
+                            | _ ->
+                                let desCall = deserializeExprFor f.FSharpType
+                                mkLet f.Name desCall acc)
 
-                let withFlagReads =
-                    (withFieldReads, caseFlags |> List.rev)
-                    ||> List.fold (fun acc ff ->
-                        mkLet ff (mkApp (mkDotGet reader "ReadInt32") mkUnit) acc)
-
-                mkMatchClause cidPat withFlagReads)
+                mkMatchClause cidPat withFieldReads)
 
         // Add wildcard clause with failwith
         let failClause =
