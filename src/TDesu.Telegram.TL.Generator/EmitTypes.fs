@@ -171,76 +171,74 @@ module EmitTypes =
             body
 
     let private mkDeserializeRecordBody
-        (recordFields: GeneratedField list)
+        (fields: GeneratedField list)
         (flagFields: string list)
         (readCid: bool)
         =
         // LHS is record-field label (PascalCase); RHS is the local binding
-        // introduced by mkLet below (camelCase, matches f.Name).
-        let buildRecordExpr =
-            mkRecordExpr (
-                recordFields
-                |> List.map (fun f -> [ f.RecordName ], mkIdent f.Name)
-            )
-
-        // Build nested let chain from bottom up
-        let withFieldReads =
-            (buildRecordExpr, recordFields |> List.rev)
-            ||> List.fold (fun acc f ->
-                match f.FlagField, f.FlagBit with
-                | Some ff, Some bit when f.IsOptional ->
-                    let innerType = f.FSharpType[.. f.FSharpType.Length - 8]
-                    let desCall = deserializeExprFor innerType
-
-                    let condExpr =
-                        mkInfixApp
-                            "<>"
-                            (mkParen (
-                                mkInfixApp
-                                    "&&&"
-                                    (mkIdent ff)
-                                    (mkParen (mkInfixApp "<<<" (mkInt32 1) (mkInt32 bit)))
-                            ))
-                            (mkInt32 0)
-
-                    let rhs =
-                        mkIf condExpr (mkApp (mkIdent "Some") (mkParen desCall)) (Some(mkIdent "None"))
-
-                    mkLet f.Name rhs acc
-                | Some ff, Some bit ->
-                    let condExpr =
-                        mkInfixApp
-                            "<>"
-                            (mkParen (
-                                mkInfixApp
-                                    "&&&"
-                                    (mkIdent ff)
-                                    (mkParen (mkInfixApp "<<<" (mkInt32 1) (mkInt32 bit)))
-                            ))
-                            (mkInt32 0)
-
-                    mkLet f.Name condExpr acc
-                | _ ->
-                    let desCall = deserializeExprFor f.FSharpType
-                    mkLet f.Name desCall acc)
-
-        let withFlagReads =
-            (withFieldReads, flagFields |> List.rev)
-            ||> List.fold (fun acc ff ->
-                mkLet ff (mkApp (mkDotGet reader "ReadInt32") mkUnit) acc)
-
-        if readCid then
-            mkLet "_cid" (mkApp (mkDotGet reader "ReadConstructorId") mkUnit) withFlagReads
-        else
-            withFlagReads
-
-    let private mkDeserializeRecordMember (name: string) (fields: GeneratedField list) =
-        let flagFields = flagFieldNames fields
-
+        // introduced by mkLet below (camelCase, matches f.Name). Raw `flags:#`
+        // fields aren't part of the record, only of the read sequence.
         let recordFields =
             fields |> List.filter (fun f -> not (isRawFlagField flagFields f))
 
-        let body = mkDeserializeRecordBody recordFields flagFields true
+        let buildRecordExpr =
+            mkRecordExpr (recordFields |> List.map (fun f -> [ f.RecordName ], mkIdent f.Name))
+
+        // Build the nested let-chain from the bottom up, over ALL fields in
+        // declaration order. The raw `flags:#` int is read at its own position, so
+        // a plain field that PRECEDES it (e.g. `poll.id:long`) is read first instead
+        // of being shifted after the flags read.
+        let withFieldReads =
+            (buildRecordExpr, fields |> List.rev)
+            ||> List.fold (fun acc f ->
+                if isRawFlagField flagFields f then
+                    mkLet f.Name (mkApp (mkDotGet reader "ReadInt32") mkUnit) acc
+                else
+                    match f.FlagField, f.FlagBit with
+                    | Some ff, Some bit when f.IsOptional ->
+                        let innerType = f.FSharpType[.. f.FSharpType.Length - 8]
+                        let desCall = deserializeExprFor innerType
+
+                        let condExpr =
+                            mkInfixApp
+                                "<>"
+                                (mkParen (
+                                    mkInfixApp
+                                        "&&&"
+                                        (mkIdent ff)
+                                        (mkParen (mkInfixApp "<<<" (mkInt32 1) (mkInt32 bit)))
+                                ))
+                                (mkInt32 0)
+
+                        let rhs =
+                            mkIf condExpr (mkApp (mkIdent "Some") (mkParen desCall)) (Some(mkIdent "None"))
+
+                        mkLet f.Name rhs acc
+                    | Some ff, Some bit ->
+                        let condExpr =
+                            mkInfixApp
+                                "<>"
+                                (mkParen (
+                                    mkInfixApp
+                                        "&&&"
+                                        (mkIdent ff)
+                                        (mkParen (mkInfixApp "<<<" (mkInt32 1) (mkInt32 bit)))
+                                ))
+                                (mkInt32 0)
+
+                        mkLet f.Name condExpr acc
+                    | _ ->
+                        let desCall = deserializeExprFor f.FSharpType
+                        mkLet f.Name desCall acc)
+
+        if readCid then
+            mkLet "_cid" (mkApp (mkDotGet reader "ReadConstructorId") mkUnit) withFieldReads
+        else
+            withFieldReads
+
+    let private mkDeserializeRecordMember (name: string) (fields: GeneratedField list) =
+        let flagFields = flagFieldNames fields
+        let body = mkDeserializeRecordBody fields flagFields true
 
         let readerPat =
             mkPatTyped (mkPatNamed "reader") (mkSynType "TlReadBuffer")
@@ -594,7 +592,7 @@ module EmitTypes =
             if recordFields.IsEmpty && flagFields.IsEmpty then
                 mkRecordExpr [ [ "_placeholder" ], mkUnit ]
             else
-                mkDeserializeRecordBody recordFields flagFields false
+                mkDeserializeRecordBody func.Params flagFields false
 
         let deserializeFieldsMember =
             let readerPat =
