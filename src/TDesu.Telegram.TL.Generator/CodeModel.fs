@@ -242,14 +242,12 @@ module CodeModelMapping =
     /// side can't structurally parse opaque refs, so `ReadBytes` stays —
     /// callers that need to deserialize one of these types must whitelist
     /// its constructors.
-    let private opaqueTypes = set [
-        "PageBlock"; "RichText"; "Page"
-        "StoryItem"; "StoryViews"; "StoryFwdHeader"
-        "MediaArea"
-        "MessageExtendedMedia"
-        "BotApp"; "BotInlineResult"; "BotInlineMessage"
-        "SecureValueError"; "SecureValue"
-    ]
+    // Previously a set of "opaque" types mapped to raw byte[] to dodge recursion/depth.
+    // That corrupts DESERIALIZATION (an embedded boxed object has no length prefix, so the
+    // `ReadBytes` stub reads the wrong number of bytes and derails the rest of the message —
+    // e.g. webPage.cached_page:Page). We now generate real parsers for everything; the
+    // generator handles recursive unions (RichText, PageBlock) via SCC ordering.
+    let private opaqueTypes : Set<string> = Set.empty
 
     /// Internal sentinel for opaque-type-ref `byte[]` fields; the F# type
     /// emitted is still `byte[]` but the writer chooses `WriteRawBytes`
