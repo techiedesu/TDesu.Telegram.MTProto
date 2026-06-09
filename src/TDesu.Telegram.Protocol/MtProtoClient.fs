@@ -133,13 +133,27 @@ type MtProtoClient(dc: DataCenter, ?logger: ILogger) =
             while not ct.IsCancellationRequested && transport.IsConnected do
                 match! transport.ReceiveAsync(ct) with
                 | Error TransportError.ConnectionClosed ->
-                    log.LogWarning("Connection closed by server")
+                    log.LogWarning("Connection closed by server; reconnecting")
                     dispatcher.FailAll(MtProtoError.TransportError TransportError.ConnectionClosed)
                     // Auto-reconnect
                     do! reconnectInternal ct
                     return ()
+                | Error TransportError.Timeout ->
+                    // ReceiveAsync only yields Timeout when our own receive CT is cancelled
+                    // (Disconnect / reconnect tearing this loop down). The while-guard exits on the
+                    // next check — nothing to recover, and reconnecting here would fight the
+                    // teardown.
+                    ()
                 | Error e ->
-                    log.LogError("Receive error: {Error}", e)
+                    // A desynced byte stream (InvalidFrame — a garbage frame length read mid-stream)
+                    // or a broken socket (ReadError / ConnectionFailed) leaves the read position
+                    // unrecoverable: looping would just spin on garbage until every in-flight RPC
+                    // times out. Treat it like a dropped connection — fail pending requests and
+                    // reconnect (reusing the auth key), so the next call works.
+                    log.LogWarning("Receive error ({Error}); stream unrecoverable, reconnecting", e)
+                    dispatcher.FailAll(MtProtoError.TransportError e)
+                    do! reconnectInternal ct
+                    return ()
                 | Ok data ->
                     match authKey with
                     | Some key ->
