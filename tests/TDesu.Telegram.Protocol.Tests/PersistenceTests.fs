@@ -71,7 +71,10 @@ module PersistenceTests =
         Assert.That(d.TryGetBody 100L |> Option.isNone, Is.True)
         // a response under the *new* msg_id must still complete the caller's original task
         Assert.That(d.CompleteRequest(200L, [| 9uy |]), Is.True)
-        CollectionAssert.AreEqual([| 9uy |], pendingTask.Result)
+
+        match pendingTask.Result with
+        | Ok data -> CollectionAssert.AreEqual([| 9uy |], data)
+        | Error e -> Assert.Fail($"expected Ok, got %A{e}")
 
     [<Test>]
     let ``generateMsgId yields divisible-by-4, strictly increasing ids`` () =
