@@ -56,8 +56,8 @@ module WriterGeneratorTests =
         let actual = EmitWriters.generateWriterModule "TDesu.Serialization" parsed whitelist Set.empty [] [] Set.empty
         let containsAny (needles: string list) (s: string) = needles |> List.exists s.Contains
         // Field labels are emitted in PascalCase since 2026-04-17.
-        let writeRaw = [ "w.WriteRawBytes(p.Stickerset)"; "w.WriteRawBytes(p_.Stickerset)" ]
-        let writeLenPrefixed = [ "w.WriteBytes(p.Stickerset)"; "w.WriteBytes(p_.Stickerset)" ]
+        let writeRaw = [ "w_.WriteRawBytes(p.Stickerset)"; "w_.WriteRawBytes(p_.Stickerset)" ]
+        let writeLenPrefixed = [ "w_.WriteBytes(p.Stickerset)"; "w_.WriteBytes(p_.Stickerset)" ]
         if not (containsAny writeRaw actual) then
             Assert.Fail("stickerset:InputStickerSet must use WriteRawBytes (raw blob), not WriteBytes (length-prefixed). Generated:\n" + actual)
         if containsAny writeLenPrefixed actual then
@@ -108,10 +108,10 @@ module WriterGeneratorTests =
                 Assert.Fail($"expected generated output to contain %s{label}:\n%s{needle}\n---\n%s{actual}")
         mustContain "UnreadPollVotesCount: int32" "UnreadPollVotesCount field in WriteDialogParams"
         // Writer takes `layer` (driven by writer_layer_types + overlay presence).
-        mustContain "writeDialog (w: TlWriteBuffer) (layer: int)" "writeDialog signature"
+        mustContain "writeDialog (w_: TlWriteBuffer) (layer: int)" "writeDialog signature"
         // Layer-gated emission of the extra field.
         mustContain "if layer > 216 then" "layer-gate conditional"
-        mustContain "w.WriteInt32(p.UnreadPollVotesCount)" "extra-field write under the gate"
+        mustContain "w_.WriteInt32(p.UnreadPollVotesCount)" "extra-field write under the gate"
         // CID dispatch via GeneratedLayerCid.
         mustContain "GeneratedLayerCid.dialog layer" "layer-variant CID dispatch"
 
@@ -177,4 +177,4 @@ module WriterGeneratorTests =
             Assert.Fail("field must not be duplicated by the overlay:\n" + actual)
         // The existing base field is now gated for ≤216 callers.
         mustContain "if layer > 216 then" "layer-gate conditional on the base field"
-        mustContain "w.WriteInt32(p.UnreadPollVotesCount)" "gated write of the base field"
+        mustContain "w_.WriteInt32(p.UnreadPollVotesCount)" "gated write of the base field"

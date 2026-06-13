@@ -28,21 +28,21 @@ module GeneratedTlWriters =
         FirstName: string
     }
 
-    let rec writeBool (w: TlWriteBuffer) (p: WriteBool) =
+    let rec writeBool (w_: TlWriteBuffer) (p: WriteBool) =
         match p with
-        | WriteBool.BoolFalse -> w.WriteConstructorId(0xBC799737u)
-        | WriteBool.BoolTrue -> w.WriteConstructorId(0x997275B5u)
+        | WriteBool.BoolFalse -> w_.WriteConstructorId(0xBC799737u)
+        | WriteBool.BoolTrue -> w_.WriteConstructorId(0x997275B5u)
 
-    and writeInputPeer (w: TlWriteBuffer) (p: WriteInputPeer) =
+    and writeInputPeer (w_: TlWriteBuffer) (p: WriteInputPeer) =
         match p with
-        | WriteInputPeer.InputPeerEmpty -> w.WriteConstructorId(0x7F3B18EAu)
-        | WriteInputPeer.InputPeerSelf -> w.WriteConstructorId(0x7DA07EC9u)
+        | WriteInputPeer.InputPeerEmpty -> w_.WriteConstructorId(0x7F3B18EAu)
+        | WriteInputPeer.InputPeerSelf -> w_.WriteConstructorId(0x7DA07EC9u)
         | WriteInputPeer.InputPeerChat(chatId) ->
-            w.WriteConstructorId(0x35A95CB9u)
-            w.WriteInt64(chatId)
+            w_.WriteConstructorId(0x35A95CB9u)
+            w_.WriteInt64(chatId)
 
-    and writeMessage (w: TlWriteBuffer) (p: WriteMessageParams) =
-        w.WriteConstructorId(0x5A686D7Cu)
+    and writeMessage (w_: TlWriteBuffer) (p: WriteMessageParams) =
+        w_.WriteConstructorId(0x5A686D7Cu)
         let mutable flags = 0
 
         if p.Out then
@@ -51,28 +51,28 @@ module GeneratedTlWriters =
         if p.Entities.IsSome then
             flags <- flags ||| (1 <<< 0)
 
-        w.WriteInt32(flags)
-        w.WriteString(p.Text)
+        w_.WriteInt32(flags)
+        w_.WriteString(p.Text)
 
         match p.Entities with
         | Some(arr) ->
-            w.WriteConstructorId(0x1CB5C415u)
-            w.WriteInt32(arr.Length)
+            w_.WriteConstructorId(0x1CB5C415u)
+            w_.WriteInt32(arr.Length)
 
             for item in arr do
-                writeMessageEntity w item
+                writeMessageEntity w_ item
         | None -> ()
 
-    and writeMessageEntity (w: TlWriteBuffer) (p: WriteMessageEntityParams) =
-        w.WriteConstructorId(0xE4599BBDu)
-        w.WriteInt32(p.Offset)
-        w.WriteInt32(p.Length)
+    and writeMessageEntity (w_: TlWriteBuffer) (p: WriteMessageEntityParams) =
+        w_.WriteConstructorId(0xE4599BBDu)
+        w_.WriteInt32(p.Offset)
+        w_.WriteInt32(p.Length)
 
-    and writeUser (w: TlWriteBuffer) (p: WriteUserParams) =
-        w.WriteConstructorId(0x215C4438u)
-        w.WriteInt64(p.Id)
-        w.WriteInt64(p.AccessHash)
-        w.WriteString(p.FirstName)
+    and writeUser (w_: TlWriteBuffer) (p: WriteUserParams) =
+        w_.WriteConstructorId(0x215C4438u)
+        w_.WriteInt64(p.Id)
+        w_.WriteInt64(p.AccessHash)
+        w_.WriteString(p.FirstName)
 
     let defaultWriteMessageEntity = { Offset = 0; Length = 0 }: WriteMessageEntityParams
 
@@ -91,3 +91,38 @@ module GeneratedTlWriters =
             FirstName = ""
         }
         : WriteUserParams
+
+
+    // ---- Request→writer converters (auto-generated) ----
+    open TDesu.Serialization.Requests
+
+    let rec toWriteBool (x: Bool) : WriteBool =
+        match x with
+        | Bool.BoolFalse -> WriteBool.BoolFalse
+        | Bool.BoolTrue -> WriteBool.BoolTrue
+
+    and toWriteInputPeer (x: InputPeer) : WriteInputPeer =
+        match x with
+        | InputPeer.InputPeerEmpty -> WriteInputPeer.InputPeerEmpty
+        | InputPeer.InputPeerSelf -> WriteInputPeer.InputPeerSelf
+        | InputPeer.InputPeerChat(chatId) -> WriteInputPeer.InputPeerChat(chatId)
+
+    and toWriteMessage (x: Message) : WriteMessageParams =
+        {
+            Out = x.Out
+            Text = x.Text
+            Entities = (x.Entities |> Option.map (fun __v -> (__v |> Array.map (fun __v -> (toWriteMessageEntity __v)))))
+        }
+
+    and toWriteMessageEntity (x: MessageEntity) : WriteMessageEntityParams =
+        {
+            Offset = x.Offset
+            Length = x.Length
+        }
+
+    and toWriteUser (x: User) : WriteUserParams =
+        {
+            Id = x.Id
+            AccessHash = x.AccessHash
+            FirstName = x.FirstName
+        }

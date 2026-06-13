@@ -5,6 +5,7 @@ namespace Test.Namespace
 
 open TDesu.Serialization
 
+[<RequireQualifiedAccess>]
 type Bool =
     | BoolFalse
     | BoolTrue
@@ -121,6 +122,7 @@ type User = {
             FirstName = firstName
         }
 
+[<RequireQualifiedAccess>]
 type InputPeer =
     | InputPeerEmpty
     | InputPeerSelf

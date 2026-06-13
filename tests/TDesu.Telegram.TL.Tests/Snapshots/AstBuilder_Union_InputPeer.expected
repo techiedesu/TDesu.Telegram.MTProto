@@ -1,3 +1,4 @@
+[<RequireQualifiedAccess>]
 type InputPeer =
     | InputPeerEmpty
     | InputPeerSelf

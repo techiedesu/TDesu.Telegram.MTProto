@@ -5,6 +5,7 @@ namespace TDesu.Serialization.Requests
 
 open TDesu.Serialization
 
+[<RequireQualifiedAccess>]
 type InputPeer =
     | InputPeerEmpty
     | InputPeerSelf
