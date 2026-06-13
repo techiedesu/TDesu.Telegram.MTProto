@@ -50,6 +50,13 @@ Optional flags:
                               --split-by-domain is set (comma-separated, e.g.
                               "Account,Auth,Channels"; default lists all known
                               TL domains).
+  --no-whitelist              Ignore the type/writer/client-parser whitelists and
+                              emit the FULL schema for whichever of the
+                              `types`/`writers`/`tests`/`client-parsers` targets
+                              run in this invocation. CIDs are unchanged (derived
+                              from the TL), so wire compatibility is preserved;
+                              `stub_types`, aliases, layer-variants and
+                              structural-overlays from the overrides still apply.
 
 Sample overrides config: samples/SedBotOverrides/sedbot-overrides.toml
 """
@@ -106,6 +113,7 @@ Sample overrides config: samples/SedBotOverrides/sedbot-overrides.toml
         let clientNs = argv |> tryGetArg "--client-namespace"
         let splitByDomain = argv |> Array.exists (fun s -> s = "--split-by-domain")
         let domainsOverride = argv |> tryGetArg "--split-domains"
+        let noWhitelist = argv |> Array.exists (fun s -> s = "--no-whitelist")
 
         match schemaPath, outputDir, nsOpt, overridesPath, targetRaw with
         | None, _, _, _, _ -> fail log "--schema is required"
@@ -129,6 +137,32 @@ Sample overrides config: samples/SedBotOverrides/sedbot-overrides.toml
                     // Fold `[[extra_combinators]]` from the overrides into the
                     // parsed schema so downstream targets see them uniformly.
                     let apiSchema = SchemaAugment.fold config baseApiSchema
+
+                    // `--no-whitelist`: seed the type/writer/client-parser
+                    // whitelists with every name in the (augmented) schema, so
+                    // the whitelist-filtered targets emit the full surface. The
+                    // BFS resolver still skips `stub_types` (kept opaque), and
+                    // aliases / layer-variants / overlays are untouched. CIDs
+                    // are schema-derived, so this only widens coverage.
+                    let config =
+                        if noWhitelist then
+                            let allTypes, allFuncs = SchemaMapper.mapSchema apiSchema
+                            let typeNames =
+                                allTypes
+                                |> List.map (function
+                                    | Record(n, _, _) -> n
+                                    | Union(n, _) -> n)
+                                |> Set.ofList
+                            let funcNames = allFuncs |> List.map (fun f -> f.Name) |> Set.ofList
+                            log.LogInformation(
+                                "--no-whitelist: seeding full schema ({Types} types, {Funcs} functions)",
+                                typeNames.Count, funcNames.Count)
+                            { config with
+                                TypeWhitelist = Set.union typeNames funcNames
+                                WriterWhitelist = typeNames
+                                ClientParserWhitelist = typeNames }
+                        else
+                            config
 
                     if not (Directory.Exists outputDir) then
                         Directory.CreateDirectory(outputDir) |> ignore
