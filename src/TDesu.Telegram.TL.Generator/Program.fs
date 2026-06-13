@@ -147,6 +147,9 @@ Sample overrides config: samples/SedBotOverrides/sedbot-overrides.toml
                     let config =
                         if noWhitelist then
                             let allTypes, allFuncs = SchemaMapper.mapSchema apiSchema
+                            // `types`/`client-parsers` match Pascal result-type
+                            // names; `writers` filter on the TL combinator name
+                            // (snake_case) — seed each with the right projection.
                             let typeNames =
                                 allTypes
                                 |> List.map (function
@@ -154,12 +157,14 @@ Sample overrides config: samples/SedBotOverrides/sedbot-overrides.toml
                                     | Union(n, _) -> n)
                                 |> Set.ofList
                             let funcNames = allFuncs |> List.map (fun f -> f.Name) |> Set.ofList
+                            let ctorTlNames =
+                                apiSchema.Constructors |> List.map Combinator.tlName |> Set.ofList
                             log.LogInformation(
-                                "--no-whitelist: seeding full schema ({Types} types, {Funcs} functions)",
-                                typeNames.Count, funcNames.Count)
+                                "--no-whitelist: seeding full schema ({Types} types, {Funcs} functions, {Ctors} writer ctors)",
+                                typeNames.Count, funcNames.Count, ctorTlNames.Count)
                             { config with
                                 TypeWhitelist = Set.union typeNames funcNames
-                                WriterWhitelist = typeNames
+                                WriterWhitelist = ctorTlNames
                                 ClientParserWhitelist = typeNames }
                         else
                             config

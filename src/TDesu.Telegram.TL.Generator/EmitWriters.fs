@@ -13,7 +13,10 @@ open TDesu.Telegram.TL.Generator.Fantomas.TypeBuilder
 module EmitWriters =
 
     let private r = Range.Zero
-    let private wExpr = mkIdent "w"
+    // Buffer bound as `w_` (not `w`): some TL combinators have a positional
+    // field literally named `w` (e.g. inputWebFileGeoPointLocation width),
+    // which would shadow the writer buffer inside positional union-case bodies.
+    let private wExpr = mkIdent "w_"
     let private pExpr = mkIdent "p"
 
     // ----------------------------------------------------------------
@@ -689,7 +692,7 @@ module EmitWriters =
                     let anyNeedsLayer = needsLayerSet.Contains rt
 
                     let pats = [
-                        mkParenTypedPat "w" "TlWriteBuffer"
+                        mkParenTypedPat "w_" "TlWriteBuffer"
                         if anyNeedsLayer then mkParenTypedPat "layer" "int"
                         mkParenTypedPat "p" $"Write%s{rt}"
                     ]
@@ -800,7 +803,7 @@ module EmitWriters =
                             SynLeadingKeyword.And r
 
                     let pats = [
-                        mkParenTypedPat "w" "TlWriteBuffer"
+                        mkParenTypedPat "w_" "TlWriteBuffer"
                         if fnNeedsLayer then mkParenTypedPat "layer" "int"
                         if dfs.IsEmpty then SynPat.Const(SynConst.Unit, r)
                         else mkParenTypedPat "p" $"Write%s{name}Params"

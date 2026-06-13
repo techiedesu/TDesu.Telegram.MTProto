@@ -16,7 +16,26 @@ module SchemaMapper =
                 | [ single ] ->
                     let fields = single.Params |> List.map CodeModelMapping.mapParam
                     let ctorId = Combinator.id single
-                    Record(resultTypeName, fields, ctorId)
+
+                    if fields.IsEmpty then
+                        // F# forbids empty records (`type X = {}` → FS3863), so a
+                        // single zero-field constructor (e.g. `true`, `null`) is
+                        // emitted as a nullary single-case union (`type X = X`)
+                        // instead. Reuses the union (de)serialize path, which
+                        // already handles nullary cases. No currently-whitelisted
+                        // type is zero-field (it would never have compiled), so
+                        // this only affects the full-emit surface.
+                        Union(
+                            resultTypeName,
+                            [ {
+                                  Name = resultTypeName
+                                  ConstructorId = ctorId
+                                  AliasCids = []
+                                  Fields = []
+                              } ]
+                        )
+                    else
+                        Record(resultTypeName, fields, ctorId)
                 | multiple ->
                     let cases = [
                         for c in multiple do
@@ -145,6 +164,13 @@ module SchemaMapper =
                 elif t.EndsWith(" array") then
                     let inner = t.Substring(0, t.Length - 6)
                     $"%s{rewrite inner} array"
+                elif t = "obj" then
+                    // Unmapped TL type (typically a `!X` type variable on a
+                    // polymorphic wrapper like invokeAfterMsg / invokeWithLayer).
+                    // There's no generated type to (de)serialize, so treat it as
+                    // opaque bytes — these wrappers are transport-level and never
+                    // round-tripped as typed records.
+                    "byte[]"
                 else
                     let pascal = t.Substring(0, 1).ToUpperInvariant() + t.Substring(1)
                     if stubs.Contains pascal || stubs.Contains t then "byte[]" else t
