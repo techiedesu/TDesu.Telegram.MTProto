@@ -567,7 +567,12 @@ module EmitTypes =
               mkUnionDeserializeMember name cases ]
             @ mkFieldAccessors name cases
 
-        mkUnionType name synCases members keyword []
+        // RequireQualifiedAccess so a flat `open` of the Requests namespace
+        // doesn't leak ~hundreds of union case names (User, Chat, Peer, …) that
+        // would shadow consumers' domain DUs. Generated (de)serialize code
+        // already constructs cases qualified, and server code references cases
+        // as `Type.Case`, so this is safe and prevents full-emit name floods.
+        mkUnionType name synCases members keyword [ mkRequireQualifiedAccessAttr () ]
 
     let buildUnionDecl (name: string) (cases: UnionCase list) : SynTypeDefn =
         buildUnionDeclWithKeyword (SynTypeDefnLeadingKeyword.Type r) name cases
