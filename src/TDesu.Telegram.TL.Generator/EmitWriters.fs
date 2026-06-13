@@ -957,8 +957,165 @@ module EmitWriters =
         let parsed = mkParsedInput [ nsNode ]
         let formatted = formatAst parsed |> Async.RunSynchronously
 
+        // ---- Request→writer converters (toWrite{X}) ----
+        // Emitted as raw text appended inside the module so callers can turn a
+        // read-side `Requests.X` into the writer-side value without hand-rolling
+        // converters. Structural map of the shared combinator: scalars pass
+        // through, nested generated types recurse, shared-flag-bit bundles are
+        // rebuilt from the flat request fields, and writer-only (overlay) fields
+        // default. Correctness gate: `Requests.X.Serialize` bytes must equal
+        // `writeX (toWriteX x)` bytes (covered by round-trip tests + conformance).
+        let convertible =
+            groups
+            |> List.choose (fun (rt, cs) ->
+                if cs.Length > 1 then Some(rt, cs, true)
+                else
+                    let dfs = cs.Head.Params |> List.map CodeModelMapping.mapParam |> applyOverlays cs.Head |> dataFields
+                    if dfs.IsEmpty then None else Some(rt, cs, false))
+
+        let converterTypes = convertible |> List.map (fun (rt, _, _) -> rt) |> Set.ofList
+
+        // Wrap `acc` to convert a value of request F# type `t` into the writer
+        // shape: option/array map element-wise, nested generated types recurse,
+        // everything else (scalars, byte[], stubs, obj) passes through.
+        let rec convReq (acc: string) (t: string) : string =
+            let t = t.Trim()
+            if t.EndsWith " option" then
+                let inner = t.Substring(0, t.Length - 7)
+                let b = convReq "__v" inner
+                if b = "__v" then acc else $"({acc} |> Option.map (fun __v -> {b}))"
+            elif t.EndsWith " array" then
+                let inner = t.Substring(0, t.Length - 6)
+                let b = convReq "__v" inner
+                if b = "__v" then acc else $"({acc} |> Array.map (fun __v -> {b}))"
+            elif t.EndsWith "[]" then
+                let inner = t.Substring(0, t.Length - 2)
+                let b = convReq "__v" inner
+                if b = "__v" then acc else $"({acc} |> Array.map (fun __v -> {b}))"
+            elif converterTypes.Contains t then $"(toWrite{t} {acc})"
+            else acc
+
+        let defaultFor (t: string) : string =
+            let t = t.Trim()
+            if t.EndsWith " option" then "None"
+            elif t.EndsWith " array" || t.EndsWith "[]" then "[||]"
+            elif t = "bool" then "false"
+            elif t = "int64" then "0L"
+            elif t = "int32" || t = "int" then "0"
+            elif t = "double" then "0.0"
+            elif t = "string" then "\"\""
+            else "Unchecked.defaultof<_>"
+
+        // Build one converter function body (without the leading let/and kw).
+        let converterBody (rt: string) (cs: TlCombinator list) (isUnion: bool) : string =
+            if isUnion then
+                let clauses =
+                    cs
+                    |> List.map (fun c ->
+                        let caseName = combinatorPascalName c
+                        let reqFields = c.Params |> List.map CodeModelMapping.mapParam |> dataFields
+                        let writerFields = c.Params |> List.map CodeModelMapping.mapParam |> applyOverlays c |> dataFields
+                        let reqByName = reqFields |> List.map (fun f -> f.Name, f) |> Map.ofList
+                        // request-side pattern binds flat data fields by name
+                        let pat =
+                            if reqFields.IsEmpty then $"{rt}.{caseName}"
+                            else
+                                let names = reqFields |> List.map (fun f -> f.Name) |> String.concat ", "
+                                $"{rt}.{caseName}({names})"
+                        let rhs =
+                            if writerFields.IsEmpty then
+                                $"Write{rt}.{caseName}"
+                            elif recordPerCaseUnions.Contains rt then
+                                let resolve f = resolveFieldType f.FSharpType unionResultTypes singleResultTypes
+                                let bundled = bundleFields writerFields resolve
+                                let fieldAssigns =
+                                    bundled
+                                    |> List.map (fun fb ->
+                                        match fb with
+                                        | Single(f, _) ->
+                                            match Map.tryFind f.Name reqByName with
+                                            | Some rf -> $"{f.RecordName} = {convReq rf.Name rf.FSharpType}"
+                                            | None -> $"{f.RecordName} = {defaultFor f.FSharpType}"
+                                        | Bundle(bName, items, _, _) ->
+                                            let pats = items |> List.mapi (fun i _ -> $"Some __b{i}") |> String.concat ", "
+                                            let conv =
+                                                items
+                                                |> List.mapi (fun i (f, _) -> convReq $"__b{i}" (stripOption f.FSharpType))
+                                                |> String.concat ", "
+                                            let accessTuple = items |> List.map (fun (f, _) -> f.Name) |> String.concat ", "
+                                            $"{bName} = (match {accessTuple} with | {pats} -> Some({conv}) | _ -> None)")
+                                    |> String.concat "; "
+                                $"Write{rt}.{caseName}({{ {fieldAssigns} }})"
+                            else
+                                let resolve f = resolveFieldType f.FSharpType unionResultTypes singleResultTypes
+                                let bundled = bundleFields writerFields resolve
+                                let args =
+                                    bundled
+                                    |> List.map (fun fb ->
+                                        match fb with
+                                        | Single(f, _) ->
+                                            match Map.tryFind f.Name reqByName with
+                                            | Some rf -> convReq rf.Name rf.FSharpType
+                                            | None -> defaultFor f.FSharpType
+                                        | Bundle(_, items, _, _) ->
+                                            let pats = items |> List.mapi (fun i _ -> $"Some __b{i}") |> String.concat ", "
+                                            let conv =
+                                                items
+                                                |> List.mapi (fun i (f, _) -> convReq $"__b{i}" (stripOption f.FSharpType))
+                                                |> String.concat ", "
+                                            let accessTuple = items |> List.map (fun (f, _) -> f.Name) |> String.concat ", "
+                                            $"(match {accessTuple} with | {pats} -> Some({conv}) | _ -> None)")
+                                    |> String.concat ", "
+                                $"Write{rt}.{caseName}({args})"
+                        $"        | {pat} -> {rhs}")
+                    |> String.concat "\n"
+                $"(x: {rt}) : Write{rt} =\n        match x with\n{clauses}"
+            else
+                let c = cs.Head
+                let name = combinatorPascalName c
+                let reqFields = c.Params |> List.map CodeModelMapping.mapParam |> dataFields
+                let writerFields = c.Params |> List.map CodeModelMapping.mapParam |> applyOverlays c |> dataFields
+                let reqByName = reqFields |> List.map (fun f -> f.Name, f) |> Map.ofList
+                let resolve f = resolveFieldType f.FSharpType unionResultTypes singleResultTypes
+                let bundled = bundleFields writerFields resolve
+                let assigns =
+                    bundled
+                    |> List.map (fun fb ->
+                        match fb with
+                        | Single(f, _) ->
+                            match Map.tryFind f.Name reqByName with
+                            | Some rf ->
+                                let access = "x." + rf.RecordName
+                                $"            {f.RecordName} = {convReq access rf.FSharpType}"
+                            | None -> $"            {f.RecordName} = {defaultFor f.FSharpType}"
+                        | Bundle(bName, items, _, _) ->
+                            let pats = items |> List.mapi (fun i _ -> $"Some __b{i}") |> String.concat ", "
+                            let conv =
+                                items
+                                |> List.mapi (fun i (f, _) -> convReq $"__b{i}" (stripOption f.FSharpType))
+                                |> String.concat ", "
+                            let accessTuple = items |> List.map (fun (f, _) -> $"x.{f.RecordName}") |> String.concat ", "
+                            $"            {bName} = (match {accessTuple} with | {pats} -> Some({conv}) | _ -> None)")
+                    |> String.concat "\n"
+                $"(x: {rt}) : Write{name}Params =\n        {{\n{assigns}\n        }}"
+
+        let convertersText =
+            if convertible.IsEmpty then
+                ""
+            else
+                let fns =
+                    convertible
+                    |> List.mapi (fun i (rt, cs, isUnion) ->
+                        let kw = if i = 0 then "let rec" else "and"
+                        $"    {kw} toWrite{rt} {converterBody rt cs isUnion}")
+                    |> String.concat "\n\n"
+                "\n\n    // ---- Request→writer converters (auto-generated) ----\n"
+                + "    open TDesu.Serialization.Requests\n\n"
+                + fns
+                + "\n"
+
         let header =
             "// Auto-generated TL writer functions. Do not edit manually.\n"
             + "// Re-generate with: dotnet run --project src/MTProto.TL.Generator -- --writers\n\n"
 
-        header + formatted
+        header + formatted + convertersText
