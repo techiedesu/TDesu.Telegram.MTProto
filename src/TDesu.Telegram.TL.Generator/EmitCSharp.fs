@@ -27,6 +27,16 @@ module EmitCSharp =
     /// in-scope property of the same name (CS0120).
     let mutable private nsRef = ""
 
+    /// Unions that have a case whose name equals the union name (the common TL
+    /// "primary constructor" pattern, e.g. user#... in type User). Their abstract
+    /// boxed type is named `<Name>Base` so the case can keep the clean `<Name>`
+    /// as a top-level class — no nesting, no '_' suffix.
+    let mutable private collidingUnions : Set<string> = Set.empty
+
+    /// The C# name of a union's abstract boxed type (what fields are typed as).
+    let private baseNameOf (unionName: string) =
+        if Set.contains unionName collidingUnions then unionName + "Base" else unionName
+
     /// C# reserved words that need `@` escaping when used as identifiers.
     let private csKeywords =
         set [ "abstract";"as";"base";"bool";"break";"byte";"case";"catch";"char";"checked";
@@ -58,7 +68,9 @@ module EmitCSharp =
             | "bool" -> "bool"
             | "obj" -> "byte[]"
             | CodeModelMapping.RawBytesSentinel -> "byte[]"
-            | other -> if nsRef = "" then other else nsRef + "." + other
+            | other ->
+                let nm = baseNameOf other
+                if nsRef = "" then nm else nsRef + "." + nm
 
     /// Strip a single suffix layer to get the base IR type.
     let private baseIr (t: string) : string =
@@ -138,11 +150,16 @@ module EmitCSharp =
 
     // ---- C# property + field emission ---------------------------------------
 
-    /// C# property name for a field within an enclosing type. Suffixes '_' if it
-    /// would collide with the enclosing type name (CS0542).
+    /// C# property name for a field within an enclosing type. If the PascalCase
+    /// name would collide with the enclosing type (CS0542), fall back to the
+    /// camelCase form (e.g. `Message.message`, `Username.username`) — clean and
+    /// distinct since C# is case-sensitive, rather than an ugly '_' suffix.
     let private propName (enclosing: string) (f: GeneratedField) : string =
-        let n = escId f.RecordName
-        if n = enclosing then n + "_" else n
+        let n = unbacktick f.RecordName
+        if n = enclosing && n.Length > 0 then
+            escId (string (System.Char.ToLowerInvariant n[0]) + n.Substring(1))
+        else
+            escId n
 
     /// Property declaration for a non-raw-flag field.
     let private propDecl (enclosing: string) (f: GeneratedField) : string =
@@ -260,52 +277,51 @@ module EmitCSharp =
         sb.AppendLine("}") |> ignore
         sb.AppendLine() |> ignore
 
-    let private emitUnionClass (sb: StringBuilder) (name: string) (cases: UnionCase list) =
-        sb.AppendLine($"public abstract class {name} : ITlObject") |> ignore
+    /// Abstract boxed type for a union: dispatch-only Deserialize over cid+aliases.
+    let private emitUnionBase (sb: StringBuilder) (name: string) (cases: UnionCase list) =
+        let baseName = baseNameOf name
+        sb.AppendLine($"public abstract class {baseName} : ITlObject") |> ignore
         sb.AppendLine("{") |> ignore
         sb.AppendLine("    public abstract uint ConstructorId { get; }") |> ignore
         sb.AppendLine("    public abstract void Serialize(TlWriteBuffer w);") |> ignore
-        // Dispatch Deserialize
-        sb.AppendLine($"    public static {name} Deserialize(TlReadBuffer r)") |> ignore
+        sb.AppendLine($"    public static {baseName} Deserialize(TlReadBuffer r)") |> ignore
         sb.AppendLine("    {") |> ignore
         sb.AppendLine("        uint cid = r.ReadConstructorId();") |> ignore
         sb.AppendLine("        return cid switch") |> ignore
         sb.AppendLine("        {") |> ignore
-        // A case whose PascalName equals the union name can't be a nested class
-        // of the same name in C# (CS0542) and would shadow the base type. Suffix
-        // such cases with '_'.
-        let caseClassName (c: UnionCase) = if c.Name = name then c.Name + "_" else c.Name
         for c in cases do
             let allCids = (c.ConstructorId :: c.AliasCids) |> List.map (sprintf "0x%08Xu") |> String.concat " or "
-            sb.AppendLine($"            {allCids} => {caseClassName c}.ReadBody(r),") |> ignore
-        sb.AppendLine("            _ => throw new System.IO.InvalidDataException($\"Unknown constructor 0x{cid:x8} for " + name + "\"),") |> ignore
+            sb.AppendLine($"            {allCids} => {c.Name}.ReadBody(r),") |> ignore
+        sb.AppendLine("            _ => throw new System.IO.InvalidDataException($\"Unknown constructor 0x{cid:x8} for " + baseName + "\"),") |> ignore
         sb.AppendLine("        };") |> ignore
         sb.AppendLine("    }") |> ignore
-        // Cases as nested sealed classes
-        for c in cases do
-            let ccn = caseClassName c
-            let cidHex = sprintf "0x%08Xu" c.ConstructorId
-            sb.AppendLine($"    public sealed class {ccn} : {name}") |> ignore
-            sb.AppendLine("    {") |> ignore
-            sb.AppendLine($"        public const uint Cid = {cidHex};") |> ignore
-            sb.AppendLine($"        public override uint ConstructorId => Cid;") |> ignore
-            for f in dataFields c.Fields do sb.AppendLine("    " + propDecl ccn f) |> ignore
-            sb.AppendLine("        public override void Serialize(TlWriteBuffer w)") |> ignore
-            sb.AppendLine("        {") |> ignore
-            sb.AppendLine("            w.WriteConstructorId(Cid);") |> ignore
-            for line in emitWrites "w" c.Fields (propName ccn) do
-                sb.AppendLine($"            {line}") |> ignore
-            sb.AppendLine("        }") |> ignore
-            sb.AppendLine($"        internal static {ccn} ReadBody(TlReadBuffer r)") |> ignore
-            sb.AppendLine("        {") |> ignore
-            let stmts, inits = emitReads ccn "r" c.Fields
-            for s in stmts do sb.AppendLine($"            {s}") |> ignore
-            sb.AppendLine($"            return new {ccn}") |> ignore
-            sb.AppendLine("            {") |> ignore
-            for (p, v) in inits do sb.AppendLine($"                {p} = {v},") |> ignore
-            sb.AppendLine("            };") |> ignore
-            sb.AppendLine("        }") |> ignore
-            sb.AppendLine("    }") |> ignore
+        sb.AppendLine("}") |> ignore
+        sb.AppendLine() |> ignore
+
+    /// One union case as a clean top-level sealed class deriving from the base.
+    let private emitCaseClass (sb: StringBuilder) (unionName: string) (c: UnionCase) =
+        let baseName = baseNameOf unionName
+        let cidHex = sprintf "0x%08Xu" c.ConstructorId
+        sb.AppendLine($"public sealed class {c.Name} : {baseName}") |> ignore
+        sb.AppendLine("{") |> ignore
+        sb.AppendLine($"    public const uint Cid = {cidHex};") |> ignore
+        sb.AppendLine($"    public override uint ConstructorId => Cid;") |> ignore
+        for f in dataFields c.Fields do sb.AppendLine(propDecl c.Name f) |> ignore
+        sb.AppendLine("    public override void Serialize(TlWriteBuffer w)") |> ignore
+        sb.AppendLine("    {") |> ignore
+        sb.AppendLine("        w.WriteConstructorId(Cid);") |> ignore
+        for line in emitWrites "w" c.Fields (propName c.Name) do
+            sb.AppendLine($"        {line}") |> ignore
+        sb.AppendLine("    }") |> ignore
+        sb.AppendLine($"    internal static {c.Name} ReadBody(TlReadBuffer r)") |> ignore
+        sb.AppendLine("    {") |> ignore
+        let stmts, inits = emitReads c.Name "r" c.Fields
+        for s in stmts do sb.AppendLine($"        {s}") |> ignore
+        sb.AppendLine($"        return new {c.Name}") |> ignore
+        sb.AppendLine("        {") |> ignore
+        for (p, v) in inits do sb.AppendLine($"            {p} = {v},") |> ignore
+        sb.AppendLine("        };") |> ignore
+        sb.AppendLine("    }") |> ignore
         sb.AppendLine("}") |> ignore
         sb.AppendLine() |> ignore
 
@@ -342,6 +358,27 @@ module EmitCSharp =
     /// Build the whole C# module string.
     let buildModule (namespaceName: string) (types: GeneratedType list) (functions: GeneratedFunction list) : string =
         nsRef <- namespaceName
+        collidingUnions <-
+            types
+            |> List.choose (function
+                | Union(name, cases) when cases |> List.exists (fun c -> c.Name = name) -> Some name
+                | _ -> None)
+            |> Set.ofList
+
+        // Guard against top-level name clashes (records, union cases, functions
+        // all share the namespace now that cases aren't nested).
+        let seen = System.Collections.Generic.HashSet<string>()
+        let claim (n: string) =
+            if not (seen.Add n) then
+                failwithf "EmitCSharp: duplicate top-level type name '%s' — needs disambiguation" n
+        for t in types do
+            match t with
+            | Record(name, _, _) -> claim name
+            | Union(name, cases) ->
+                claim (baseNameOf name)
+                for c in cases do claim c.Name
+        for fn in functions do claim fn.Name
+
         let sb = StringBuilder()
         sb.AppendLine("// <auto-generated> td-tl-gen C# backend. Do not edit. </auto-generated>") |> ignore
         sb.AppendLine("#nullable enable") |> ignore
@@ -350,7 +387,9 @@ module EmitCSharp =
         for t in types do
             match t with
             | Record(name, fields, cid) -> emitRecordClass sb name fields cid
-            | Union(name, cases) -> emitUnionClass sb name cases
+            | Union(name, cases) ->
+                emitUnionBase sb name cases
+                for c in cases do emitCaseClass sb name c
         for fn in functions do
             emitFunctionClass sb fn
         sb.ToString()
