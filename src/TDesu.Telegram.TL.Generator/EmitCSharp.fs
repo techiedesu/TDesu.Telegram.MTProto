@@ -161,10 +161,20 @@ module EmitCSharp =
         else
             escId n
 
+    /// Default initializer to silence CS8618 on non-nullable reference fields
+    /// (deserialize always overwrites; manual construction sets what it needs).
+    /// We avoid `required` so partial object construction still compiles.
+    let private defaultInit (cs: string) : string =
+        if cs.EndsWith("?") then ""
+        elif cs = "int" || cs = "long" || cs = "double" || cs = "bool" then ""
+        elif cs = "string" then " = \"\""
+        elif cs.EndsWith("[]") then " = []"
+        else " = null!"
+
     /// Property declaration for a non-raw-flag field.
     let private propDecl (enclosing: string) (f: GeneratedField) : string =
         let cs = csType f.FSharpType
-        $"    public {cs} {propName enclosing f};"
+        $"    public {cs} {propName enclosing f}{defaultInit cs};"
 
     /// Local name for a flag word (its raw TL name: "flags"/"flags2").
     let private flagLocal (name: string) = escId name
