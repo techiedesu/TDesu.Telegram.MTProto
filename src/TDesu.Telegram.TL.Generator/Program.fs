@@ -234,11 +234,21 @@ Sample overrides config: samples/SedBotOverrides/sedbot-overrides.toml
                     if targets.Contains "client-parsers" then
                         Pipeline.generateClientParsers resolvedClientNs config apiSchema (path "GeneratedResponseParsers.g.fs")
 
+                    if targets.Contains "csharp" then
+                        // Single-layer C# backend: full schema surface, no whitelist.
+                        let csTypes, csFuncs = SchemaMapper.mapSchema apiSchema
+                        let code = EmitCSharp.buildModule ns csTypes csFuncs
+                        let outPath = path "GeneratedTl.g.cs"
+                        File.WriteAllText(outPath, code)
+                        log.LogInformation(
+                            "Wrote {Path} ({Bytes} bytes, {Types} types, {Funcs} functions)",
+                            outPath, code.Length, csTypes.Length, csFuncs.Length)
+
                     let unknown =
                         let known =
                             Set.ofList [
                                 "cid"; "types"; "writers"; "coverage"; "return-types"
-                                "tests"; "layer-aliases"; "client-cids"; "client-parsers"
+                                "tests"; "layer-aliases"; "client-cids"; "client-parsers"; "csharp"
                             ]
                         targets |> Set.filter (fun t -> not (known.Contains t))
                     if not unknown.IsEmpty then

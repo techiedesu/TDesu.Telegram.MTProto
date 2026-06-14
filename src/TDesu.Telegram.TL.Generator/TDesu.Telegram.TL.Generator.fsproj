@@ -35,6 +35,7 @@
         <Compile Include="EmitTypes.fs" />
         <Compile Include="EmitWriters.fs" />
         <Compile Include="EmitTemplates.fs" />
+        <Compile Include="EmitCSharp.fs" />
         <Compile Include="Pipeline.fs" />
         <Compile Include="Program.fs" />
     </ItemGroup>
