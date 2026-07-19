@@ -57,6 +57,13 @@ Optional flags:
                               from the TL), so wire compatibility is preserved;
                               `stub_types`, aliases, layer-variants and
                               structural-overlays from the overrides still apply.
+  --split-by-class            For `csharp` target: emit one .g.cs file per
+                              top-level TL declaration (Record → its own file,
+                              Union + all case classes → one file named after the
+                              base type) instead of the single GeneratedTl.g.cs.
+  --clean                     Delete all *.g.cs files in the output directory
+                              before writing. Recommended with --split-by-class
+                              to remove files for types deleted from the schema.
 
 Sample overrides config: samples/SedBotOverrides/sedbot-overrides.toml
 """
@@ -114,6 +121,8 @@ Sample overrides config: samples/SedBotOverrides/sedbot-overrides.toml
         let splitByDomain = argv |> Array.exists (fun s -> s = "--split-by-domain")
         let domainsOverride = argv |> tryGetArg "--split-domains"
         let noWhitelist = argv |> Array.exists (fun s -> s = "--no-whitelist")
+        let splitByClass = argv |> Array.exists (fun s -> s = "--split-by-class")
+        let clean = argv |> Array.exists (fun s -> s = "--clean")
 
         match schemaPath, outputDir, nsOpt, overridesPath, targetRaw with
         | None, _, _, _, _ -> fail log "--schema is required"
@@ -237,12 +246,26 @@ Sample overrides config: samples/SedBotOverrides/sedbot-overrides.toml
                     if targets.Contains "csharp" then
                         // Single-layer C# backend: full schema surface, no whitelist.
                         let csTypes, csFuncs = SchemaMapper.mapSchema apiSchema
-                        let code = EmitCSharp.buildModule ns csTypes csFuncs
-                        let outPath = path "GeneratedTl.g.cs"
-                        File.WriteAllText(outPath, code)
-                        log.LogInformation(
-                            "Wrote {Path} ({Bytes} bytes, {Types} types, {Funcs} functions)",
-                            outPath, code.Length, csTypes.Length, csFuncs.Length)
+                        if clean then
+                            let deleted =
+                                Directory.GetFiles(outputDir, "*.g.cs")
+                                |> Array.filter (fun f -> not (Path.GetFileName f = "GeneratedTl.g.cs") || splitByClass)
+                            for f in deleted do File.Delete f
+                            log.LogInformation("Cleaned {N} .g.cs file(s) from {Dir}", deleted.Length, outputDir)
+                        if splitByClass then
+                            let files = EmitCSharp.buildFiles ns csTypes csFuncs
+                            for (name, code) in files do
+                                File.WriteAllText(Path.Combine(outputDir, name), code)
+                            log.LogInformation(
+                                "Wrote {N} .g.cs files to {Dir} ({Types} types, {Funcs} functions)",
+                                files.Length, outputDir, csTypes.Length, csFuncs.Length)
+                        else
+                            let code = EmitCSharp.buildModule ns csTypes csFuncs
+                            let outPath = path "GeneratedTl.g.cs"
+                            File.WriteAllText(outPath, code)
+                            log.LogInformation(
+                                "Wrote {Path} ({Bytes} bytes, {Types} types, {Funcs} functions)",
+                                outPath, code.Length, csTypes.Length, csFuncs.Length)
 
                     let unknown =
                         let known =

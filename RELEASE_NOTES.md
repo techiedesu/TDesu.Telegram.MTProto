@@ -1,5 +1,23 @@
 # Release notes
 
+## 0.3.0
+
+### Transport
+
+**TCP keepalive for dead connection detection.**
+`TcpTransport.ConnectAsync` now sets `SO_KEEPALIVE` on the socket with
+aggressive timings: 5 s idle → 5 s probe interval → 3 retries (≈ 20–25 s
+detection). Fixes half-open TCP connections that caused `CallRawAsync` to
+hang indefinitely — the app-layer `ping_delay_disconnect` could not detect
+the dead socket because the write side still appeared writable.
+
+### TL Generator
+
+**C# code generation backend.** `td-tl-gen` gains `--lang csharp` emitting
+single-layer C# TL types, writers, and constructor-ID tables. Union types
+use a `<Name>Base` abstract class with top-level case classes. Non-nullable
+reference fields are default-initialized to silence CS8618.
+
 ## 0.2.10
 
 **Bugfix: structural overlays now gate a field already present in the base

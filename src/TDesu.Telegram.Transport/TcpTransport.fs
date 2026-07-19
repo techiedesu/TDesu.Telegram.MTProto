@@ -38,6 +38,15 @@ type TcpTransport(dc: DataCenter) =
             tcp.NoDelay <- true
             tcp.ReceiveBufferSize <- 64 * 1024
             tcp.SendBufferSize <- 64 * 1024
+
+            // TCP keepalive: detect dead connections within ~25s
+            // (5s idle + 3 retries × ~5s interval ≈ 20-25s on Linux/Windows)
+            let sock = tcp.Client
+            sock.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true)
+            sock.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveTime, 5)
+            sock.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveInterval, 5)
+            sock.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveRetryCount, 3)
+
             do! tcp.ConnectAsync(dc.Address, dc.Port, ct)
             let ns = tcp.GetStream()
             client <- Some tcp
