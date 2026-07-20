@@ -425,8 +425,24 @@ type MtProtoClient(dc: DataCenter, ?logger: ILogger) =
     /// Send an RPC request and await the response. The send (msg_id/seqno generation + the socket
     /// write) runs under the send lock so it can't interleave with another sender; the response is
     /// awaited outside the lock. Failures arrive as Error Results, never thrown.
+    /// Send an RPC request and await the response. If the transport is disconnected or the send
+    /// fails, waits for an in-progress reconnect to complete before returning the error — so the
+    /// caller's retry hits a live connection instead of immediately failing again.
     member _.RpcAsync(requestBody: byte[], ct: CancellationToken) =
         task {
+            // If a reconnect is in progress, wait for it before even trying to send.
+            if isReconnecting then
+                log.LogDebug("RpcAsync: reconnect in progress, waiting...")
+                let tcs = TaskCompletionSource<unit>()
+                let handler = Handler<unit>(fun _ () -> tcs.TrySetResult() |> ignore)
+                reconnectedEvent.Publish.AddHandler(handler)
+                try
+                    use cts = CancellationTokenSource.CreateLinkedTokenSource(ct)
+                    cts.CancelAfter(TimeSpan.FromSeconds(15.0))
+                    do! tcs.Task.WaitAsync(cts.Token)
+                with _ -> ()
+                reconnectedEvent.Publish.RemoveHandler(handler)
+
             let sess = ensureSession ()
             let key = ensureAuthKey ()
 
@@ -451,6 +467,22 @@ type MtProtoClient(dc: DataCenter, ?logger: ILogger) =
 
             match sent with
             | None -> return Error(MtProtoError.InvalidResponse "send aborted")
+            | Some(Error(MtProtoError.TransportError TransportError.ConnectionClosed)) ->
+                // Send failed because the socket died. The receive loop will trigger reconnectInternal.
+                // Wait briefly for the reconnect to finish so the caller's retry has a live connection.
+                if isReconnecting then
+                    let tcs = TaskCompletionSource<unit>()
+                    let handler = Handler<unit>(fun _ () -> tcs.TrySetResult() |> ignore)
+                    reconnectedEvent.Publish.AddHandler(handler)
+                    try
+                        use cts = CancellationTokenSource.CreateLinkedTokenSource(ct)
+                        cts.CancelAfter(TimeSpan.FromSeconds(15.0))
+                        do! tcs.Task.WaitAsync(cts.Token)
+                        log.LogInformation("RpcAsync: reconnect completed, caller should retry")
+                    with _ ->
+                        log.LogWarning("RpcAsync: reconnect wait timed out")
+                    reconnectedEvent.Publish.RemoveHandler(handler)
+                return Error(MtProtoError.TransportError TransportError.ConnectionClosed)
             | Some(Error e) -> return Error e
             | Some(Ok(msgId, responseTask)) ->
                 try

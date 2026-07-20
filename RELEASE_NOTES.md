@@ -1,5 +1,17 @@
 # Release notes
 
+## 0.3.1
+
+### Protocol
+
+**Reconnect-aware RPC dispatch.** `MtProtoClient.RpcAsync` now waits for
+an in-progress auto-reconnect to complete before returning a
+`ConnectionClosed` error. Previously, the caller's retry loop would
+immediately re-send on the same dead transport, burning all retry
+attempts in <1 s while the reconnect was still establishing a new TCP
+socket. Now the RPC blocks up to 15 s on the `Reconnected` event,
+so the first retry hits a live connection.
+
 ## 0.3.0
 
 ### Transport
