@@ -20,8 +20,6 @@ module AuthKeyExchange =
     [<Literal>]
     let private ResPQ = 0x05162463u
     [<Literal>]
-    let private PQInnerData = 0x83c95aecu
-    [<Literal>]
     let private PQInnerDataDc = 0xa9f55f95u
     [<Literal>]
     let private ReqDHParams = 0xd712e4beu
@@ -77,17 +75,6 @@ module AuthKeyExchange =
         use w = new TlWriteBuffer()
         w.WriteConstructorId(ReqPqMulti)
         w.WriteRawBytes(nonce)
-        w.ToArray()
-
-    let serializePQInnerData (pq: byte[]) (p: byte[]) (q: byte[]) (nonce: byte[]) (serverNonce: byte[]) (newNonce: byte[]) : byte[] =
-        use w = new TlWriteBuffer()
-        w.WriteConstructorId(PQInnerData)
-        w.WriteBytes(pq)
-        w.WriteBytes(p)
-        w.WriteBytes(q)
-        w.WriteRawBytes(nonce)
-        w.WriteRawBytes(serverNonce)
-        w.WriteRawBytes(newNonce)
         w.ToArray()
 
     /// p_q_inner_data_dc — the current variant carrying the target dc_id, required by the

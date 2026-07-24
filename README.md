@@ -13,6 +13,8 @@ F# library and CLI tool for parsing Telegram [TL (Type Language)](https://core.t
 |---------|-------------|--------|
 | **TDesu.Telegram.TL** | TL schema parser (FParsec-based) | netstandard2.1 |
 | **TDesu.Telegram.TL.Generator** | Code generator CLI tool (`td-tl-gen`) | net10.0 |
+| **TDesu.Telegram.Transport** | MTProto transports: TCP, obfuscated TCP, WebSocket, HTTP, MTProxy fake-TLS | net10.0 |
+| **TDesu.Telegram.Protocol** | MTProto 2.0 core: auth key exchange, message framing, session, RPC, client | net10.0 |
 
 > **0.1.0 (breaking)** reshapes `td-tl-gen` from a SedBot-internal helper into a
 > generic dotnet tool. New required flags (`--schema`, `--output`, `--namespace`,
@@ -63,6 +65,33 @@ var schema = TlParser.Parse(schemaText);  // throws FormatException on error
 foreach (var ctor in schema.GetConstructors())
     Console.WriteLine($"{ctor.Id.Name} #{ctor.GetConstructorId():X08}");
 ```
+
+### MTProto client transports
+
+`MtProtoClient` talks to Telegram through a pluggable `ITransport`, selected with a
+`transportFactory`. Raw TCP is the default; the others are obfuscated.
+
+```fsharp
+open TDesu.Transport
+open TDesu.MTProto
+
+let dc = DataCenters.production[1]
+
+// Raw TCP (intermediate framing) — the default:
+use client = new MtProtoClient(dc)
+
+// Or select another carrier via the factory:
+let factory d = new WsTransport(d) :> ITransport
+use wsClient = new MtProtoClient(dc, transportFactory = factory)
+```
+
+| Transport | Carrier | Obfuscation | Notes |
+|---|---|---|---|
+| `TcpTransport` | TCP | none | default; intermediate framing |
+| `TcpObfuscatedTransport` | TCP | obfuscation2 | abridged or intermediate; DPI-resistant |
+| `WsTransport` | WebSocket | obfuscation2 | for CDN / reverse-proxy environments |
+| `HttpTransport` | HTTP/1.1 | none | legacy carrier |
+| `FakeTlsTransport` | TLS-camouflaged TCP | obfuscation2 | via an MTProxy (`ee` secret + fronting domain) |
 
 ### Generator CLI
 

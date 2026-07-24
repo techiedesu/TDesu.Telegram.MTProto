@@ -8,10 +8,13 @@
 
     <ItemGroup>
         <Compile Include="PersistenceTests.fs" />
+        <Compile Include="MessageFramingTests.fs" />
+        <Compile Include="TransportFramingTests.fs" />
     </ItemGroup>
 
     <ItemGroup>
         <ProjectReference Include="..\..\src\TDesu.Telegram.Protocol\TDesu.Telegram.Protocol.fsproj" />
+        <ProjectReference Include="..\..\src\TDesu.Telegram.Transport\TDesu.Telegram.Transport.fsproj" />
     </ItemGroup>
 
     <ItemGroup>
@@ -19,6 +22,8 @@
         <PackageReference Include="Microsoft.NET.Test.Sdk" />
         <PackageReference Include="NUnit3TestAdapter" />
         <PackageReference Include="coverlet.collector" />
+        <PackageReference Include="TDesu.Telegram.Crypto" />
+        <PackageReference Include="TDesu.Telegram.Serialization" />
     </ItemGroup>
 
 </Project>
