@@ -5,8 +5,6 @@ open TDesu.Crypto
 
 module Session =
 
-    let private random = Random()
-
     /// Generate a new random session ID
     let newSessionId () : int64 =
         let buf = Padding.randomBytes 8

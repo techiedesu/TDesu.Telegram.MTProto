@@ -13,9 +13,13 @@ open TDesu.Serialization
 open TDesu.Transport
 
 /// Core MTProto client handling session, encryption, and RPC dispatch.
-type MtProtoClient(dc: DataCenter, ?logger: ILogger) =
+type MtProtoClient(dc: DataCenter, ?logger: ILogger, ?transportFactory: DataCenter -> ITransport) =
 
-    let mutable transport = new TcpTransport(dc)
+    // Default carrier is raw TCP intermediate; pass a factory (e.g. WsTransport) to switch.
+    let createTransport =
+        defaultArg transportFactory (fun d -> new TcpTransport(d) :> ITransport)
+
+    let mutable transport = createTransport dc
     let dispatcher = RpcDispatcher()
     let updateEvent = Event<byte[]>()
     let reconnectedEvent = Event<unit>()
@@ -41,6 +45,22 @@ type MtProtoClient(dc: DataCenter, ?logger: ILogger) =
     // retransmits anything we don't acknowledge and eventually drops an all-unacked session.
     let pendingAcks = System.Collections.Concurrent.ConcurrentQueue<int64>()
     let enqueueAck (msgId: int64) = pendingAcks.Enqueue(msgId)
+
+    // Bounded replay guard: a replayed encrypted packet decrypts to the same msg_id, so each
+    // inbound msg_id is processed at most once. The window is capped to bound memory.
+    let seenMsgIds = System.Collections.Generic.HashSet<int64>()
+    let seenMsgIdOrder = System.Collections.Generic.Queue<int64>()
+    let seenMsgIdLock = obj ()
+
+    let markSeen (msgId: int64) : bool =
+        lock seenMsgIdLock (fun () ->
+            if not (seenMsgIds.Add msgId) then
+                false
+            else
+                seenMsgIdOrder.Enqueue msgId
+                if seenMsgIdOrder.Count > 8192 then
+                    seenMsgIds.Remove(seenMsgIdOrder.Dequeue()) |> ignore
+                true)
 
     let ensureSession () =
         match session with
@@ -270,7 +290,15 @@ type MtProtoClient(dc: DataCenter, ?logger: ILogger) =
                         match authKey with
                         | Some key ->
                             match MessageFraming.decrypt key data with
-                            | Ok(msgId, _sessionId, seqNo, body) -> processInnerMessage body msgId seqNo
+                            | Ok(msgId, sessionId, seqNo, body) ->
+                                match session with
+                                | Some s when s.SessionId <> sessionId ->
+                                    log.LogWarning("Dropping message for foreign session_id {SessionId}", sessionId)
+                                | _ ->
+                                    if markSeen msgId then
+                                        processInnerMessage body msgId seqNo
+                                    else
+                                        log.LogWarning("Dropping replayed msg_id {MsgId}", msgId)
                             | Error e -> log.LogError("Failed to decrypt message: {Error}", e)
                         | None ->
                             match UnencryptedMessage.deserialize data with
@@ -311,7 +339,7 @@ type MtProtoClient(dc: DataCenter, ?logger: ILogger) =
 
                         try
                             transport.Disconnect()
-                            transport <- new TcpTransport(dc)
+                            transport <- createTransport dc
 
                             match! transport.ConnectAsync(ct) with
                             | Error e -> log.LogWarning("Reconnect attempt {Attempt} failed: {Error}", attempt + 1, e)
@@ -325,7 +353,7 @@ type MtProtoClient(dc: DataCenter, ?logger: ILogger) =
                                     log.LogInformation("Reconnected (reused auth key)")
                                     reconnectedEvent.Trigger()
                                 | None ->
-                                    match! AuthKeyExchange.performExchange transport ct with
+                                    match! AuthKeyExchange.performExchange transport dc.Id ct with
                                     | Error e ->
                                         log.LogWarning("Auth key exchange failed on reconnect: {Error}", attempt + 1, e)
                                     | Ok(key, salt, timeOffset) ->
@@ -384,7 +412,7 @@ type MtProtoClient(dc: DataCenter, ?logger: ILogger) =
 
                 log.LogInformation("Connected, performing auth key exchange")
 
-                match! AuthKeyExchange.performExchange transport ct with
+                match! AuthKeyExchange.performExchange transport dc.Id ct with
                 | Error e -> return Error e
                 | Ok(key, salt, timeOffset) ->
 

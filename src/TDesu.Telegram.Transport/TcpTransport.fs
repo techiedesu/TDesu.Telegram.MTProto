@@ -107,5 +107,12 @@ type TcpTransport(dc: DataCenter) =
         stream <- None
         client <- None
 
+    interface ITransport with
+        member this.IsConnected = this.IsConnected
+        member this.ConnectAsync(ct) = this.ConnectAsync(ct)
+        member this.SendAsync(payload, ct) = this.SendAsync(payload, ct)
+        member this.ReceiveAsync(ct) = this.ReceiveAsync(ct)
+        member this.Disconnect() = this.Disconnect()
+
     interface IDisposable with
         member this.Dispose() = this.Disconnect()

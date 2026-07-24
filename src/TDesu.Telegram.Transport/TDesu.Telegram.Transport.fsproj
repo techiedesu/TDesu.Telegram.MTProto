@@ -14,7 +14,12 @@
     <ItemGroup>
         <Compile Include="Types.fs" />
         <Compile Include="FrameCodec.fs" />
+        <Compile Include="Obfuscation.fs" />
         <Compile Include="TcpTransport.fs" />
+        <Compile Include="TcpObfuscatedTransport.fs" />
+        <Compile Include="WsTransport.fs" />
+        <Compile Include="HttpTransport.fs" />
+        <Compile Include="FakeTlsTransport.fs" />
     </ItemGroup>
 
     <ItemGroup>

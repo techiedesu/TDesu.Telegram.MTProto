@@ -73,6 +73,10 @@ type ISessionStore =
     abstract member Clear: unit -> unit
 
 /// Stores the session blob in a single file.
+///
+/// SECURITY: the blob contains the raw auth key (full account access) and is written in
+/// PLAINTEXT. On Unix the file is created with 0600 (owner-only). For at-rest encryption,
+/// inject a custom `ISessionStore` that wraps this and encrypts the bytes.
 type FileSessionStore(path: string) =
     interface ISessionStore with
         member _.Load() =
@@ -82,9 +86,21 @@ type FileSessionStore(path: string) =
             let dir = Path.GetDirectoryName(path)
 
             if not (String.IsNullOrEmpty dir) && not (Directory.Exists dir) then
-                Directory.CreateDirectory dir |> ignore
+                let di = Directory.CreateDirectory dir
 
-            File.WriteAllBytes(path, data)
+                if not (OperatingSystem.IsWindows()) then
+                    try di.UnixFileMode <- UnixFileMode.UserRead ||| UnixFileMode.UserWrite ||| UnixFileMode.UserExecute
+                    with _ -> ()
+
+            // Create the file owner-only BEFORE writing secrets, so it is never briefly
+            // world-readable. On Windows it inherits the (typically user-private) directory ACL.
+            if not (OperatingSystem.IsWindows()) then
+                use fs = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None)
+                try File.SetUnixFileMode(fs.SafeFileHandle, UnixFileMode.UserRead ||| UnixFileMode.UserWrite)
+                with _ -> ()
+                fs.Write(data, 0, data.Length)
+            else
+                File.WriteAllBytes(path, data)
 
         member _.Clear() =
             if File.Exists path then

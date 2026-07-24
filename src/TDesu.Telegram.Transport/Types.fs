@@ -1,6 +1,9 @@
 namespace TDesu.Transport
 
+open System
 open System.Net
+open System.Threading
+open System.Threading.Tasks
 
 [<RequireQualifiedAccess>]
 type TransportError =
@@ -10,6 +13,24 @@ type TransportError =
     | WriteError of message: string
     | InvalidFrame of message: string
     | Timeout
+
+/// Transport abstraction shared by TcpTransport and WsTransport. MtProtoClient and the
+/// auth-key exchange talk to whichever concrete transport through this interface, so the
+/// wire carrier (raw TCP intermediate vs. WebSocket binary frames) is swappable.
+type ITransport =
+    inherit IDisposable
+    abstract member IsConnected: bool
+    abstract member ConnectAsync: ct: CancellationToken -> Task<Result<unit, TransportError>>
+    abstract member SendAsync: payload: byte[] * ct: CancellationToken -> Task<Result<unit, TransportError>>
+    abstract member ReceiveAsync: ct: CancellationToken -> Task<Result<byte[], TransportError>>
+    abstract member Disconnect: unit -> unit
+
+/// Framing used on the wire once a connection is up. Abridged is the lightest
+/// (1- or 4-byte length prefix); Intermediate uses a fixed 4-byte LE length.
+[<RequireQualifiedAccess>]
+type TransportFraming =
+    | Abridged
+    | Intermediate
 
 /// IPAddress doesn't satisfy F# structural-comparison constraint, so the
 /// record can't get auto-derived comparison either. Equality stays.

@@ -8,6 +8,17 @@ open TDesu.Crypto
 /// Encrypted: auth_key_id (8) + msg_key (16) + AES-IGE encrypted plaintext
 module MessageFraming =
 
+    /// Constant-time byte-array equality. Used for msg_key verification so a
+    /// forged packet cannot be probed byte-by-byte via response-timing differences.
+    let private ctEquals (a: byte[]) (b: byte[]) : bool =
+        if a.Length <> b.Length then
+            false
+        else
+            let mutable diff = 0
+            for i in 0 .. a.Length - 1 do
+                diff <- diff ||| int (a[i] ^^^ b[i])
+            diff = 0
+
     let encrypt (authKey: AuthKey) (session: SessionState) (msgId: int64) (seqNo: int32) (body: byte[]) : byte[] =
         // Build plaintext: salt + session_id + msg_id + seq_no + length + body
         use innerWriter = new TlWriteBuffer()
@@ -56,7 +67,7 @@ module MessageFraming =
 
                 // Verify msg_key
                 let expectedMsgKey = KeyDerivation.computeMsgKey authKey.Data decrypted 8
-                if expectedMsgKey <> msgKey then
+                if not (ctEquals expectedMsgKey msgKey) then
                     Error (MtProtoError.CryptoError "msg_key verification failed")
                 else
                     // Parse plaintext
@@ -66,7 +77,10 @@ module MessageFraming =
                     let msgId = innerReader.ReadInt64()
                     let seqNo = innerReader.ReadInt32()
                     let bodyLength = innerReader.ReadInt32()
-                    let body = innerReader.ReadRawBytes(bodyLength)
-                    Ok (msgId, _sessionId, seqNo, body)
+                    if bodyLength < 0 || 32 + bodyLength > decrypted.Length then
+                        Error (MtProtoError.InvalidResponse $"invalid body length %d{bodyLength}")
+                    else
+                        let body = innerReader.ReadRawBytes(bodyLength)
+                        Ok (msgId, _sessionId, seqNo, body)
         with ex ->
             Error (MtProtoError.SerializationError ex.Message)

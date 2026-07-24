@@ -1,5 +1,38 @@
 # Release notes
 
+## 0.4.0
+
+### Transport
+
+**Four new transports behind a shared `ITransport` abstraction**, selectable with
+`MtProtoClient(dc, transportFactory = …)`:
+- `TcpObfuscatedTransport` — obfuscated TCP (obfuscation2), abridged or intermediate framing.
+- `WsTransport` — obfuscated MTProto over WebSocket binary frames.
+- `HttpTransport` — MTProto over HTTP/1.1.
+- `FakeTlsTransport` — MTProxy fake-TLS (`ee`-secret + fronting domain).
+
+`TcpTransport` keeps the raw-TCP intermediate behaviour. Shared obfuscation
+(AES-256-CTR) and the frame codecs live in `Obfuscation` / `FrameCodec`.
+
+### Security
+
+**Auth key exchange hardening.** The DH handshake now validates every server-supplied
+value it previously trusted blindly: the echoed nonces in `server_DH_params` and
+`dh_gen_ok`, the `server_DH_inner_data` SHA1 integrity prefix, `new_nonce_hash1`, and
+the DH parameters (`g`, `dh_prime`, `g_a`, and our own `g_b`) via the hardened
+`TDesu.Telegram.Crypto` validators. **RSA_PAD is now the default** for `p_q_inner_data`
+(sent as `p_q_inner_data_dc`); the server's advertised key order is honoured so the
+RSA_PAD key is selected. The classic RSA scheme remains available in the crypto library.
+
+**Message layer.** Constant-time `msg_key` comparison, verification that a decrypted
+message's `session_id` matches the current session, and a bounded inbound `msg_id`
+replay guard. Persisted session files are now created owner-only (0600 on Unix); the
+blob still holds the plaintext auth key, so wrap `ISessionStore` to encrypt at rest.
+
+### Dependencies
+
+- `TDesu.Telegram.Crypto` → 0.3.0 (RSA_PAD + hardened DH validation).
+
 ## 0.3.1
 
 ### Protocol
