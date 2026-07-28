@@ -29,6 +29,10 @@ type MtProtoClient(dc: DataCenter, ?logger: ILogger, ?transportFactory: DataCent
     let mutable receiveLoopCts: CancellationTokenSource option = None
     let mutable isReconnecting = false
     let reconnectLock = obj ()
+    // Set by Disconnect, cleared by a connect. A closed client answers RPCs with
+    // ConnectionClosed at once: there is no reader left to complete them and no reconnect coming,
+    // so waiting on either would stall the caller for nothing.
+    let mutable closed = false
 
     let log =
         defaultArg
@@ -320,7 +324,7 @@ type MtProtoClient(dc: DataCenter, ?logger: ILogger, ?transportFactory: DataCent
         task {
             let shouldReconnect =
                 lock reconnectLock (fun () ->
-                    if isReconnecting then
+                    if isReconnecting || closed then
                         false
                     else
                         isReconnecting <- true
@@ -330,51 +334,66 @@ type MtProtoClient(dc: DataCenter, ?logger: ILogger, ?transportFactory: DataCent
                 ()
             else
 
-                let backoffs = [| 1000; 2000; 4000 |]
-                let mutable reconnected = false
+                // Everything below runs under try/finally because the flag gates every future
+                // reconnect *and* the wait inside RpcAsync. Leaving it set — a cancelled backoff
+                // delay used to throw straight out of here — permanently convinces the client that
+                // a reconnect is in flight: no attempt is ever made again and every later RPC
+                // burns its reconnect wait before failing. That is a silent, unrecoverable death.
+                try
+                    let backoffs = [| 1000; 2000; 4000 |]
+                    let mutable reconnected = false
 
-                for attempt in 0 .. backoffs.Length - 1 do
-                    if not reconnected && not ct.IsCancellationRequested then
-                        log.LogInformation("Reconnect attempt {Attempt} after {Delay}ms", attempt + 1, backoffs[attempt])
-                        do! Tasks.Task.Delay(backoffs[attempt], ct)
+                    for attempt in 0 .. backoffs.Length - 1 do
+                        if not reconnected && not ct.IsCancellationRequested && not closed then
+                            log.LogInformation(
+                                "Reconnect attempt {Attempt} after {Delay}ms",
+                                attempt + 1,
+                                backoffs[attempt]
+                            )
 
-                        try
-                            transport.Disconnect()
-                            transport <- createTransport dc
+                            try
+                                do! Tasks.Task.Delay(backoffs[attempt], ct)
+                                transport.Disconnect()
+                                transport <- createTransport dc
 
-                            match! transport.ConnectAsync(ct) with
-                            | Error e -> log.LogWarning("Reconnect attempt {Attempt} failed: {Error}", attempt + 1, e)
-                            | Ok() ->
-                                match authKey with
-                                | Some _ ->
-                                    // The auth key is permanent per DC — reuse it instead of re-running
-                                    // DH so a restored/persisted session keeps working.
-                                    spawnReceiveAndKeepalive ()
-                                    reconnected <- true
-                                    log.LogInformation("Reconnected (reused auth key)")
-                                    reconnectedEvent.Trigger()
-                                | None ->
-                                    match! AuthKeyExchange.performExchange transport dc.Id ct with
-                                    | Error e ->
-                                        log.LogWarning("Auth key exchange failed on reconnect: {Error}", attempt + 1, e)
-                                    | Ok(key, salt, timeOffset) ->
-                                        authKey <- Some key
-                                        let sess = Session.createSession ()
-                                        sess.Salt <- salt
-                                        sess.TimeOffset <- timeOffset
-                                        session <- Some sess
+                                match! transport.ConnectAsync(ct) with
+                                | Error e ->
+                                    log.LogWarning("Reconnect attempt {Attempt} failed: {Error}", attempt + 1, e)
+                                | Ok() ->
+                                    match authKey with
+                                    | Some _ ->
+                                        // The auth key is permanent per DC — reuse it instead of re-running
+                                        // DH so a restored/persisted session keeps working.
                                         spawnReceiveAndKeepalive ()
                                         reconnected <- true
-                                        log.LogInformation("Reconnected successfully")
+                                        log.LogInformation("Reconnected (reused auth key)")
                                         reconnectedEvent.Trigger()
-                        with
-                        | :? OperationCanceledException -> ()
-                        | ex -> log.LogWarning(ex, "Reconnect attempt {Attempt} error", attempt + 1)
+                                    | None ->
+                                        match! AuthKeyExchange.performExchange transport dc.Id ct with
+                                        | Error e ->
+                                            log.LogWarning(
+                                                "Auth key exchange failed on reconnect: {Error}",
+                                                attempt + 1,
+                                                e
+                                            )
+                                        | Ok(key, salt, timeOffset) ->
+                                            authKey <- Some key
+                                            let sess = Session.createSession ()
+                                            sess.Salt <- salt
+                                            sess.TimeOffset <- timeOffset
+                                            session <- Some sess
+                                            spawnReceiveAndKeepalive ()
+                                            reconnected <- true
+                                            log.LogInformation("Reconnected successfully")
+                                            reconnectedEvent.Trigger()
+                            with
+                            | :? OperationCanceledException -> ()
+                            | ex -> log.LogWarning(ex, "Reconnect attempt {Attempt} error", attempt + 1)
 
-                lock reconnectLock (fun () -> isReconnecting <- false)
-
-                if not reconnected then
-                    log.LogError("All reconnect attempts failed")
+                    if not reconnected then
+                        log.LogError("All reconnect attempts failed")
+                finally
+                    lock reconnectLock (fun () -> isReconnecting <- false)
         }
 
     /// Start a fresh receive loop plus the ack/ping keepalive loops on a new CT. Cancels the
@@ -393,8 +412,10 @@ type MtProtoClient(dc: DataCenter, ?logger: ILogger, ?transportFactory: DataCent
         %Task.Run(Func<Task>(fun () -> pingLoop cts.Token))
 
     /// Set the auth key + a fresh session (carrying the given salt/time offset) and start the
-    /// receive + keepalive loops. Shared by the fresh-DH connect and persisted-session restore.
+    /// receive + keepalive loops. Shared by the fresh-DH connect and persisted-session restore,
+    /// and the one place that revives a client an earlier Disconnect had closed.
     let startSession (key: AuthKey) (salt: int64) (timeOffset: int32) =
+        closed <- false
         authKey <- Some key
         let sess = Session.createSession ()
         sess.Salt <- salt
@@ -454,11 +475,16 @@ type MtProtoClient(dc: DataCenter, ?logger: ILogger, ?transportFactory: DataCent
     /// Send an RPC request and await the response. The send (msg_id/seqno generation + the socket
     /// write) runs under the send lock so it can't interleave with another sender; the response is
     /// awaited outside the lock. Failures arrive as Error Results, never thrown.
-    /// Send an RPC request and await the response. If the transport is disconnected or the send
-    /// fails, waits for an in-progress reconnect to complete before returning the error — so the
-    /// caller's retry hits a live connection instead of immediately failing again.
+    ///
+    /// If a reconnect is in flight the send waits for it, so the caller's retry hits a live
+    /// connection. A client closed by Disconnect returns ConnectionClosed immediately instead:
+    /// nothing will read a reply and no reconnect is coming, so every wait would be dead time.
     member _.RpcAsync(requestBody: byte[], ct: CancellationToken) =
         task {
+            if closed then
+                return Error(MtProtoError.TransportError TransportError.ConnectionClosed)
+            else
+
             // If a reconnect is in progress, wait for it before even trying to send.
             if isReconnecting then
                 log.LogDebug("RpcAsync: reconnect in progress, waiting...")
@@ -543,8 +569,10 @@ type MtProtoClient(dc: DataCenter, ?logger: ILogger, ?transportFactory: DataCent
     [<CLIEvent>]
     member _.Reconnected = reconnectedEvent.Publish
 
-    /// Disconnect and clean up
+    /// Disconnect and clean up. The client stays usable: a later connect revives it.
     member _.Disconnect() =
+        closed <- true
+
         receiveLoopCts
         |> Option.iter (fun cts ->
             cts.Cancel()

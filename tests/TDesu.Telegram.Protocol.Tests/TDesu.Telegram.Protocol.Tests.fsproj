@@ -11,6 +11,7 @@
         <Compile Include="MessageFramingTests.fs" />
         <Compile Include="TransportFramingTests.fs" />
         <Compile Include="TransportSelectionTests.fs" />
+        <Compile Include="ClientLifecycleTests.fs" />
     </ItemGroup>
 
     <ItemGroup>

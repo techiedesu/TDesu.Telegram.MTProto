@@ -1,5 +1,19 @@
 # Release notes
 
+## 0.5.1
+
+### Protocol
+
+**A cancelled reconnect no longer wedges the client for good.** `reconnectInternal` set
+`isReconnecting` and cleared it only on the way out; a cancelled backoff delay threw straight past
+that, leaving the flag set forever. From then on no reconnect was ever attempted again and every
+`RpcAsync` spent its reconnect wait (15s before the send, 15s after) before failing — a client that
+looks alive, never recovers, and needs a process restart. The flag is now cleared in a `finally`.
+
+**A disconnected client fails fast.** `Disconnect` marks the client closed, so `RpcAsync` answers
+`ConnectionClosed` immediately instead of waiting for a reconnect that is not coming. A later
+`ConnectAsync` / `ConnectWithAuthKeyAsync` revives the same instance.
+
 ## 0.5.0
 
 ### Transport
