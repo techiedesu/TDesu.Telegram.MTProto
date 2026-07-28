@@ -68,8 +68,9 @@ foreach (var ctor in schema.GetConstructors())
 
 ### MTProto client transports
 
-`MtProtoClient` talks to Telegram through a pluggable `ITransport`, selected with a
-`transportFactory`. Raw TCP is the default; the others are obfuscated.
+The carrier is part of the connection target: every `DataCenter` carries a `TransportKind`, and
+`MtProtoClient` builds the matching `ITransport` when it connects and again on every reconnect.
+Raw TCP is the default; the others are obfuscated.
 
 ```fsharp
 open TDesu.Transport
@@ -80,18 +81,20 @@ let dc = DataCenters.production[1]
 // Raw TCP (intermediate framing) — the default:
 use client = new MtProtoClient(dc)
 
-// Or select another carrier via the factory:
-let factory d = new WsTransport(d) :> ITransport
-use wsClient = new MtProtoClient(dc, transportFactory = factory)
+// Or connect the same data centre over another carrier:
+use wsClient = new MtProtoClient(dc |> DataCenters.over TransportKind.WebSocket)
+
+// A `transportFactory` still overrides everything, for carriers this library has no kind for:
+use custom = new MtProtoClient(dc, transportFactory = fun d -> new MyTransport(d) :> ITransport)
 ```
 
-| Transport | Carrier | Obfuscation | Notes |
-|---|---|---|---|
-| `TcpTransport` | TCP | none | default; intermediate framing |
-| `TcpObfuscatedTransport` | TCP | obfuscation2 | abridged or intermediate; DPI-resistant |
-| `WsTransport` | WebSocket | obfuscation2 | for CDN / reverse-proxy environments |
-| `HttpTransport` | HTTP/1.1 | none | legacy carrier |
-| `FakeTlsTransport` | TLS-camouflaged TCP | obfuscation2 | via an MTProxy (`ee` secret + fronting domain) |
+| `TransportKind` | Transport | Carrier | Obfuscation | Notes |
+|---|---|---|---|---|
+| `Tcp` | `TcpTransport` | TCP | none | default; intermediate framing |
+| `TcpObfuscated framing` | `TcpObfuscatedTransport` | TCP | obfuscation2 | abridged or intermediate; DPI-resistant |
+| `WebSocket` | `WsTransport` | WebSocket | obfuscation2 | for CDN / reverse-proxy environments |
+| `Http` | `HttpTransport` | HTTP/1.1 | none | legacy carrier |
+| `FakeTls(host, port, secret, domain)` | `FakeTlsTransport` | TLS-camouflaged TCP | obfuscation2 | via an MTProxy (`ee` secret + fronting domain) |
 
 ### Generator CLI
 

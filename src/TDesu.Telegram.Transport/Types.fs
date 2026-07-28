@@ -32,6 +32,23 @@ type TransportFraming =
     | Abridged
     | Intermediate
 
+/// Wire carrier used to reach a data centre. It travels with the `DataCenter` the caller hands
+/// to the client, so a consumer picks its carrier when it initialises the connection and never
+/// has to reach into how the client builds transports.
+[<RequireQualifiedAccess>]
+type TransportKind =
+    /// Raw TCP with cleartext intermediate framing. The default.
+    | Tcp
+    /// Raw TCP with the obfuscated ("obfuscation2") init and CTR-encrypted frames.
+    | TcpObfuscated of framing: TransportFraming
+    /// Obfuscated intermediate framing inside WebSocket binary messages
+    /// (wss://<name>.web.telegram.org/apiws). Survives networks that drop raw MTProto TCP.
+    | WebSocket
+    /// HTTP/1.1 POST/response carrier; pushes piggyback on keepalive replies.
+    | Http
+    /// MTProxy fake-TLS: obfuscated frames disguised as a TLS 1.3 session.
+    | FakeTls of proxyHost: string * proxyPort: int * secret: byte[] * domain: string
+
 /// IPAddress doesn't satisfy F# structural-comparison constraint, so the
 /// record can't get auto-derived comparison either. Equality stays.
 [<NoComparison>]
@@ -39,6 +56,7 @@ type DataCenter = {
     Id: int
     Address: IPAddress
     Port: int
+    Transport: TransportKind
 }
 
 module DataCenters =
@@ -47,7 +65,12 @@ module DataCenters =
         Id = id
         Address = IPAddress.Parse(address: string)
         Port = port
+        Transport = TransportKind.Tcp
     }
+
+    /// Same data centre reached over a different carrier:
+    /// `DataCenters.production |> List.find (fun d -> d.Id = 2) |> DataCenters.over TransportKind.WebSocket`.
+    let over (kind: TransportKind) (dc: DataCenter) = { dc with Transport = kind }
 
     let production = [
         dc 1 "149.154.175.53" 443

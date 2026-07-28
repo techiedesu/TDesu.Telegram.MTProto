@@ -1,5 +1,25 @@
 # Release notes
 
+## 0.5.0
+
+### Transport
+
+**The carrier now travels with the data centre.** `DataCenter` gained a `Transport:
+TransportKind` field, `Transports.create` is the default factory, and `MtProtoClient` builds the
+carrier the `DataCenter` asks for — at connect time and on every reconnect:
+
+```fsharp
+use client = new MtProtoClient(dc |> DataCenters.over TransportKind.WebSocket)
+```
+
+This replaces having to name a concrete transport type: a consumer that only ever passes a
+`DataCenter` down its own stack can now choose the carrier where it initialises the connection.
+An explicit `transportFactory` still overrides the kind.
+
+**Breaking:** `DataCenter` has a fourth field, so records built literally need
+`Transport = TransportKind.Tcp` (or `DataCenters.over`). `DataCenters.production` / `test` are
+unchanged and stay on raw TCP.
+
 ## 0.4.0
 
 ### Transport

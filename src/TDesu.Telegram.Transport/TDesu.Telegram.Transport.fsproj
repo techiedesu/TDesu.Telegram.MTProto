@@ -20,6 +20,7 @@
         <Compile Include="WsTransport.fs" />
         <Compile Include="HttpTransport.fs" />
         <Compile Include="FakeTlsTransport.fs" />
+        <Compile Include="Transports.fs" />
     </ItemGroup>
 
     <ItemGroup>

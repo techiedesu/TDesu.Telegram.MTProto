@@ -15,9 +15,10 @@ open TDesu.Transport
 /// Core MTProto client handling session, encryption, and RPC dispatch.
 type MtProtoClient(dc: DataCenter, ?logger: ILogger, ?transportFactory: DataCenter -> ITransport) =
 
-    // Default carrier is raw TCP intermediate; pass a factory (e.g. WsTransport) to switch.
-    let createTransport =
-        defaultArg transportFactory (fun d -> new TcpTransport(d) :> ITransport)
+    // The carrier comes from the DataCenter the caller connected with (`dc.Transport`), so it is
+    // chosen at connection setup and is rebuilt the same way on every reconnect. An explicit
+    // factory still wins, for tests and for carriers this library does not know about.
+    let createTransport = defaultArg transportFactory Transports.create
 
     let mutable transport = createTransport dc
     let dispatcher = RpcDispatcher()
