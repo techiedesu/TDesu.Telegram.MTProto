@@ -1,5 +1,16 @@
 # Release notes
 
+## 0.5.2
+
+### Protocol
+
+**An RPC on a downed transport reconnects instead of failing forever.** Reconnects were driven
+only by the receive loop, so once its three attempts were exhausted — or once something cancelled
+them — the client kept a live-looking session with a dead carrier and answered every later call
+with `ConnectionClosed` until the process was restarted. `RpcAsync` now starts a reconnect itself
+when the transport is down, on a token of its own so one caller's timeout cannot abort a reconnect
+every other caller is waiting for.
+
 ## 0.5.1
 
 ### Protocol

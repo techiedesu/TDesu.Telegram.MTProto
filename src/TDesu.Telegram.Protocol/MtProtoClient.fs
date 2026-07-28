@@ -485,6 +485,15 @@ type MtProtoClient(dc: DataCenter, ?logger: ILogger, ?transportFactory: DataCent
                 return Error(MtProtoError.TransportError TransportError.ConnectionClosed)
             else
 
+            // Reconnects are otherwise only ever driven by the receive loop, and that loop is gone
+            // once its attempts are exhausted (or once something cancelled them). An RPC arriving
+            // on a client whose transport is down is the trigger that brings the connection back,
+            // instead of every later call failing until the process is restarted. Deliberately not
+            // tied to the caller's token: one caller's timeout must not abort a shared reconnect.
+            if not transport.IsConnected && not isReconnecting then
+                log.LogInformation("RpcAsync: transport is down, reconnecting before the send")
+                do! reconnectInternal CancellationToken.None
+
             // If a reconnect is in progress, wait for it before even trying to send.
             if isReconnecting then
                 log.LogDebug("RpcAsync: reconnect in progress, waiting...")
