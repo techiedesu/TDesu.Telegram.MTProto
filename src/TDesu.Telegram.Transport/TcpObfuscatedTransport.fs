@@ -124,9 +124,15 @@ type TcpObfuscatedTransport(dc: DataCenter, ?framing: TransportFraming) =
                 do! ns.WriteAsync(ReadOnlyMemory(s.Process frame), ct)
                 do! ns.FlushAsync(ct)
                 return Ok()
-            with
-            | :? OperationCanceledException -> return Error TransportError.Timeout
-            | ex -> return Error(TransportError.WriteError ex.Message)
+            with ex ->
+                // The keystream advanced by this frame before the write was attempted. If the
+                // bytes never left, everything sent afterwards decrypts to garbage at the far end,
+                // so this connection is finished — say so instead of inviting another frame.
+                connected <- false
+
+                match ex with
+                | :? OperationCanceledException -> return Error TransportError.Timeout
+                | _ -> return Error(TransportError.WriteError ex.Message)
         | _ -> return Error TransportError.ConnectionClosed
     }
 
@@ -134,12 +140,26 @@ type TcpObfuscatedTransport(dc: DataCenter, ?framing: TransportFraming) =
         match stream, recv with
         | Some ns, Some r ->
             try
-                match framing with
-                | TransportFraming.Abridged -> return! receiveAbridged ns r ct
-                | TransportFraming.Intermediate -> return! receiveIntermediate ns r ct
-            with
-            | :? OperationCanceledException -> return Error TransportError.Timeout
-            | ex -> return Error(TransportError.ReadError ex.Message)
+                let! result =
+                    match framing with
+                    | TransportFraming.Abridged -> receiveAbridged ns r ct
+                    | TransportFraming.Intermediate -> receiveIntermediate ns r ct
+
+                // A frame we could not decode leaves the read position mid-stream: the bytes are
+                // gone from the socket but the keystream never advanced past them, so every later
+                // read would decrypt at the wrong offset.
+                match result with
+                | Error(TransportError.InvalidFrame _) -> connected <- false
+                | _ -> ()
+
+                return result
+            with ex ->
+                // Same hazard from a cancelled or failed partial read.
+                connected <- false
+
+                match ex with
+                | :? OperationCanceledException -> return Error TransportError.Timeout
+                | _ -> return Error(TransportError.ReadError ex.Message)
         | _ -> return Error TransportError.ConnectionClosed
     }
 

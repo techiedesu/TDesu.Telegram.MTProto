@@ -77,8 +77,17 @@ module MessageFraming =
                     let msgId = innerReader.ReadInt64()
                     let seqNo = innerReader.ReadInt32()
                     let bodyLength = innerReader.ReadInt32()
+                    // MTProto 2.0 receive rules also require a 4-aligned body and 12..1024 bytes
+                    // of trailing padding. This is spec compliance, not an exposure: msg_key is
+                    // already verified in constant time over the whole plaintext above, so a
+                    // violation means a broken peer rather than a forgery attempt.
+                    let paddingLength = decrypted.Length - 32 - bodyLength
                     if bodyLength < 0 || 32 + bodyLength > decrypted.Length then
                         Error (MtProtoError.InvalidResponse $"invalid body length %d{bodyLength}")
+                    elif bodyLength % 4 <> 0 then
+                        Error (MtProtoError.InvalidResponse $"body length %d{bodyLength} is not a multiple of 4")
+                    elif paddingLength < 12 || paddingLength > 1024 then
+                        Error (MtProtoError.InvalidResponse $"padding length %d{paddingLength} outside 12..1024")
                     else
                         let body = innerReader.ReadRawBytes(bodyLength)
                         Ok (msgId, _sessionId, seqNo, body)

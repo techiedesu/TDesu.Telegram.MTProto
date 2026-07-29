@@ -33,8 +33,9 @@ type TcpTransport(dc: DataCenter) =
     member _.IsConnected = connected
 
     member _.ConnectAsync(ct: CancellationToken) = task {
+        let tcp = new TcpClient()
+
         try
-            let tcp = new TcpClient()
             tcp.NoDelay <- true
             tcp.ReceiveBufferSize <- 64 * 1024
             tcp.SendBufferSize <- 64 * 1024
@@ -49,16 +50,23 @@ type TcpTransport(dc: DataCenter) =
 
             do! tcp.ConnectAsync(dc.Address, dc.Port, ct)
             let ns = tcp.GetStream()
+
+            // The intermediate header goes out before anything is published: a caller that sees
+            // Error must not find IsConnected true and a socket the DC will reject, and a socket
+            // abandoned here would otherwise wait for finalisation.
+            let header = FrameCodec.encodeHeader ()
+            do! ns.WriteAsync(ReadOnlyMemory header, ct)
+
             client <- Some tcp
             stream <- Some ns
             connected <- true
-            // Send intermediate transport header
-            let header = FrameCodec.encodeHeader ()
-            do! ns.WriteAsync(ReadOnlyMemory header, ct)
-            return Ok ()
-        with
-        | :? OperationCanceledException -> return Error TransportError.Timeout
-        | ex -> return Error (TransportError.ConnectionFailed ex.Message)
+            return Ok()
+        with ex ->
+            tcp.Dispose()
+
+            match ex with
+            | :? OperationCanceledException -> return Error TransportError.Timeout
+            | _ -> return Error(TransportError.ConnectionFailed ex.Message)
     }
 
     member _.SendAsync(payload: byte[], ct: CancellationToken) = task {

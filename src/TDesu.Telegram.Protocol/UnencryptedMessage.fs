@@ -23,7 +23,14 @@ module UnencryptedMessage =
             else
                 let msgId = reader.ReadInt64()
                 let bodyLength = reader.ReadInt32()
-                let body = reader.ReadRawBytes(bodyLength)
-                Ok (msgId, body)
+
+                // First length ever read off a new connection, before any key or nonce exists to
+                // authenticate it. A negative value walks the read cursor backwards and returns an
+                // empty body as success; an absurd one allocates whatever it asks for.
+                if bodyLength < 0 || bodyLength > data.Length - 20 then
+                    Error(MtProtoError.InvalidResponse $"Unencrypted body length {bodyLength} does not fit the message")
+                else
+                    let body = reader.ReadRawBytes(bodyLength)
+                    Ok(msgId, body)
         with ex ->
             Error (MtProtoError.SerializationError ex.Message)

@@ -1,5 +1,81 @@
 # Release notes
 
+## 0.6.0
+
+An audit of the whole stack against the MTProto specification. The headline is a framing bug that
+silently dropped messages on the WebSocket carrier; the rest is the long tail behind it.
+
+### Transport
+
+**The WebSocket carrier lost frames.** `WsTransport` treated one WebSocket message as exactly one
+MTProto frame: anything past the first frame in a coalesced message was discarded without a word,
+and a frame split across two messages failed as `InvalidFrame` and forced a reconnect. The gateway
+relays an obfuscated *byte stream* — message boundaries mean nothing. It now decrypts chunks in
+arrival order into a carry-over buffer and hands back one frame at a time. Anything that ran on
+this carrier was losing RPC replies and push updates at a rate set by the gateway's batching.
+
+**A failed read or write now retires the connection.** In every obfuscated carrier the CTR
+keystream advances with the bytes, so a cancelled or partial read — or a write that failed after
+`Process` — leaves the stream permanently out of step with the peer, while `IsConnected` kept
+reporting true. `WsTransport` additionally derives `IsConnected` from the socket state instead of
+a flag that only a Close frame cleared.
+
+**HTTP carrier**: `Content-Length` is parsed and capped against `FrameCodec.MaxFrameLength`
+(previously any 32-bit value went straight to an allocation), the inbound channel is rebuilt on
+connect (a disconnect used to complete it permanently, so a revived transport dropped every reply
+into a closed channel), the exchange lock is acquired inside the error contract, and the response
+read has a deadline so one silent server cannot block every sender.
+
+**Both TCP carriers** publish their state only after the transport header is written, and dispose
+the half-built socket and ciphers when a connect fails. `FrameCodec.MaxFrameLength` is public.
+
+### Protocol
+
+**`new_session_created` is a gap notification, not a salt update.** The server had thrown the
+session away, taking every in-flight request with it, and the client only wrote down the new salt:
+the abandoned requests hung to their deadline and the updates missed in the gap were never
+recovered. It now re-sends everything below `first_msg_id` and raises `Reconnected`, which is the
+signal applications already use to re-run gap recovery.
+
+**`bad_msg_notification` 16/17 corrects the time offset.** Clock skew (an NTP step, a suspended
+host, a stale persisted offset) made the server reject every message the client sent, forever —
+the client only logged it. It now recomputes `TimeOffset` from the notification's own msg_id,
+clears the monotonic clamp and re-sends.
+
+**The replay guard covers messages inside a container.** It was applied only to the outer msg_id,
+but a retransmission keeps its own id and travels inside a *new* container: every re-sent update
+was applied twice.
+
+**A rekeyed request can still be timed out.** After `bad_server_salt`, `Rekey` moved the entry to
+a new msg_id while the caller still waited on the old one, so its timeout removed nothing and the
+task plus request body leaked until the next `FailAll`.
+
+Also: unacknowledged `msgs_ack` ids are requeued instead of dropped (and chunked to the spec's
+8192), a throwing update subscriber or unparseable message no longer fails every in-flight RPC and
+forces a reconnect, a superseded receive loop cannot fail requests belonging to the connection
+that replaced it, `SendUnencryptedAsync` takes the send lock, `RpcAsync` returns `Error` instead
+of throwing when there is no session, and per-session state is cleared when a session is created.
+
+### Hardening
+
+Bounds on everything read off the wire that had none: gzip expansion is capped at the frame size
+(nested `gzip_packed` could otherwise multiply into gigabytes), container count is limited to the
+spec's 1024 with inner lengths checked against the frame, and the unencrypted-message body length
+is validated before it is used — a negative one used to rewind the read cursor and return success.
+
+The handshake no longer faults its task: `performExchange` maps every malformed response to
+`Error`, the `resPQ` fingerprint vector count is bounded (it came from an unauthenticated message
+straight into an allocation), `encrypted_answer` is length-checked before AES-IGE, a `pq` longer
+than 8 bytes or smaller than 3 is rejected (the latter made Pollard rho spin forever), handshake
+msg_ids are divisible by 4 as the spec requires, and `auth_key_aux_hash` is read little-endian.
+
+`MessageFraming.decrypt` adds the spec's alignment and padding-range checks. Randomized
+intermediate padding uses a cryptographic RNG.
+
+**Session files are written atomically** and a corrupt or truncated one is rejected instead of
+yielding a short auth key that breaks every send and receive. A refused `chmod 0600` is now an
+error rather than a silent world-readable auth key.
+
 ## 0.5.2
 
 ### Protocol

@@ -87,7 +87,23 @@ type MtProtoClient(dc: DataCenter, ?logger: ILogger, ?transportFactory: DataCent
             use input = new MemoryStream(packed)
             use gz = new GZipStream(input, CompressionMode.Decompress)
             use output = new MemoryStream()
-            gz.CopyTo(output)
+
+            // A frame is capped at 16 MiB on the wire, but gzip of structured TL data expands by
+            // three orders of magnitude, and the unpacked body can itself be gzip_packed. Copying
+            // without a ceiling turns one frame into gigabytes on a process that never restarts.
+            let buffer = Array.zeroCreate<byte> 81920
+            let mutable total = 0
+            let mutable read = gz.Read(buffer, 0, buffer.Length)
+
+            while read > 0 do
+                total <- total + read
+
+                if total > FrameCodec.MaxFrameLength then
+                    failwith "gzip_packed expands beyond the maximum frame size"
+
+                output.Write(buffer, 0, read)
+                read <- gz.Read(buffer, 0, buffer.Length)
+
             output.ToArray()
         else
             data
@@ -178,12 +194,32 @@ type MtProtoClient(dc: DataCenter, ?logger: ILogger, ?transportFactory: DataCent
                 // message so their service constructors are handled and content ones get acked.
                 let count = reader.ReadInt32()
 
-                for _ in 1..count do
-                    let innerMsgId = reader.ReadInt64()
-                    let innerSeqNo = reader.ReadInt32()
-                    let innerLength = reader.ReadInt32()
-                    let innerBody = reader.ReadRawBytes(innerLength)
-                    processInnerMessage innerBody innerMsgId innerSeqNo
+                // The spec caps a container at 1024 messages. Beyond that the count is garbage and
+                // the reads below would walk off the buffer.
+                if count < 0 || count > 1024 then
+                    log.LogWarning("Dropping msg_container with implausible count {Count}", count)
+                else
+                    for _ in 1..count do
+                        let innerMsgId = reader.ReadInt64()
+                        let innerSeqNo = reader.ReadInt32()
+                        let innerLength = reader.ReadInt32()
+
+                        // The inner length is the container's own claim about itself; a bad one
+                        // either allocates what it asks for or rewinds the cursor and re-reads the
+                        // same bytes forever.
+                        if innerLength < 0 || innerLength > body.Length then
+                            failwith $"msg_container inner length {innerLength} does not fit the frame"
+
+                        let innerBody = reader.ReadRawBytes(innerLength)
+
+                        // The dedupe guard has to sit here, not only on the outer id: Telegram
+                        // re-sends anything it has not seen acked, and a retransmission keeps its
+                        // own msg_id but travels inside a *new* container with a new outer id. The
+                        // outer check passes and the update would be applied a second time.
+                        if markSeen innerMsgId then
+                            processInnerMessage innerBody innerMsgId innerSeqNo
+                        else
+                            log.LogDebug("Dropping replayed inner msg_id {MsgId}", innerMsgId)
             | _ ->
                 // Content-related messages carry an odd seqno and MUST be acked.
                 if seqNo &&& 1 = 1 then
@@ -205,18 +241,68 @@ type MtProtoClient(dc: DataCenter, ?logger: ILogger, ?transportFactory: DataCent
                     %Task.Run(Func<Task>(fun () -> resendRequest badMsgId))
                 | 0x9ec20908u ->
                     // new_session_created: first_msg_id:long unique_id:long server_salt:long
-                    %reader.ReadInt64()
+                    //
+                    // The server threw the old session away. Everything we sent before first_msg_id
+                    // was discarded with it, and any update it would have pushed in between is now
+                    // a hole only the application can fill — so re-send the abandoned requests and
+                    // tell listeners the stream has a gap. Treating this as "new salt" alone loses
+                    // both, silently.
+                    let firstMsgId = reader.ReadInt64()
                     %reader.ReadInt64()
                     let newSalt = reader.ReadInt64()
                     session |> Option.iter (fun s -> s.Salt <- newSalt)
-                    log.LogInformation("new_session_created; server salt updated")
+
+                    let abandoned = dispatcher.PendingIds |> List.filter (fun id -> id < firstMsgId)
+
+                    log.LogWarning(
+                        "new_session_created (first_msg_id={FirstMsgId}); re-sending {Count} abandoned request(s)",
+                        firstMsgId,
+                        abandoned.Length
+                    )
+
+                    for abandonedId in abandoned do
+                        %Task.Run(Func<Task>(fun () -> resendRequest abandonedId))
+
+                    // Same signal the reconnect path raises: whatever listens for "your view of the
+                    // update stream may be incomplete" has to run now.
+                    reconnectedEvent.Trigger()
                 | 0xa7eff811u ->
                     // bad_msg_notification: bad_msg_id:long bad_msg_seqno:int error_code:int
                     let badMsgId = reader.ReadInt64()
                     %reader.ReadInt32()
                     let errCode = reader.ReadInt32()
-                    log.LogWarning("bad_msg_notification {ErrCode} for msg_id {MsgId}", errCode, badMsgId)
-                    %dispatcher.FailRequest(badMsgId, MtProtoError.InvalidResponse $"bad_msg_notification {errCode}")
+
+                    match errCode with
+                    | 16
+                    | 17 ->
+                        // Our clock disagrees with the server's beyond the accepted window, so
+                        // every message we send is rejected until the offset is corrected. The
+                        // notification's own msg_id carries the server's time in its high 32 bits.
+                        let serverSeconds = int32 (msgId >>> 32)
+                        let localSeconds = int32 (DateTimeOffset.UtcNow.ToUnixTimeSeconds())
+
+                        session
+                        |> Option.iter (fun s ->
+                            s.TimeOffset <- serverSeconds - localSeconds
+                            // The monotonic clamp would otherwise keep emitting ids from the old,
+                            // wrong clock long after the offset is fixed.
+                            s.LastMsgId <- 0L)
+
+                        log.LogWarning(
+                            "bad_msg_notification {ErrCode} for msg_id {MsgId}; time offset corrected to {Offset}s, re-sending",
+                            errCode,
+                            badMsgId,
+                            serverSeconds - localSeconds
+                        )
+
+                        %Task.Run(Func<Task>(fun () -> resendRequest badMsgId))
+                    | _ ->
+                        log.LogWarning("bad_msg_notification {ErrCode} for msg_id {MsgId}", errCode, badMsgId)
+
+                        %dispatcher.FailRequest(
+                            badMsgId,
+                            MtProtoError.InvalidResponse $"bad_msg_notification {errCode}"
+                        )
                 | 0x347773c5u ->
                     // pong (reply to our keepalive ping) — nothing to correlate.
                     log.LogTrace("pong")
@@ -226,7 +312,13 @@ type MtProtoClient(dc: DataCenter, ?logger: ILogger, ?transportFactory: DataCent
                 | _ ->
                     // Server push update (not RPC result, not a known service message).
                     log.LogDebug("Push update 0x{Constructor:x8}, msg_id={MsgId}", constructor, msgId)
-                    updateEvent.Trigger(body)
+
+                    // Subscribers run on the receive loop, so a throwing handler would otherwise
+                    // reach the loop's catch-all, fail every in-flight RPC and force a reconnect.
+                    try
+                        updateEvent.Trigger(body)
+                    with ex ->
+                        log.LogError(ex, "Update subscriber threw for msg_id {MsgId}", msgId)
 
     /// Periodically flush accumulated msgs_ack. Shares the receive loop's CT so it dies with a
     /// disconnect/reconnect and is restarted alongside the new receive loop.
@@ -238,13 +330,21 @@ type MtProtoClient(dc: DataCenter, ?logger: ILogger, ?transportFactory: DataCent
                     let ids = ResizeArray<int64>()
                     let mutable id = 0L
 
-                    while pendingAcks.TryDequeue(&id) do
+                    // The spec caps msgs_ack at 8192 ids; a catch-up burst can exceed that inside
+                    // one 10s window, so take at most a batch and leave the rest queued.
+                    while ids.Count < 8192 && pendingAcks.TryDequeue(&id) do
                         ids.Add id
 
                     if ids.Count > 0 then
                         match! sendServiceMessage (buildMsgsAck (ids.ToArray())) false ct with
                         | Ok _ -> ()
-                        | Error e -> log.LogDebug("msgs_ack send failed: {Error}", e)
+                        | Error e ->
+                            // Dropping them would leave the server retransmitting those messages
+                            // forever — and eventually dropping a session it sees as unacked.
+                            for unsent in ids do
+                                enqueueAck unsent
+
+                            log.LogDebug("msgs_ack send failed, {Count} ids requeued: {Error}", ids.Count, e)
             with
             | :? OperationCanceledException -> ()
             | ex -> log.LogDebug(ex, "ack loop ended")
@@ -273,9 +373,14 @@ type MtProtoClient(dc: DataCenter, ?logger: ILogger, ?transportFactory: DataCent
                 while not ct.IsCancellationRequested && transport.IsConnected do
                     match! transport.ReceiveAsync(ct) with
                     | Error TransportError.ConnectionClosed ->
-                        log.LogWarning("Connection closed by server; reconnecting")
-                        dispatcher.FailAll(MtProtoError.TransportError TransportError.ConnectionClosed)
-                        do! reconnectInternal ct
+                        // A loop whose CT was already cancelled has been superseded by a newer
+                        // generation; failing requests now would kill the ones belonging to the
+                        // connection that replaced it.
+                        if not ct.IsCancellationRequested then
+                            log.LogWarning("Connection closed by server; reconnecting")
+                            dispatcher.FailAll(MtProtoError.TransportError TransportError.ConnectionClosed)
+                            do! reconnectInternal ct
+
                         return ()
                     | Error TransportError.Timeout ->
                         // ReceiveAsync only yields Timeout when our own receive CT is cancelled
@@ -287,9 +392,11 @@ type MtProtoClient(dc: DataCenter, ?logger: ILogger, ?transportFactory: DataCent
                         // ConnectionFailed) leaves the read position unrecoverable: looping would
                         // spin on garbage until every in-flight RPC times out. Treat it like a
                         // dropped connection — fail pending requests and reconnect.
-                        log.LogWarning("Receive error ({Error}); stream unrecoverable, reconnecting", e)
-                        dispatcher.FailAll(MtProtoError.TransportError e)
-                        do! reconnectInternal ct
+                        if not ct.IsCancellationRequested then
+                            log.LogWarning("Receive error ({Error}); stream unrecoverable, reconnecting", e)
+                            dispatcher.FailAll(MtProtoError.TransportError e)
+                            do! reconnectInternal ct
+
                         return ()
                     | Ok data ->
                         match authKey with
@@ -301,7 +408,13 @@ type MtProtoClient(dc: DataCenter, ?logger: ILogger, ?transportFactory: DataCent
                                     log.LogWarning("Dropping message for foreign session_id {SessionId}", sessionId)
                                 | _ ->
                                     if markSeen msgId then
-                                        processInnerMessage body msgId seqNo
+                                        // One unparseable message must cost that message, not the
+                                        // connection: the loop-level handler below fails every
+                                        // in-flight RPC and reconnects.
+                                        try
+                                            processInnerMessage body msgId seqNo
+                                        with ex ->
+                                            log.LogError(ex, "Failed to process msg_id {MsgId}", msgId)
                                     else
                                         log.LogWarning("Dropping replayed msg_id {MsgId}", msgId)
                             | Error e -> log.LogError("Failed to decrypt message: {Error}", e)
@@ -421,6 +534,15 @@ type MtProtoClient(dc: DataCenter, ?logger: ILogger, ?transportFactory: DataCent
         sess.Salt <- salt
         sess.TimeOffset <- timeOffset
         session <- Some sess
+
+        // Both are per-session: acks name msg_ids the new session never saw, and the replay window
+        // would judge new ids against ids from a session whose id no longer matches.
+        pendingAcks.Clear()
+
+        lock seenMsgIdLock (fun () ->
+            seenMsgIds.Clear()
+            seenMsgIdOrder.Clear())
+
         spawnReceiveAndKeepalive ()
 
     /// Connect to the DC and perform auth key exchange
@@ -507,8 +629,13 @@ type MtProtoClient(dc: DataCenter, ?logger: ILogger, ?transportFactory: DataCent
                 with _ -> ()
                 reconnectedEvent.Publish.RemoveHandler(handler)
 
-            let sess = ensureSession ()
-            let key = ensureAuthKey ()
+            // Documented contract: failures arrive as Error Results. `ensureSession` throws, which
+            // would fault the task for any caller that raced a Disconnect or issued an RPC before
+            // the first connect — exactly the callers least likely to have a try around it.
+            match session, authKey with
+            | Option.None, _
+            | _, Option.None -> return Error(MtProtoError.InvalidResponse "not connected")
+            | Some sess, Some key ->
 
             do! sendLock.WaitAsync(ct)
 
@@ -561,13 +688,22 @@ type MtProtoClient(dc: DataCenter, ?logger: ILogger, ?transportFactory: DataCent
     /// Send an unencrypted message (for pre-auth operations)
     member _.SendUnencryptedAsync(body: byte[], ct: CancellationToken) =
         task {
-            let sess = ensureSession ()
-            let msgId = Session.generateMsgId sess
-            let unencrypted = UnencryptedMessage.serialize msgId body
+            match session with
+            | Option.None -> return Error(MtProtoError.InvalidResponse "not connected")
+            | Some sess ->
+                // msg_id generation mutates shared session state and the write shares one socket:
+                // without the lock two messages can take the same id and interleave on the wire.
+                do! sendLock.WaitAsync(ct)
 
-            match! transport.SendAsync(unencrypted, ct) with
-            | Error e -> return Error(MtProtoError.TransportError e)
-            | Ok() -> return Ok msgId
+                try
+                    let msgId = Session.generateMsgId sess
+                    let unencrypted = UnencryptedMessage.serialize msgId body
+
+                    match! transport.SendAsync(unencrypted, ct) with
+                    | Error e -> return Error(MtProtoError.TransportError e)
+                    | Ok() -> return Ok msgId
+                finally
+                    %sendLock.Release()
         }
 
     /// Event fired when a server push update is received (not an RPC response).

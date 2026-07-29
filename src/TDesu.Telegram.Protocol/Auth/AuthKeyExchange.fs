@@ -1,6 +1,7 @@
 ﻿namespace TDesu.MTProto.Auth
 
 open System
+open System.Buffers.Binary
 open System.Numerics
 open TDesu.FSharp
 open TDesu.FSharp.Operators
@@ -37,6 +38,16 @@ module AuthKeyExchange =
     let private DhGenRetry = 0x46dc1fb9u
     [<Literal>]
     let private DhGenFail = 0xa69dae02u
+
+    /// Bare TL vector constructor. The fingerprint vector is read by hand so its count can be
+    /// bounded before it reaches an allocation, which TlReadBuffer.ReadVector does not allow.
+    [<Literal>]
+    let private VectorCtorId = 0x1cb5c415u
+
+    /// resPQ advertises one fingerprint per RSA key the DC accepts — three in production. The
+    /// count arrives unauthenticated, so anything beyond a handful is a malformed message.
+    [<Literal>]
+    let private MaxFingerprints = 32
 
     /// Factorize pq into p and q (p < q) using Pollard's rho algorithm
     let factorizePQ (pq: uint64) : uint64 * uint64 =
@@ -136,230 +147,269 @@ module AuthKeyExchange =
 
     /// Perform the full auth key exchange
     let performExchange (transport: ITransport) (dcId: int) (ct: System.Threading.CancellationToken) : System.Threading.Tasks.Task<Result<AuthKey * int64 * int32, MtProtoError>> = task {
-        // Step 1: req_pq_multi
-        let nonce = Padding.randomBytes 16
-        let reqPq = serializeReqPqMulti nonce
-        let msgId = DateTimeOffset.UtcNow.ToUnixTimeSeconds() <<< 32 ||| 1L
+        // Everything below parses unauthenticated server bytes with readers that throw on
+        // malformed input. Without this wrapper a hostile or truncated response faults the task
+        // instead of returning Error, escaping every `match! ... with Ok/Error` caller.
+        try
+            // Step 1: req_pq_multi
+            let nonce = Padding.randomBytes 16
+            let reqPq = serializeReqPqMulti nonce
+            // Client message ids must be divisible by 4; 1 mod 4 is reserved for server responses.
+            let msgId = DateTimeOffset.UtcNow.ToUnixTimeSeconds() <<< 32 ||| 0L
 
-        let unencrypted = UnencryptedMessage.serialize msgId reqPq
-        match! transport.SendAsync(unencrypted, ct) with
-        | Error e -> return Error (MtProtoError.TransportError e)
-        | Ok () ->
+            let unencrypted = UnencryptedMessage.serialize msgId reqPq
+            match! transport.SendAsync(unencrypted, ct) with
+            | Error e -> return Error (MtProtoError.TransportError e)
+            | Ok () ->
 
-        // Step 2: Receive resPQ
-        match! transport.ReceiveAsync(ct) with
-        | Error e -> return Error (MtProtoError.TransportError e)
-        | Ok responseData ->
+            // Step 2: Receive resPQ
+            match! transport.ReceiveAsync(ct) with
+            | Error e -> return Error (MtProtoError.TransportError e)
+            | Ok responseData ->
 
-        match UnencryptedMessage.deserialize responseData with
-        | Error e -> return Error e
-        | Ok (_resMsgId, resBody) ->
+            match UnencryptedMessage.deserialize responseData with
+            | Error e -> return Error e
+            | Ok (_resMsgId, resBody) ->
 
-        use resReader = new TlReadBuffer(resBody)
-        let constructorId = resReader.ReadConstructorId()
-        if constructorId <> ResPQ then
-            return Error (MtProtoError.AuthKeyExchangeFailed $"Expected resPQ, got 0x%08x{constructorId}")
-        else
-
-        let resNonce = resReader.ReadRawBytes(16)
-        if resNonce <> nonce then
-            return Error (MtProtoError.AuthKeyExchangeFailed "Nonce mismatch in resPQ")
-        else
-
-        let serverNonce = resReader.ReadRawBytes(16)
-        let pqBytes = resReader.ReadBytes()
-        let fingerprints = resReader.ReadVector(fun r -> r.ReadInt64())
-
-        let pqValue =
-            pqBytes |> Array.fold (fun v b -> (v <<< 8) ||| uint64 b) 0UL
-
-        let (p, q) = factorizePQ pqValue
-
-        // Pick the key in the server's advertised order — the first fingerprint is the one the
-        // server prefers (the RSA_PAD key), so honour that instead of our local key order.
-        let rsaKey =
-            fingerprints
-            |> Array.tryPick (fun f -> Rsa.allKeys () |> List.tryFind (fun k -> k.Fingerprint = f))
-        match rsaKey with
-        | None -> return Error (MtProtoError.AuthKeyExchangeFailed "No matching RSA key found")
-        | Some key ->
-
-        // Step 3: Build p_q_inner_data
-        let newNonce = Padding.randomBytes 32
-        let pBytes = uint64ToBeBytes p
-        let qBytes = uint64ToBeBytes q
-
-        let pqInner = serializePQInnerDataDc pqBytes pBytes qBytes nonce serverNonce newNonce dcId
-
-        // Encrypt p_q_inner_data with RSA_PAD (MTProto's current, hardened scheme). The classic
-        // sha1(data)+data scheme is still available as Rsa.encrypt for callers that need it.
-        let encryptedData = Rsa.encryptPad pqInner key
-
-        // Step 4: req_DH_params
-        let reqDH = serializeReqDHParams nonce serverNonce pBytes qBytes key.Fingerprint encryptedData
-        let msgId2 = DateTimeOffset.UtcNow.ToUnixTimeSeconds() <<< 32 ||| 5L
-        let unencrypted2 = UnencryptedMessage.serialize msgId2 reqDH
-        match! transport.SendAsync(unencrypted2, ct) with
-        | Error e -> return Error (MtProtoError.TransportError e)
-        | Ok () ->
-
-        // Step 5: Receive server_DH_params
-        match! transport.ReceiveAsync(ct) with
-        | Error e -> return Error (MtProtoError.TransportError e)
-        | Ok responseData2 ->
-
-        match UnencryptedMessage.deserialize responseData2 with
-        | Error e -> return Error e
-        | Ok (_resMsgId2, resBody2) ->
-
-        use resReader2 = new TlReadBuffer(resBody2)
-        let constructorId2 = resReader2.ReadConstructorId()
-        if constructorId2 <> ServerDHParamsOk then
-            return Error (MtProtoError.AuthKeyExchangeFailed $"Expected server_DH_params_ok, got 0x%08x{constructorId2}")
-        else
-
-        let resNonce2 = resReader2.ReadRawBytes(16)
-        if resNonce2 <> nonce then
-            return Error (MtProtoError.AuthKeyExchangeFailed "Nonce mismatch in server_DH_params")
-        else
-
-        let resServerNonce2 = resReader2.ReadRawBytes(16)
-        if resServerNonce2 <> serverNonce then
-            return Error (MtProtoError.AuthKeyExchangeFailed "server_nonce mismatch in server_DH_params")
-        else
-
-        let encryptedAnswer = resReader2.ReadBytes()
-
-        let (tmpAesKey, tmpAesIv) = deriveTmpAes serverNonce newNonce
-        let answerDecrypted = AesIge.decrypt encryptedAnswer tmpAesKey tmpAesIv
-
-        use innerReader = new TlReadBuffer(answerDecrypted[20..])
-        let innerConstructor = innerReader.ReadConstructorId()
-        if innerConstructor <> ServerDHInnerData then
-            return Error (MtProtoError.AuthKeyExchangeFailed "Invalid server_DH_inner_data")
-        else
-
-        let innerNonce = innerReader.ReadRawBytes(16)
-        if innerNonce <> nonce then
-            return Error (MtProtoError.AuthKeyExchangeFailed "Nonce mismatch in server_DH_inner_data")
-        else
-
-        let innerServerNonce = innerReader.ReadRawBytes(16)
-        if innerServerNonce <> serverNonce then
-            return Error (MtProtoError.AuthKeyExchangeFailed "server_nonce mismatch in server_DH_inner_data")
-        else
-
-        let g = innerReader.ReadInt32()
-        let dhPrime = innerReader.ReadBytes()
-        let gA = innerReader.ReadBytes()
-        let serverTime = innerReader.ReadInt32()
-
-        // Verify the SHA1 integrity prefix of the decrypted answer. Only a server holding
-        // the RSA private key could produce a validly-hashed inner block, so this both
-        // authenticates the server and guarantees the DH values were not tampered with.
-        let innerLen = innerReader.Position
-        let answerHashOk =
-            answerDecrypted.Length >= 20 + innerLen
-            && AuthKeyId.sha1 answerDecrypted[20 .. 20 + innerLen - 1] = answerDecrypted[0..19]
-        if not answerHashOk then
-            return Error (MtProtoError.AuthKeyExchangeFailed "server_DH_inner_data hash mismatch")
-        else
-
-        // Validate DH parameters: g must be one of the six generators Telegram allows and
-        // dh_prime must be a safe prime of exactly 2048 bits. The explicit {2..7} bound is a
-        // defense-in-depth check because the library validator does not enforce it on its own;
-        // without this a malicious server could pick a weak prime and recover the auth key.
-        if g < 2 || g > 7 then
-            return Error (MtProtoError.AuthKeyExchangeFailed $"g out of allowed range {{2..7}}: %d{g}")
-        elif not (DiffieHellman.validateDhParams g dhPrime) then
-            return Error (MtProtoError.AuthKeyExchangeFailed "Invalid DH parameters (g / dh_prime)")
-        else
-
-        // Validate g_a lies in [2^{2048-64}, dh_prime - 2^{2048-64}] to exclude the
-        // degenerate small-subgroup values (0, 1, dh_prime-1) that force a known auth key.
-        if not (DiffieHellman.validateGARange gA dhPrime) then
-            return Error (MtProtoError.AuthKeyExchangeFailed "g_a out of range")
-        else
-
-        // Step 6: Generate b, compute g_b and auth_key
-        let b = DiffieHellman.generateA ()
-        let gB = DiffieHellman.computeGA g b dhPrime
-
-        // Our own g_b must satisfy the same range constraint before we transmit it.
-        if not (DiffieHellman.validateGARange gB dhPrime) then
-            return Error (MtProtoError.AuthKeyExchangeFailed "computed g_b out of range")
-        else
-
-        let authKeyData = DiffieHellman.computeAuthKey gA b dhPrime
-
-        let timeOffset = serverTime - int32 (DateTimeOffset.UtcNow.ToUnixTimeSeconds())
-
-        // Step 7: Build client_DH_inner_data
-        let clientDHInner = serializeClientDHInnerData nonce serverNonce 0L gB
-        let clientDHInnerWithHash = Bytes.concat2 (AuthKeyId.sha1 clientDHInner) clientDHInner
-        // Handshake spec: 0..15 padding (NOT the 12..1024 message-padding rule
-        // — TDLib-strict servers reject > 15 with "Too much pad").
-        let clientDHPadded = Padding.addHandshakePadding clientDHInnerWithHash
-        let clientDHEncrypted = AesIge.encrypt clientDHPadded tmpAesKey tmpAesIv
-
-        // Step 8: set_client_DH_params
-        let setDH = serializeSetClientDHParams nonce serverNonce clientDHEncrypted
-        let msgId3 = DateTimeOffset.UtcNow.ToUnixTimeSeconds() <<< 32 ||| 9L
-        let unencrypted3 = UnencryptedMessage.serialize msgId3 setDH
-        match! transport.SendAsync(unencrypted3, ct) with
-        | Error e -> return Error (MtProtoError.TransportError e)
-        | Ok () ->
-
-        // Step 9: Receive dh_gen_ok
-        match! transport.ReceiveAsync(ct) with
-        | Error e -> return Error (MtProtoError.TransportError e)
-        | Ok responseData3 ->
-
-        match UnencryptedMessage.deserialize responseData3 with
-        | Error e -> return Error e
-        | Ok (_resMsgId3, resBody3) ->
-
-        use resReader3 = new TlReadBuffer(resBody3)
-        let constructorId3 = resReader3.ReadConstructorId()
-
-        if constructorId3 = DhGenOk then
-            let genNonce = resReader3.ReadRawBytes(16)
-            let genServerNonce = resReader3.ReadRawBytes(16)
-            let newNonceHash1 = resReader3.ReadRawBytes(16)
-
-            let authKeySha1 = AuthKeyId.sha1 authKeyData
-            let authKeyId = AuthKeyId.compute authKeyData
-            let auxHashBytes = authKeySha1[0..7]
-            let auxHash = BitConverter.ToInt64(authKeySha1, 0)
-
-            // new_nonce_hash1 = substr(SHA1(new_nonce + 0x01 + auth_key_aux_hash), 4, 16).
-            // Confirms the server derived the SAME auth key; a mismatch means a corrupted or
-            // tampered exchange, so the key MUST NOT be trusted.
-            let expectedHash = (AuthKeyId.sha1 (Bytes.concat3 newNonce [| 1uy |] auxHashBytes))[4..19]
-
-            if genNonce <> nonce then
-                return Error (MtProtoError.AuthKeyExchangeFailed "Nonce mismatch in dh_gen_ok")
-            elif genServerNonce <> serverNonce then
-                return Error (MtProtoError.AuthKeyExchangeFailed "server_nonce mismatch in dh_gen_ok")
-            elif newNonceHash1 <> expectedHash then
-                return Error (MtProtoError.AuthKeyExchangeFailed "new_nonce_hash1 mismatch — server derived a different auth key")
+            use resReader = new TlReadBuffer(resBody)
+            let constructorId = resReader.ReadConstructorId()
+            if constructorId <> ResPQ then
+                return Error (MtProtoError.AuthKeyExchangeFailed $"Expected resPQ, got 0x%08x{constructorId}")
             else
 
-            let salt =
-                [| 0..7 |] |> Array.fold (fun s i ->
-                    let bv = newNonce[i] ^^^ serverNonce[i]
-                    s ||| (int64 bv <<< (i * 8))) 0L
+            let resNonce = resReader.ReadRawBytes(16)
+            if resNonce <> nonce then
+                return Error (MtProtoError.AuthKeyExchangeFailed "Nonce mismatch in resPQ")
+            else
 
-            let authKey = {
-                Data = authKeyData
-                Id = authKeyId
-                AuxHash = auxHash
-            }
-            return Ok (authKey, salt, timeOffset)
-        elif constructorId3 = DhGenRetry then
-            return Error (MtProtoError.AuthKeyExchangeFailed "DH gen retry requested")
-        elif constructorId3 = DhGenFail then
-            return Error (MtProtoError.AuthKeyExchangeFailed "DH gen failed")
-        else
-            return Error (MtProtoError.AuthKeyExchangeFailed $"Unexpected response: 0x%08x{constructorId3}")
+            let serverNonce = resReader.ReadRawBytes(16)
+            let pqBytes = resReader.ReadBytes()
+
+            // pq is a 63-bit semiprime. More than 8 bytes silently wraps the fold below, so we
+            // would factor a different number and the exchange would fail much later with a
+            // useless error; fewer than 3 as a value makes Pollard's rho loop forever.
+            if pqBytes.Length = 0 || pqBytes.Length > 8 then
+                return Error (MtProtoError.AuthKeyExchangeFailed $"resPQ pq must be 1..8 bytes, got %d{pqBytes.Length}")
+            else
+
+            let pqValue =
+                pqBytes |> Array.fold (fun v b -> (v <<< 8) ||| uint64 b) 0UL
+
+            if pqValue < 3UL then
+                return Error (MtProtoError.AuthKeyExchangeFailed $"resPQ pq too small to factor: %d{pqValue}")
+            else
+
+            let fingerprintsCtor = resReader.ReadConstructorId()
+            if fingerprintsCtor <> VectorCtorId then
+                return Error (MtProtoError.AuthKeyExchangeFailed $"Expected fingerprint vector in resPQ, got 0x%08x{fingerprintsCtor}")
+            else
+
+            let fingerprintCount = resReader.ReadInt32()
+            if fingerprintCount < 1 || fingerprintCount > MaxFingerprints then
+                return Error (MtProtoError.AuthKeyExchangeFailed $"resPQ fingerprint count outside 1..%d{MaxFingerprints}: %d{fingerprintCount}")
+            else
+
+            let fingerprints = Array.init fingerprintCount (fun _ -> resReader.ReadInt64())
+
+            let (p, q) = factorizePQ pqValue
+
+            // Pick the key in the server's advertised order — the first fingerprint is the one the
+            // server prefers (the RSA_PAD key), so honour that instead of our local key order.
+            let rsaKey =
+                fingerprints
+                |> Array.tryPick (fun f -> Rsa.allKeys () |> List.tryFind (fun k -> k.Fingerprint = f))
+            match rsaKey with
+            | None -> return Error (MtProtoError.AuthKeyExchangeFailed "No matching RSA key found")
+            | Some key ->
+
+            // Step 3: Build p_q_inner_data
+            let newNonce = Padding.randomBytes 32
+            let pBytes = uint64ToBeBytes p
+            let qBytes = uint64ToBeBytes q
+
+            let pqInner = serializePQInnerDataDc pqBytes pBytes qBytes nonce serverNonce newNonce dcId
+
+            // Encrypt p_q_inner_data with RSA_PAD (MTProto's current, hardened scheme). Rsa.encrypt
+            // is only the bare RSA primitive that encryptPad finishes with — no hash, no padding —
+            // so it is not a drop-in for the classic sha1(data)+data scheme and current servers
+            // reject that scheme anyway.
+            let encryptedData = Rsa.encryptPad pqInner key
+
+            // Step 4: req_DH_params
+            let reqDH = serializeReqDHParams nonce serverNonce pBytes qBytes key.Fingerprint encryptedData
+            let msgId2 = DateTimeOffset.UtcNow.ToUnixTimeSeconds() <<< 32 ||| 4L
+            let unencrypted2 = UnencryptedMessage.serialize msgId2 reqDH
+            match! transport.SendAsync(unencrypted2, ct) with
+            | Error e -> return Error (MtProtoError.TransportError e)
+            | Ok () ->
+
+            // Step 5: Receive server_DH_params
+            match! transport.ReceiveAsync(ct) with
+            | Error e -> return Error (MtProtoError.TransportError e)
+            | Ok responseData2 ->
+
+            match UnencryptedMessage.deserialize responseData2 with
+            | Error e -> return Error e
+            | Ok (_resMsgId2, resBody2) ->
+
+            use resReader2 = new TlReadBuffer(resBody2)
+            let constructorId2 = resReader2.ReadConstructorId()
+            if constructorId2 <> ServerDHParamsOk then
+                return Error (MtProtoError.AuthKeyExchangeFailed $"Expected server_DH_params_ok, got 0x%08x{constructorId2}")
+            else
+
+            let resNonce2 = resReader2.ReadRawBytes(16)
+            if resNonce2 <> nonce then
+                return Error (MtProtoError.AuthKeyExchangeFailed "Nonce mismatch in server_DH_params")
+            else
+
+            let resServerNonce2 = resReader2.ReadRawBytes(16)
+            if resServerNonce2 <> serverNonce then
+                return Error (MtProtoError.AuthKeyExchangeFailed "server_nonce mismatch in server_DH_params")
+            else
+
+            let encryptedAnswer = resReader2.ReadBytes()
+
+            // AES-IGE throws on a buffer that is not block-aligned, and the plaintext still has to
+            // hold the 20-byte SHA1 prefix plus a constructor id and the first nonce word.
+            if encryptedAnswer.Length < 36 || encryptedAnswer.Length % 16 <> 0 then
+                return Error (MtProtoError.AuthKeyExchangeFailed $"invalid encrypted_answer length %d{encryptedAnswer.Length}")
+            else
+
+            let (tmpAesKey, tmpAesIv) = deriveTmpAes serverNonce newNonce
+            let answerDecrypted = AesIge.decrypt encryptedAnswer tmpAesKey tmpAesIv
+
+            use innerReader = new TlReadBuffer(answerDecrypted[20..])
+            let innerConstructor = innerReader.ReadConstructorId()
+            if innerConstructor <> ServerDHInnerData then
+                return Error (MtProtoError.AuthKeyExchangeFailed "Invalid server_DH_inner_data")
+            else
+
+            let innerNonce = innerReader.ReadRawBytes(16)
+            if innerNonce <> nonce then
+                return Error (MtProtoError.AuthKeyExchangeFailed "Nonce mismatch in server_DH_inner_data")
+            else
+
+            let innerServerNonce = innerReader.ReadRawBytes(16)
+            if innerServerNonce <> serverNonce then
+                return Error (MtProtoError.AuthKeyExchangeFailed "server_nonce mismatch in server_DH_inner_data")
+            else
+
+            let g = innerReader.ReadInt32()
+            let dhPrime = innerReader.ReadBytes()
+            let gA = innerReader.ReadBytes()
+            let serverTime = innerReader.ReadInt32()
+
+            // Verify the SHA1 integrity prefix of the decrypted answer. Only a server holding
+            // the RSA private key could produce a validly-hashed inner block, so this both
+            // authenticates the server and guarantees the DH values were not tampered with.
+            let innerLen = innerReader.Position
+            let answerHashOk =
+                answerDecrypted.Length >= 20 + innerLen
+                && AuthKeyId.sha1 answerDecrypted[20 .. 20 + innerLen - 1] = answerDecrypted[0..19]
+            if not answerHashOk then
+                return Error (MtProtoError.AuthKeyExchangeFailed "server_DH_inner_data hash mismatch")
+            else
+
+            // Validate DH parameters: g must be one of the six generators Telegram allows and
+            // dh_prime must be a safe prime of exactly 2048 bits. DiffieHellman.validateDhParams
+            // also rejects g outside {2..7} as its first check; the explicit test is kept only so
+            // the error names the real fault instead of collapsing it into "invalid DH parameters".
+            if g < 2 || g > 7 then
+                return Error (MtProtoError.AuthKeyExchangeFailed $"g out of allowed range {{2..7}}: %d{g}")
+            elif not (DiffieHellman.validateDhParams g dhPrime) then
+                return Error (MtProtoError.AuthKeyExchangeFailed "Invalid DH parameters (g / dh_prime)")
+            else
+
+            // Validate g_a lies in [2^{2048-64}, dh_prime - 2^{2048-64}] to exclude the
+            // degenerate small-subgroup values (0, 1, dh_prime-1) that force a known auth key.
+            if not (DiffieHellman.validateGARange gA dhPrime) then
+                return Error (MtProtoError.AuthKeyExchangeFailed "g_a out of range")
+            else
+
+            // Step 6: Generate b, compute g_b and auth_key
+            let b = DiffieHellman.generateA ()
+            let gB = DiffieHellman.computeGA g b dhPrime
+
+            // Our own g_b must satisfy the same range constraint before we transmit it.
+            if not (DiffieHellman.validateGARange gB dhPrime) then
+                return Error (MtProtoError.AuthKeyExchangeFailed "computed g_b out of range")
+            else
+
+            let authKeyData = DiffieHellman.computeAuthKey gA b dhPrime
+
+            let timeOffset = serverTime - int32 (DateTimeOffset.UtcNow.ToUnixTimeSeconds())
+
+            // Step 7: Build client_DH_inner_data
+            let clientDHInner = serializeClientDHInnerData nonce serverNonce 0L gB
+            let clientDHInnerWithHash = Bytes.concat2 (AuthKeyId.sha1 clientDHInner) clientDHInner
+            // Handshake spec: 0..15 padding (NOT the 12..1024 message-padding rule
+            // — TDLib-strict servers reject > 15 with "Too much pad").
+            let clientDHPadded = Padding.addHandshakePadding clientDHInnerWithHash
+            let clientDHEncrypted = AesIge.encrypt clientDHPadded tmpAesKey tmpAesIv
+
+            // Step 8: set_client_DH_params
+            let setDH = serializeSetClientDHParams nonce serverNonce clientDHEncrypted
+            let msgId3 = DateTimeOffset.UtcNow.ToUnixTimeSeconds() <<< 32 ||| 8L
+            let unencrypted3 = UnencryptedMessage.serialize msgId3 setDH
+            match! transport.SendAsync(unencrypted3, ct) with
+            | Error e -> return Error (MtProtoError.TransportError e)
+            | Ok () ->
+
+            // Step 9: Receive dh_gen_ok
+            match! transport.ReceiveAsync(ct) with
+            | Error e -> return Error (MtProtoError.TransportError e)
+            | Ok responseData3 ->
+
+            match UnencryptedMessage.deserialize responseData3 with
+            | Error e -> return Error e
+            | Ok (_resMsgId3, resBody3) ->
+
+            use resReader3 = new TlReadBuffer(resBody3)
+            let constructorId3 = resReader3.ReadConstructorId()
+
+            if constructorId3 = DhGenOk then
+                let genNonce = resReader3.ReadRawBytes(16)
+                let genServerNonce = resReader3.ReadRawBytes(16)
+                let newNonceHash1 = resReader3.ReadRawBytes(16)
+
+                let authKeySha1 = AuthKeyId.sha1 authKeyData
+                let authKeyId = AuthKeyId.compute authKeyData
+                let auxHashBytes = authKeySha1[0..7]
+                // AuthKeyId reads its int64 little-endian and this value is persisted, so packing
+                // it architecture-endian via BitConverter would disagree on a big-endian host.
+                let auxHash = BinaryPrimitives.ReadInt64LittleEndian(ReadOnlySpan<byte>(auxHashBytes))
+
+                // new_nonce_hash1 = substr(SHA1(new_nonce + 0x01 + auth_key_aux_hash), 4, 16).
+                // Confirms the server derived the SAME auth key; a mismatch means a corrupted or
+                // tampered exchange, so the key MUST NOT be trusted.
+                let expectedHash = (AuthKeyId.sha1 (Bytes.concat3 newNonce [| 1uy |] auxHashBytes))[4..19]
+
+                if genNonce <> nonce then
+                    return Error (MtProtoError.AuthKeyExchangeFailed "Nonce mismatch in dh_gen_ok")
+                elif genServerNonce <> serverNonce then
+                    return Error (MtProtoError.AuthKeyExchangeFailed "server_nonce mismatch in dh_gen_ok")
+                elif newNonceHash1 <> expectedHash then
+                    return Error (MtProtoError.AuthKeyExchangeFailed "new_nonce_hash1 mismatch — server derived a different auth key")
+                else
+
+                let salt =
+                    [| 0..7 |] |> Array.fold (fun s i ->
+                        let bv = newNonce[i] ^^^ serverNonce[i]
+                        s ||| (int64 bv <<< (i * 8))) 0L
+
+                let authKey = {
+                    Data = authKeyData
+                    Id = authKeyId
+                    AuxHash = auxHash
+                }
+                return Ok (authKey, salt, timeOffset)
+            elif constructorId3 = DhGenRetry then
+                return Error (MtProtoError.AuthKeyExchangeFailed "DH gen retry requested")
+            elif constructorId3 = DhGenFail then
+                return Error (MtProtoError.AuthKeyExchangeFailed "DH gen failed")
+            else
+                return Error (MtProtoError.AuthKeyExchangeFailed $"Unexpected response: 0x%08x{constructorId3}")
+        with ex ->
+            return Error (MtProtoError.AuthKeyExchangeFailed $"Handshake failed: {ex.Message}")
     }

@@ -24,8 +24,10 @@ type HttpTransport(dc: DataCenter) =
     let mutable connected = false
 
     // Responses are decoupled from ReceiveAsync via an unbounded channel; the send
-    // path is the sole producer, so ordering matches the wire.
-    let inbound = Channel.CreateUnbounded<byte[]>()
+    // path is the sole producer, so ordering matches the wire. Rebuilt on connect: Disconnect
+    // completes it, and a client that is disconnected and connected again would otherwise drop
+    // every reply into a closed channel without a sound.
+    let mutable inbound = Channel.CreateUnbounded<byte[]>()
     // HTTP/1.1 is strictly one exchange at a time on a connection.
     let exchangeLock = new SemaphoreSlim(1, 1)
 
@@ -86,7 +88,11 @@ type HttpTransport(dc: DataCenter) =
                 if line = "" then
                     go <- false
                 elif line.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase) then
-                    contentLength <- int (line.Substring(15).Trim())
+                    // The only length on this wire without a structural cap. Anything else would
+                    // hand an attacker-chosen size straight to Array.zeroCreate below.
+                    match Int32.TryParse(line.Substring(15).Trim()) with
+                    | true, v when v >= 0 && v <= FrameCodec.MaxFrameLength -> contentLength <- v
+                    | _ -> go <- false
 
             if contentLength < 0 then
                 return Error(TransportError.ReadError "HTTP response missing Content-Length")
@@ -99,24 +105,41 @@ type HttpTransport(dc: DataCenter) =
     member _.IsConnected = connected
 
     member _.ConnectAsync(ct: CancellationToken) = task {
+        let tcp = new TcpClient()
+
         try
-            let tcp = new TcpClient()
             tcp.NoDelay <- true
             do! tcp.ConnectAsync(dc.Address, dc.Port, ct)
+            inbound <- Channel.CreateUnbounded<byte[]>()
             client <- Some tcp
             stream <- Some(tcp.GetStream())
             connected <- true
             return Ok()
-        with
-        | :? OperationCanceledException -> return Error TransportError.Timeout
-        | ex -> return Error(TransportError.ConnectionFailed ex.Message)
+        with ex ->
+            tcp.Dispose()
+
+            match ex with
+            | :? OperationCanceledException -> return Error TransportError.Timeout
+            | _ -> return Error(TransportError.ConnectionFailed ex.Message)
     }
 
     member _.SendAsync(payload: byte[], ct: CancellationToken) = task {
         match getStream () with
         | Error e -> return Error e
         | Ok s ->
-            do! exchangeLock.WaitAsync(ct)
+            let mutable acquired = false
+
+            try
+                do! exchangeLock.WaitAsync(ct)
+                acquired <- true
+            with :? OperationCanceledException ->
+                // Acquiring the lock is part of the call: an exception here would escape the
+                // Result contract and leave the caller's request registered forever.
+                ()
+
+            if not acquired then
+                return Error TransportError.Timeout
+            else
 
             try
                 try
@@ -130,7 +153,12 @@ type HttpTransport(dc: DataCenter) =
                     do! s.WriteAsync(ReadOnlyMemory payload, ct)
                     do! s.FlushAsync(ct)
 
-                    match! readResponse s ct with
+                    // A server that takes the POST and never answers would otherwise hold the
+                    // exchange lock forever and stop every other sender on this connection.
+                    use responseCts = CancellationTokenSource.CreateLinkedTokenSource(ct)
+                    responseCts.CancelAfter(TimeSpan.FromSeconds(60.0))
+
+                    match! readResponse s responseCts.Token with
                     | Error e ->
                         connected <- false
                         return Error e
@@ -139,9 +167,14 @@ type HttpTransport(dc: DataCenter) =
                             %inbound.Writer.TryWrite body
 
                         return Ok()
-                with
-                | :? OperationCanceledException -> return Error TransportError.Timeout
-                | ex -> return Error(TransportError.WriteError ex.Message)
+                with ex ->
+                    // A half-written request or a half-read response leaves the connection
+                    // mid-message; HTTP gives no way to resynchronise it.
+                    connected <- false
+
+                    match ex with
+                    | :? OperationCanceledException -> return Error TransportError.Timeout
+                    | _ -> return Error(TransportError.WriteError ex.Message)
             finally
                 %exchangeLock.Release()
     }

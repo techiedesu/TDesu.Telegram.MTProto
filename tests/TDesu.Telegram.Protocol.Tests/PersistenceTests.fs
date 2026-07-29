@@ -68,13 +68,29 @@ module PersistenceTests =
         | None -> Assert.Fail("registered body should be retrievable")
 
         Assert.That(d.Rekey(100L, 200L), Is.True)
-        Assert.That(d.TryGetBody 100L |> Option.isNone, Is.True)
         // a response under the *new* msg_id must still complete the caller's original task
         Assert.That(d.CompleteRequest(200L, [| 9uy |]), Is.True)
 
         match pendingTask.Result with
         | Ok data -> CollectionAssert.AreEqual([| 9uy |], data)
         | Error e -> Assert.Fail($"expected Ok, got %A{e}")
+
+        Assert.That(d.PendingCount, Is.EqualTo 0)
+
+    /// The caller only ever knows the id it sent under, so a timeout after a re-key used to remove
+    /// nothing and strand the task and its request body until the next FailAll.
+    [<Test>]
+    let ``a timeout on the original msg_id resolves a rekeyed request`` () =
+        let d = RpcDispatcher()
+        let pendingTask = d.RegisterRequest(100L, [| 1uy |])
+        Assert.That(d.Rekey(100L, 200L), Is.True)
+        Assert.That(d.FailRequest(100L, MtProtoError.Timeout), Is.True)
+
+        match pendingTask.Result with
+        | Error MtProtoError.Timeout -> ()
+        | other -> Assert.Fail($"expected Timeout, got %A{other}")
+
+        Assert.That(d.PendingCount, Is.EqualTo 0)
 
     [<Test>]
     let ``generateMsgId yields divisible-by-4, strictly increasing ids`` () =

@@ -1,6 +1,7 @@
 ﻿namespace TDesu.Transport
 
 open System
+open System.Security.Cryptography
 open TDesu.FSharp
 open TDesu.FSharp.Operators
 /// MTProto transport frame codecs.
@@ -9,7 +10,9 @@ open TDesu.FSharp.Operators
 /// Abridged:     one-time header 0xef, then a 1- or 4-byte length (payload_len / 4).
 module FrameCodec =
 
-    let [<Literal>] private MaxFrameLength = 16 * 1024 * 1024
+    /// Largest payload any carrier will accept off the wire. Public so carriers that carry their
+    /// own length field (HTTP's Content-Length) cap it the same way instead of trusting it.
+    let [<Literal>] MaxFrameLength = 16 * 1024 * 1024
 
     let [<Literal>] private IntermediateHeader = 0xeeeeeeeeu
 
@@ -93,20 +96,18 @@ module FrameCodec =
     /// decoder strips `length % 4` trailing bytes since MTProto payloads are 4-aligned.
     module RandomizedIntermediate =
 
-        let private rng = System.Random.Shared
-
-        /// Encode a payload with 0-3 random padding bytes appended.
+        /// Encode a payload with 0-3 random padding bytes appended. The padding is the only
+        /// per-frame entropy an observer sees on the obfuscated stream, so it comes from the
+        /// CSPRNG: a System.Random stream is reconstructible from a handful of observed frames.
         let encodeFrame (payload: byte[]) : byte[] =
-            let padLen = rng.Next(0, 4)
+            let padLen = RandomNumberGenerator.GetInt32(0, 4)
             let total = payload.Length + padLen
             let frame = Array.zeroCreate<byte> (4 + total)
             Buffer.BlockCopy(BitConverter.GetBytes(int32 total), 0, frame, 0, 4)
             Buffer.BlockCopy(payload, 0, frame, 4, payload.Length)
 
             if padLen > 0 then
-                let pad = Array.zeroCreate<byte> padLen
-                rng.NextBytes pad
-                Buffer.BlockCopy(pad, 0, frame, 4 + payload.Length, padLen)
+                RandomNumberGenerator.Fill(Span<byte>(frame, 4 + payload.Length, padLen))
 
             frame
 
