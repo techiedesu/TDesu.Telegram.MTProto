@@ -1,5 +1,16 @@
 # Release notes
 
+## 0.6.1
+
+### Protocol
+
+**The keepalive now outpaces the WebSocket gateway's idle timeout.** Telegram closes an apiws
+connection roughly 30 seconds after the last frame; the ping loop ran every 60, so on wss the
+client never reached its own keepalive — it just got closed. Production saw a drop every 31-36
+seconds, twenty in twenty minutes, each costing a reconnect, a gap-recovery pass and whatever RPCs
+were in flight. The interval now follows the carrier: 20s on WebSocket and HTTP, 60s on raw TCP,
+with `disconnect_delay` scaled to match.
+
 ## 0.6.0
 
 An audit of the whole stack against the MTProto specification. The headline is a framing bug that

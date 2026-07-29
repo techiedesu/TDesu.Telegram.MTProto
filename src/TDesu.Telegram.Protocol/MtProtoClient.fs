@@ -350,16 +350,28 @@ type MtProtoClient(dc: DataCenter, ?logger: ILogger, ?transportFactory: DataCent
             | ex -> log.LogDebug(ex, "ack loop ended")
         }
 
-    /// Keepalive: ping the server before it times out an idle connection (disconnect_delay = 75s,
-    /// pinged every 60s). Shares the receive loop's CT.
+    /// How long the carrier tolerates silence. Telegram's WebSocket gateway closes a connection
+    /// roughly 30s after the last frame — measured in production as a drop every 31-36s, each one
+    /// costing a reconnect and a gap-recovery pass — so the 60s that suits raw TCP never arrives
+    /// in time. HTTP is request/response and needs the same treatment for pushes to keep flowing.
+    let pingIntervalMs =
+        match dc.Transport with
+        | TransportKind.WebSocket
+        | TransportKind.Http -> 20_000
+        | _ -> 60_000
+
+    /// Keepalive: ping the server before it — or anything between us — times out an idle
+    /// connection. `disconnect_delay` tells the server to drop us if we go quiet for that long.
+    /// Shares the receive loop's CT.
     let pingLoop (ct: CancellationToken) =
         task {
             try
                 while not ct.IsCancellationRequested do
-                    do! Tasks.Task.Delay(60000, ct)
+                    do! Tasks.Task.Delay(pingIntervalMs, ct)
                     let pingId = Session.newSessionId ()
+                    let disconnectDelay = max 75 (pingIntervalMs / 1000 * 4)
 
-                    match! sendServiceMessage (buildPing pingId 75) false ct with
+                    match! sendServiceMessage (buildPing pingId disconnectDelay) false ct with
                     | Ok _ -> ()
                     | Error e -> log.LogDebug("ping send failed: {Error}", e)
             with
