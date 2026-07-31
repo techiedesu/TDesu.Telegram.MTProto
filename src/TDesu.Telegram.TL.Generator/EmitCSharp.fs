@@ -634,7 +634,10 @@ module EmitCSharp =
         let ns =
             F.FileScopedNamespaceDeclaration(F.ParseName namespaceName).AddMembers(Array.ofList members)
 
-        let unit = F.CompilationUnit().AddMembers(ns).NormalizeWhitespace()
+        // eol is pinned: NormalizeWhitespace defaults to Environment.NewLine, which
+        // makes the emitted bytes depend on the machine that ran the generator. The
+        // output is committed by consumers, so it has to be the same on every OS.
+        let unit = F.CompilationUnit().AddMembers(ns).NormalizeWhitespace("    ", "\n")
 
         if unit.ContainsDiagnostics then
             let d =

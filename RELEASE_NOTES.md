@@ -1,5 +1,41 @@
 # Release notes
 
+## 0.8.0
+
+### Generator — C# backend
+
+**`--target csharp` now honours `--mtproto-schema`.** The flag was global and only the `cid`
+target ever read it: passing it to `csharp` parsed nothing, emitted nothing, warned about nothing
+and exited 0. A consumer who followed its own documented regeneration command therefore got the
+api.tl surface only, silently — and if it had a committed tree built by a build that did merge
+mtproto.tl, regenerating deleted every transport type. The merge is now real: `bind_auth_key_inner`,
+`msgs_ack`, `pong`, `rpc_error`, the ResPQ/DH handshake set and the rest land in the emitted C#,
+with api.tl winning every collision on the emitted C# name (the loser is skipped and logged at
+info). Against the real pair exactly one declaration is skipped — mtproto's `rpc_drop_answer`
+function, which loses to the union of the same name.
+
+**The C# emitter is a Roslyn tree, not a StringBuilder.** 428 lines of hand-counted indentation
+became `SyntaxFactory` declarations with statement bodies parsed from fragments, and the finished
+compilation unit is rejected if it carries a single parse diagnostic — the same contract the F#
+side has via Fantomas. It caught `void` going through `ParseTypeName` on the first run.
+
+**Wire fix: several fields behind one flag bit.** TL routinely puts more than one field on a
+single bit (`my_boost` + `my_boost_slots`, and five more in api.tl). The bit was OR-ed from each
+field independently, so a half-filled object set the bit and wrote no payload, desyncing the
+reader from that offset on. The bit is derived once per (word, bit) now and disagreement throws
+at serialize time.
+
+**`GeneratedReturnTypes.g.cs`.** Request cid → the constructor ids its response may legally
+carry, so a consumer can assert that a handler answers with the type its method declares.
+
+**Emitted C# is LF-only on every OS.** `NormalizeWhitespace` defaults to `Environment.NewLine`,
+so the same generator, schema and flags produced different bytes on Windows and Linux. Generated
+trees get committed; the bytes are now the same everywhere. Nothing but line endings changed.
+
+### Packaging
+
+The README ships inside the packages, and CI is off the deprecated Node 20 runtime.
+
 ## 0.7.0
 
 ### Transport

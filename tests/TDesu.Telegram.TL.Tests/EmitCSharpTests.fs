@@ -191,3 +191,14 @@ module EmitCSharpTests =
             Assert.That(flat content, Does.Contain "#nullable enable")
             Assert.That(flat content, Does.Contain $"namespace {ns};")
             Assert.That(syntaxErrors content, Is.Empty, NUnitString $"invalid C# in {name}")
+
+    [<Test>]
+    let ``emitted files are LF-only, whatever the host OS uses`` () =
+        let fields = [ flagsWord; presence "MyBoost" 2; optional "Title" "string" 0 ]
+
+        let files =
+            EmitCSharp.buildFiles ns [ Record("BoostsStatus", fields, 0xEEEEEEEEu) ] []
+
+        for name, content in files do
+            Assert.That(content, Does.Not.Contain "\r", NUnitString $"CR in {name}")
+            Assert.That(content, Does.Contain "\n")
