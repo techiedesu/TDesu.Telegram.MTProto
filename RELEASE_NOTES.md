@@ -1,5 +1,22 @@
 # Release notes
 
+## 0.7.0
+
+### Transport
+
+**The WebSocket carrier can reach a data centre other than Telegram's.** `WsTransport` built its
+URL from `dc.Id` alone and ignored `dc.Address`, so `TransportKind.WebSocket` could only ever dial
+`wss://<name>.web.telegram.org/apiws` — a self-hosted or proxied deployment was unreachable over
+wss, and the only way out was writing an `ITransport` by hand. The case now carries the endpoint:
+`TransportKind.WebSocket of endpoint: Uri option`, where `None` keeps resolving Telegram's gateway
+for `dc.Id`. An address and port cannot stand in for it, since a WebSocket needs a scheme, host
+and path.
+
+`WsTransport.Endpoint` exposes the resolved URL. `TransportKind` is `[<NoComparison>]` now, as
+`Uri` is not structurally comparable; equality is unaffected.
+
+Source-breaking for `TransportKind.WebSocket`: pass `None` for the previous behaviour.
+
 ## 0.6.1
 
 ### Protocol

@@ -356,7 +356,7 @@ type MtProtoClient(dc: DataCenter, ?logger: ILogger, ?transportFactory: DataCent
     /// in time. HTTP is request/response and needs the same treatment for pushes to keep flowing.
     let pingIntervalMs =
         match dc.Transport with
-        | TransportKind.WebSocket
+        | TransportKind.WebSocket _
         | TransportKind.Http -> 20_000
         | _ -> 60_000
 

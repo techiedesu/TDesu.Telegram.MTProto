@@ -82,7 +82,12 @@ let dc = DataCenters.production[1]
 use client = new MtProtoClient(dc)
 
 // Or connect the same data centre over another carrier:
-use wsClient = new MtProtoClient(dc |> DataCenters.over TransportKind.WebSocket)
+use wsClient = new MtProtoClient(dc |> DataCenters.over (TransportKind.WebSocket None))
+
+// `None` means Telegram's own gateway. A self-hosted data centre needs its URL, since a
+// WebSocket cannot be derived from an address and port:
+use selfHosted =
+    new MtProtoClient(dc |> DataCenters.over (TransportKind.WebSocket(Some(Uri "wss://mtproto.example/apiws"))))
 
 // A `transportFactory` still overrides everything, for carriers this library has no kind for:
 use custom = new MtProtoClient(dc, transportFactory = fun d -> new MyTransport(d) :> ITransport)
@@ -92,7 +97,7 @@ use custom = new MtProtoClient(dc, transportFactory = fun d -> new MyTransport(d
 |---|---|---|---|---|
 | `Tcp` | `TcpTransport` | TCP | none | default; intermediate framing |
 | `TcpObfuscated framing` | `TcpObfuscatedTransport` | TCP | obfuscation2 | abridged or intermediate; DPI-resistant |
-| `WebSocket` | `WsTransport` | WebSocket | obfuscation2 | for CDN / reverse-proxy environments |
+| `WebSocket endpoint` | `WsTransport` | WebSocket | obfuscation2 | for CDN / reverse-proxy environments; `None` = Telegram's gateway for `dc.Id` |
 | `Http` | `HttpTransport` | HTTP/1.1 | none | legacy carrier |
 | `FakeTls(host, port, secret, domain)` | `FakeTlsTransport` | TLS-camouflaged TCP | obfuscation2 | via an MTProxy (`ee` secret + fronting domain) |
 

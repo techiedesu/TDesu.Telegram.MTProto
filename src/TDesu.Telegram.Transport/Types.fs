@@ -35,15 +35,19 @@ type TransportFraming =
 /// Wire carrier used to reach a data centre. It travels with the `DataCenter` the caller hands
 /// to the client, so a consumer picks its carrier when it initialises the connection and never
 /// has to reach into how the client builds transports.
-[<RequireQualifiedAccess>]
+///
+/// `Uri` is not structurally comparable, so neither is this. Equality stays.
+[<RequireQualifiedAccess; NoComparison>]
 type TransportKind =
     /// Raw TCP with cleartext intermediate framing. The default.
     | Tcp
     /// Raw TCP with the obfuscated ("obfuscation2") init and CTR-encrypted frames.
     | TcpObfuscated of framing: TransportFraming
-    /// Obfuscated intermediate framing inside WebSocket binary messages
-    /// (wss://<name>.web.telegram.org/apiws). Survives networks that drop raw MTProto TCP.
-    | WebSocket
+    /// Obfuscated intermediate framing inside WebSocket binary messages. Survives networks
+    /// that drop raw MTProto TCP. `None` resolves Telegram's gateway for `dc.Id`
+    /// (wss://&lt;name&gt;.web.telegram.org/apiws); pass an endpoint to reach any other host —
+    /// a self-hosted DC is not discoverable from `dc.Address`, since the carrier needs a URL.
+    | WebSocket of endpoint: Uri option
     /// HTTP/1.1 POST/response carrier; pushes piggyback on keepalive replies.
     | Http
     /// MTProxy fake-TLS: obfuscated frames disguised as a TLS 1.3 session.
@@ -69,7 +73,7 @@ module DataCenters =
     }
 
     /// Same data centre reached over a different carrier:
-    /// `DataCenters.production |> List.find (fun d -> d.Id = 2) |> DataCenters.over TransportKind.WebSocket`.
+    /// `DataCenters.production |> List.find (fun d -> d.Id = 2) |> DataCenters.over (TransportKind.WebSocket None)`.
     let over (kind: TransportKind) (dc: DataCenter) = { dc with Transport = kind }
 
     let production = [

@@ -1,5 +1,6 @@
 namespace TDesu.Telegram.Protocol.Tests
 
+open System
 open NUnit.Framework
 open TDesu.Transport
 
@@ -17,8 +18,8 @@ module TransportSelectionTests =
 
     [<Test>]
     let ``over replaces only the carrier`` () =
-        let ws = dc2 |> DataCenters.over TransportKind.WebSocket
-        Assert.That(ws.Transport, Is.EqualTo TransportKind.WebSocket)
+        let ws = dc2 |> DataCenters.over (TransportKind.WebSocket None)
+        Assert.That(ws.Transport, Is.EqualTo(TransportKind.WebSocket None))
         Assert.That(ws.Id, Is.EqualTo dc2.Id)
         Assert.That(ws.Address, Is.EqualTo dc2.Address)
         Assert.That(ws.Port, Is.EqualTo dc2.Port)
@@ -28,7 +29,7 @@ module TransportSelectionTests =
         let cases = [
             TransportKind.Tcp, typeof<TcpTransport>
             TransportKind.TcpObfuscated TransportFraming.Abridged, typeof<TcpObfuscatedTransport>
-            TransportKind.WebSocket, typeof<WsTransport>
+            TransportKind.WebSocket None, typeof<WsTransport>
             TransportKind.Http, typeof<HttpTransport>
             TransportKind.FakeTls("proxy.example", 443, Array.init 16 byte, "example.com"), typeof<FakeTlsTransport>
         ]
@@ -37,3 +38,21 @@ module TransportSelectionTests =
             use transport = Transports.create (dc2 |> DataCenters.over kind)
             Assert.That(transport.GetType(), Is.EqualTo expected)
             Assert.That(transport.IsConnected, Is.False)
+
+    /// A WebSocket needs a URL, which no `DataCenter` field can supply, so without this the
+    /// carrier could only ever reach Telegram's own gateway.
+    [<Test>]
+    let ``websocket dials the endpoint it was given`` () =
+        let endpoint = Uri "ws://127.0.0.1:9544/apiws"
+        use transport = Transports.create (dc2 |> DataCenters.over (TransportKind.WebSocket(Some endpoint)))
+        Assert.That((transport :?> WsTransport).Endpoint, Is.EqualTo endpoint)
+
+    [<Test>]
+    let ``websocket without an endpoint resolves the gateway for the data centre`` () =
+        let gateway id =
+            let dc = DataCenters.production |> List.find (fun d -> d.Id = id)
+            (new WsTransport(dc, None)).Endpoint.ToString()
+
+        Assert.That(gateway 1, Is.EqualTo "wss://pluto.web.telegram.org/apiws")
+        Assert.That(gateway 2, Is.EqualTo "wss://venus.web.telegram.org/apiws")
+        Assert.That(gateway 5, Is.EqualTo "wss://flora.web.telegram.org/apiws")

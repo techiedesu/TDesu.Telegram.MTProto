@@ -15,21 +15,26 @@ open TDesu.FSharp.Operators
 /// AES-CTR-encrypted intermediate frames. The one-time 0xeeeeeeee header is not
 /// sent separately — its tag lives inside the obfuscation init instead.
 ///
-/// The DC is resolved to Telegram's web endpoint by id
-/// (wss://<name>.web.telegram.org/apiws), falling back to venus (DC2).
-type WsTransport(dc: DataCenter) =
+/// `endpoint` overrides where to dial. Left as `None`, the DC id resolves Telegram's web
+/// gateway (wss://&lt;name&gt;.web.telegram.org/apiws, falling back to venus/DC2) — `dc.Address`
+/// cannot serve here because a WebSocket needs a URL, not an IP and port, and a self-hosted
+/// deployment picks its own scheme, host and path.
+type WsTransport(dc: DataCenter, endpoint: Uri option) =
 
     let endpoint =
-        let name =
-            match dc.Id with
-            | 1 -> "pluto"
-            | 2 -> "venus"
-            | 3 -> "aurora"
-            | 4 -> "vesta"
-            | 5 -> "flora"
-            | _ -> "venus"
+        match endpoint with
+        | Some uri -> uri
+        | None ->
+            let name =
+                match dc.Id with
+                | 1 -> "pluto"
+                | 2 -> "venus"
+                | 3 -> "aurora"
+                | 4 -> "vesta"
+                | 5 -> "flora"
+                | _ -> "venus"
 
-        Uri($"wss://%s{name}.web.telegram.org/apiws")
+            Uri($"wss://%s{name}.web.telegram.org/apiws")
 
     let mutable ws: ClientWebSocket option = None
     let mutable encryptor: Aes256Ctr option = None
@@ -53,6 +58,11 @@ type WsTransport(dc: DataCenter) =
     let invalidate () =
         connected <- false
         pending <- Array.empty
+
+    new(dc: DataCenter) = new WsTransport(dc, None)
+
+    /// Where this transport dials — Telegram's gateway unless one was supplied.
+    member _.Endpoint = endpoint
 
     member _.IsConnected =
         connected

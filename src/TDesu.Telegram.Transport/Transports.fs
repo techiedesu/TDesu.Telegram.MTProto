@@ -11,7 +11,7 @@ module Transports =
         match dc.Transport with
         | TransportKind.Tcp -> new TcpTransport(dc) :> ITransport
         | TransportKind.TcpObfuscated framing -> new TcpObfuscatedTransport(dc, framing) :> ITransport
-        | TransportKind.WebSocket -> new WsTransport(dc) :> ITransport
+        | TransportKind.WebSocket endpoint -> new WsTransport(dc, endpoint) :> ITransport
         | TransportKind.Http -> new HttpTransport(dc) :> ITransport
         | TransportKind.FakeTls(proxyHost, proxyPort, secret, domain) ->
             new FakeTlsTransport(dc, proxyHost, proxyPort, secret, domain) :> ITransport
