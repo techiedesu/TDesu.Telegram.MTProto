@@ -9,6 +9,7 @@
         <Description>TL (Type Language) schema parser and AST for Telegram</Description>
         <PackageTags>telegram;tl;parser;schema;mtproto;fsharp</PackageTags>
         <PackageLicenseExpression>Unlicense</PackageLicenseExpression>
+        <PackageReadmeFile>README.md</PackageReadmeFile>
         <PackageProjectUrl>https://github.com/techiedesu/TDesu.Telegram</PackageProjectUrl>
         <RepositoryUrl>https://github.com/techiedesu/TDesu.Telegram</RepositoryUrl>
         <RepositoryType>git</RepositoryType>
@@ -16,6 +17,10 @@
         <EmbedUntrackedSources>true</EmbedUntrackedSources>
         <DebugType>embedded</DebugType>
     </PropertyGroup>
+
+    <ItemGroup>
+        <None Include="../../README.md" Pack="true" PackagePath="/" />
+    </ItemGroup>
 
     <ItemGroup>
         <Compile Include="AST\Types.fs" />

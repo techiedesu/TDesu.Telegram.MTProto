@@ -10,6 +10,7 @@
         <Description>CLI tool for generating F# types from Telegram TL schema</Description>
         <PackageTags>telegram;tl;codegen;mtproto;fsharp;dotnet-tool</PackageTags>
         <PackageLicenseExpression>Unlicense</PackageLicenseExpression>
+        <PackageReadmeFile>README.md</PackageReadmeFile>
         <PackageProjectUrl>https://github.com/techiedesu/TDesu.Telegram</PackageProjectUrl>
         <RepositoryUrl>https://github.com/techiedesu/TDesu.Telegram</RepositoryUrl>
         <RepositoryType>git</RepositoryType>
@@ -17,6 +18,10 @@
         <EmbedUntrackedSources>true</EmbedUntrackedSources>
         <DebugType>embedded</DebugType>
     </PropertyGroup>
+
+    <ItemGroup>
+        <None Include="../../README.md" Pack="true" PackagePath="/" />
+    </ItemGroup>
 
     <ItemGroup>
         <Compile Include="Logger.fs" />
