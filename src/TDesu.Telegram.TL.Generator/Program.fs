@@ -37,7 +37,13 @@ Available targets:
   all                Equivalent to: cid,types,writers,coverage,return-types
 
 Optional flags:
-  --mtproto-schema <path>     Required only by `cid` target (mtproto-level schema)
+  --mtproto-schema <path>     MTProto-level schema (e.g. schema/mtproto.tl).
+                              Required by `cid`; optional for `csharp`, where it
+                              merges the mtproto combinators
+                              (bind_auth_key_inner, pong, msgs_ack, …) into the
+                              emitted C# surface. api.tl wins every name
+                              collision — the mtproto declaration is skipped and
+                              logged. Omit it and `csharp` emits api.tl only.
   --layer-base-schema <path>  Required only by `layer-aliases` target
   --tests-namespace <ns>      Override namespace for `tests` (defaults to <namespace>.Tests)
   --client-namespace <ns>     Override namespace for client-cids/client-parsers
@@ -187,13 +193,17 @@ Sample overrides config: samples/SedBotOverrides/sedbot-overrides.toml
 
                     let mutable failed = false
 
+                    // Parsed at most once, and only if `cid` or `csharp` asks
+                    // for it — an unused --mtproto-schema must stay silent.
+                    let mtprotoSchema = lazy (mtprotoSchemaPath |> Option.bind (parseSchema log "MTProto"))
+
                     if targets.Contains "cid" then
                         match mtprotoSchemaPath with
                         | None ->
                             log.LogError("`cid` target requires --mtproto-schema")
                             failed <- true
-                        | Some mtPath ->
-                            match parseSchema log "MTProto" mtPath with
+                        | Some _ ->
+                            match mtprotoSchema.Value with
                             | None -> failed <- true
                             | Some mtSchema ->
                                 let code = EmitTemplates.generateCidModule ns config mtSchema apiSchema
@@ -245,7 +255,27 @@ Sample overrides config: samples/SedBotOverrides/sedbot-overrides.toml
 
                     if targets.Contains "csharp" then
                         // Single-layer C# backend: full schema surface, no whitelist.
-                        let csTypes, csFuncs = SchemaMapper.mapSchema apiSchema
+                        // `--mtproto-schema` is opt-in; without it the emitted set is
+                        // exactly api.tl's, byte for byte as before.
+                        let csTypes, csFuncs =
+                            match mtprotoSchemaPath with
+                            | None -> SchemaMapper.mapSchema apiSchema
+                            | Some _ ->
+                                match mtprotoSchema.Value with
+                                | None ->
+                                    failed <- true
+                                    SchemaMapper.mapSchema apiSchema
+                                | Some mtSchema ->
+                                    let types, funcs, skipped =
+                                        SchemaMapper.mergeMtprotoForCSharp apiSchema mtSchema
+                                    for s in skipped do
+                                        log.LogInformation(
+                                            "csharp: skipping mtproto '{Declaration}' — C# name '{CsName}' is already declared by {Owner}",
+                                            s.Declaration, s.CSharpName, s.Owner)
+                                    log.LogInformation(
+                                        "csharp: merged MTProto schema (api.tl wins; {Skipped} declaration(s) skipped)",
+                                        skipped.Length)
+                                    types, funcs
                         if clean then
                             let deleted =
                                 Directory.GetFiles(outputDir, "*.g.cs")

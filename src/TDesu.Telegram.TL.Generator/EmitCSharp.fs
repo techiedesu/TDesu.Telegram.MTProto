@@ -1,12 +1,21 @@
 namespace TDesu.Telegram.TL.Generator
 
-open System.Text
+open Microsoft.CodeAnalysis
+open Microsoft.CodeAnalysis.CSharp
+open Microsoft.CodeAnalysis.CSharp.Syntax
 
 /// C# backend: emits a single-layer C# TL schema (types + serialize/deserialize
 /// + constructor ids) over the same CodeModel IR the F# emitters use. Unlike the
 /// F# writers this is SINGLE-LAYER: no `layer` parameter, no LayerGate, no
 /// layer-variant CIDs — constructor ids come straight from the IR (current
 /// schema layer). Unions become an abstract base + sealed nested case classes.
+///
+/// Emission is Roslyn-syntax-tree based, mirroring what the F# side does with
+/// Fantomas: declarations are built with SyntaxFactory, statement bodies are
+/// parsed from generated fragments, and the finished compilation unit is
+/// rejected if it carries a single parse diagnostic. A malformed emitter change
+/// therefore fails HERE instead of shipping broken C# to the consumer, and
+/// indentation comes from Roslyn rather than hand-counted spaces.
 ///
 /// Runtime contract (Altergram.Schema namespace):
 ///   interface ITlObject { uint ConstructorId { get; }; void Serialize(TlWriteBuffer w); }
@@ -20,7 +29,16 @@ open System.Text
 /// Unions read the cid then dispatch to a per-case `ReadBody` (no re-read).
 module EmitCSharp =
 
+    /// Terse alias — SyntaxFactory is referenced on nearly every line, and
+    /// `open type` would drag `List`/`Argument`/`Identifier` over F# core names.
+    type private F = SyntaxFactory
+
     let private valueTypes = set [ "int"; "long"; "double"; "bool" ]
+
+    /// Bare `Vector<T>` responses put the vector constructor on the wire, not a
+    /// type of their own.
+    [<Literal>]
+    let private VectorCid = 0x1CB5C415u
 
     /// Namespace prefix for generated types, set at buildModule time. Generated
     /// type references are qualified with it so they never resolve to an
@@ -31,7 +49,7 @@ module EmitCSharp =
     /// "primary constructor" pattern, e.g. user#... in type User). Their abstract
     /// boxed type is named `<Name>Base` so the case can keep the clean `<Name>`
     /// as a top-level class — no nesting, no '_' suffix.
-    let mutable private collidingUnions : Set<string> = Set.empty
+    let mutable private collidingUnions: Set<string> = Set.empty
 
     /// The C# name of a union's abstract boxed type (what fields are typed as).
     let private baseNameOf (unionName: string) =
@@ -50,9 +68,12 @@ module EmitCSharp =
               "void";"volatile";"while" ]
 
     let private unbacktick (s: string) = s.Replace("`", "")
+
     let private escId (s: string) =
         let s = unbacktick s
         if csKeywords.Contains s then "@" + s else s
+
+    let private hex (cid: uint32) = sprintf "0x%08Xu" cid
 
     /// Map an IR FSharpType string to a C# type spelling.
     let rec csType (t: string) : string =
@@ -153,80 +174,189 @@ module EmitCSharp =
         else
             escId n
 
-    /// Default initializer to silence CS8618 on non-nullable reference fields
+    /// Initializer expression silencing CS8618 on non-nullable reference fields
     /// (deserialize always overwrites; manual construction sets what it needs).
     /// We avoid `required` so partial object construction still compiles.
-    let private defaultInit (cs: string) : string =
-        if cs.EndsWith("?") then ""
-        elif cs = "int" || cs = "long" || cs = "double" || cs = "bool" then ""
-        elif cs = "string" then " = \"\""
-        elif cs.EndsWith("[]") then " = []"
-        else " = null!"
-
-    /// Property declaration for a non-raw-flag field.
-    let private propDecl (enclosing: string) (f: GeneratedField) : string =
-        let cs = csType f.FSharpType
-        $"    public {cs} {propName enclosing f}{defaultInit cs};"
+    let private defaultInit (cs: string) : string option =
+        if cs.EndsWith("?") then None
+        elif cs = "int" || cs = "long" || cs = "double" || cs = "bool" then None
+        elif cs = "string" then Some "\"\""
+        elif cs.EndsWith("[]") then Some "[]"
+        else Some "null!"
 
     /// Local name for a flag word (its raw TL name: "flags"/"flags2").
     let private flagLocal (name: string) = escId name
 
-    /// Emit the field-write statements (excluding cid) for a constructor's
-    /// fields. `access` maps a field's RecordName to its C# accessor expression.
-    let private emitWrites (w: string) (fields: GeneratedField list) (access: GeneratedField -> string) : string list =
-        let flagWords = flagWordNames fields
-        // Precompute flag-word assignments.
-        let flagSetup =
-            [ for fw in flagWords ->
-                let sets =
-                    fields
-                    |> List.filter (fun f -> f.FlagField = Some fw && f.FlagBit.IsSome)
-                    |> List.map (fun f ->
-                        let bit = f.FlagBit.Value
-                        let acc = access f
-                        if isPresenceFlag f then $"if ({acc}) {flagLocal fw} |= (1 << {bit});"
-                        else
-                            // optional: value-type uses HasValue, ref-type != null
-                            let cs = csType f.FSharpType
-                            if isValueCs cs then $"if ({acc}.HasValue) {flagLocal fw} |= (1 << {bit});"
-                            else $"if ({acc} != null) {flagLocal fw} |= (1 << {bit});")
-                fw, sets ]
-        let flagDecls = [ for fw, _ in flagSetup -> $"int {flagLocal fw} = 0;" ]
-        let flagSets = [ for _, sets in flagSetup do yield! sets ]
-        let bodyLines =
-            [ for f in fields do
-                if isRawFlag flagWords f then
-                    yield $"{w}.WriteInt32({flagLocal f.Name});"
-                elif isPresenceFlag f then
-                    () // presence flag writes nothing
-                elif isOptional f then
-                    let acc = access f
-                    let cs = csType f.FSharpType
-                    let inner = baseIr f.FSharpType
-                    if isValueCs cs then
-                        let stmt = writeValueStmt w inner (acc + ".Value")
-                        yield $"if ({acc}.HasValue) {stmt}"
-                    else
-                        let stmt = writeValueStmt w inner acc
-                        yield $"if ({acc} != null) {stmt}"
-                else
-                    yield writeValueStmt w f.FSharpType (access f) ]
-        flagDecls @ flagSets @ bodyLines
+    let private dataFields (fields: GeneratedField list) =
+        let fw = flagWordNames fields
+        fields |> List.filter (fun f -> not (isRawFlag fw f))
 
-    /// Emit field-read statements + the constructed object's field initializers.
-    /// Returns (statements, initializerPairs) where init pairs are (PropName, localExpr).
-    let private emitReads (enclosing: string) (r: string) (fields: GeneratedField list) : string list * (string * string) list =
+    // ── Roslyn helpers ─────────────────────────────────────────────────────
+
+    let private stmt (text: string) : StatementSyntax = F.ParseStatement text
+    let private expr (text: string) : ExpressionSyntax = F.ParseExpression text
+
+    /// `void` is only legal as a return type, and ParseTypeName rejects it
+    /// (CS1547) — build that one predefined type directly.
+    let private ty (text: string) : TypeSyntax =
+        if text = "void" then
+            F.PredefinedType(F.Token SyntaxKind.VoidKeyword)
+        else
+            F.ParseTypeName text
+
+    let private modifier (k: SyntaxKind) = F.Token k
+    let private pub = modifier SyntaxKind.PublicKeyword
+    let private semi = F.Token SyntaxKind.SemicolonToken
+
+    let private block (stmts: StatementSyntax list) = F.Block(Array.ofList stmts)
+
+    /// Comma-separated list that KEEPS a trailing comma: adding a member then
+    /// touches one line instead of two, and it matches what the previous
+    /// string emitter produced (so the changeover is a no-op for consumers).
+    let private commaListTrailing (nodes: 'T list when 'T :> SyntaxNode) =
+        F.SeparatedList<'T>(Seq.ofList nodes, List.replicate nodes.Length (F.Token SyntaxKind.CommaToken))
+
+    /// `public const uint Cid = 0x...u;`
+    let private cidField (cid: uint32) : MemberDeclarationSyntax =
+        F
+            .FieldDeclaration(
+                F
+                    .VariableDeclaration(ty "uint")
+                    .AddVariables(F.VariableDeclarator(F.Identifier "Cid").WithInitializer(F.EqualsValueClause(expr (hex cid))))
+            )
+            .AddModifiers(pub, modifier SyntaxKind.ConstKeyword)
+
+    /// `public [override] uint ConstructorId => Cid;`
+    let private constructorIdProp (isOverride: bool) : MemberDeclarationSyntax =
+        let mods =
+            if isOverride then [| pub; modifier SyntaxKind.OverrideKeyword |] else [| pub |]
+
+        F
+            .PropertyDeclaration(ty "uint", F.Identifier "ConstructorId")
+            .AddModifiers(mods)
+            .WithExpressionBody(F.ArrowExpressionClause(F.IdentifierName "Cid"))
+            .WithSemicolonToken(semi)
+
+    let private fieldDecl (enclosing: string) (f: GeneratedField) : MemberDeclarationSyntax =
+        let cs = csType f.FSharpType
+        let declarator = F.VariableDeclarator(F.Identifier(propName enclosing f))
+
+        let declarator =
+            match defaultInit cs with
+            | Some init -> declarator.WithInitializer(F.EqualsValueClause(expr init))
+            | None -> declarator
+
+        F.FieldDeclaration(F.VariableDeclaration(ty cs).AddVariables declarator).AddModifiers(pub)
+
+    /// `return new Name { Prop = local, ... };`
+    let private returnNew (typeName: string) (inits: (string * string) list) : StatementSyntax =
+        let assignments =
+            inits
+            |> List.map (fun (p, v) ->
+                F.AssignmentExpression(SyntaxKind.SimpleAssignmentExpression, F.IdentifierName p, expr v)
+                :> ExpressionSyntax)
+
+        let initializer =
+            F.InitializerExpression(SyntaxKind.ObjectInitializerExpression, commaListTrailing assignments)
+
+        F.ReturnStatement(F.ObjectCreationExpression(ty typeName).WithInitializer initializer)
+
+    // ── Serialize / Deserialize bodies ─────────────────────────────────────
+
+    /// Field-write statements (excluding the cid). `access` maps a field to its
+    /// C# accessor expression; `enclosing` only names the type in guard messages.
+    let private emitWrites
+        (enclosing: string)
+        (w: string)
+        (fields: GeneratedField list)
+        (access: GeneratedField -> string)
+        : StatementSyntax list =
         let flagWords = flagWordNames fields
-        let stmts = System.Collections.Generic.List<string>()
-        let inits = System.Collections.Generic.List<string * string>()
+
+        /// The boolean "this field is present" expression a flag bit is derived from.
+        let presence (f: GeneratedField) =
+            let acc = access f
+
+            if isPresenceFlag f then
+                acc
+            else
+                let cs = csType f.FSharpType
+                if isValueCs cs then $"{acc}.HasValue" else $"{acc} != null"
+
+        // TL routinely puts several fields behind ONE bit (my_boost + my_boost_slots,
+        // setup_password_required + otherwise_relogin_days, ...). Deriving the bit
+        // from each field independently sets it for a half-filled object and then
+        // writes no payload, which desyncs the reader from that offset on — so the
+        // bit is derived once per (word, bit) and disagreement throws.
+        let groups =
+            fields
+            |> List.filter (fun f -> f.FlagField.IsSome && f.FlagBit.IsSome)
+            |> List.groupBy (fun f -> f.FlagField.Value, f.FlagBit.Value)
+
+        let flagDecls = [ for fw in flagWords -> stmt $"int {flagLocal fw} = 0;" ]
+
+        let flagSets =
+            [ for (fw, bit), groupFields in groups do
+                  let exprs = groupFields |> List.map presence
+                  let head = List.head exprs
+
+                  match exprs with
+                  | [ _ ] -> ()
+                  | _ ->
+                      let disagreement =
+                          exprs
+                          |> List.tail
+                          |> List.map (fun e -> $"({head}) != ({e})")
+                          |> String.concat " || "
+
+                      let names = groupFields |> List.map (fun f -> propName enclosing f) |> String.concat ", "
+
+                      yield
+                          stmt
+                              $"if ({disagreement}) throw new System.InvalidOperationException(\"{enclosing}: {names} share flags bit {bit} and must be set together.\");"
+
+                  yield stmt $"if ({head}) {flagLocal fw} |= (1 << {bit});" ]
+
+        let body =
+            [ for f in fields do
+                  if isRawFlag flagWords f then
+                      yield stmt $"{w}.WriteInt32({flagLocal f.Name});"
+                  elif isPresenceFlag f then
+                      () // presence flag writes nothing
+                  elif isOptional f then
+                      let acc = access f
+                      let cs = csType f.FSharpType
+                      let inner = baseIr f.FSharpType
+
+                      if isValueCs cs then
+                          let write = writeValueStmt w inner (acc + ".Value")
+                          yield stmt $"if ({acc}.HasValue) {write}"
+                      else
+                          yield stmt $"if ({acc} != null) {writeValueStmt w inner acc}"
+                  else
+                      yield stmt (writeValueStmt w f.FSharpType (access f)) ]
+
+        flagDecls @ flagSets @ body
+
+    /// Field-read statements plus the (PropName, localExpr) pairs the object
+    /// initializer is built from.
+    let private emitReads
+        (enclosing: string)
+        (r: string)
+        (fields: GeneratedField list)
+        : StatementSyntax list * (string * string) list =
+        let flagWords = flagWordNames fields
+        let stmts = ResizeArray<StatementSyntax>()
+        let inits = ResizeArray<string * string>()
+
         for f in fields do
             if isRawFlag flagWords f then
-                stmts.Add($"int {flagLocal f.Name} = {r}.ReadInt32();")
+                stmts.Add(stmt $"int {flagLocal f.Name} = {r}.ReadInt32();")
             elif isPresenceFlag f then
                 let fw = flagLocal f.FlagField.Value
                 let bit = f.FlagBit.Value
                 let local = "p_" + f.RecordName
-                stmts.Add($"bool {local} = ({fw} & (1 << {bit})) != 0;")
+                stmts.Add(stmt $"bool {local} = ({fw} & (1 << {bit})) != 0;")
                 inits.Add(propName enclosing f, local)
             elif isOptional f then
                 let fw = flagLocal f.FlagField.Value
@@ -236,129 +366,289 @@ module EmitCSharp =
                 let local = "v_" + f.RecordName
                 let readExpr = readValueExpr r inner
                 let readExpr = if isValueCs cs then $"({cs})({readExpr})" else readExpr
-                stmts.Add($"{cs} {local} = ({fw} & (1 << {bit})) != 0 ? {readExpr} : null;")
+                stmts.Add(stmt $"{cs} {local} = ({fw} & (1 << {bit})) != 0 ? {readExpr} : null;")
                 inits.Add(propName enclosing f, local)
             else
                 let cs = csType f.FSharpType
                 let local = "v_" + f.RecordName
-                stmts.Add($"{cs} {local} = {readValueExpr r f.FSharpType};")
+                stmts.Add(stmt $"{cs} {local} = {readValueExpr r f.FSharpType};")
                 inits.Add(propName enclosing f, local)
+
         List.ofSeq stmts, List.ofSeq inits
 
-    let private dataFields (fields: GeneratedField list) =
-        let fw = flagWordNames fields
-        fields |> List.filter (fun f -> not (isRawFlag fw f))
+    let private serializeMethod
+        (isOverride: bool)
+        (enclosing: string)
+        (fields: GeneratedField list)
+        (access: GeneratedField -> string)
+        : MemberDeclarationSyntax =
+        let mods =
+            if isOverride then [| pub; modifier SyntaxKind.OverrideKeyword |] else [| pub |]
 
-    let private emitRecordClass (sb: StringBuilder) (name: string) (fields: GeneratedField list) (cid: uint32) =
-        let cidHex = sprintf "0x%08Xu" cid
-        sb.AppendLine($"public sealed class {name} : ITlObject") |> ignore
-        sb.AppendLine("{") |> ignore
-        sb.AppendLine($"    public const uint Cid = {cidHex};") |> ignore
-        sb.AppendLine($"    public uint ConstructorId => Cid;") |> ignore
-        for f in dataFields fields do sb.AppendLine(propDecl name f) |> ignore
-        // Serialize
-        sb.AppendLine("    public void Serialize(TlWriteBuffer w)") |> ignore
-        sb.AppendLine("    {") |> ignore
-        sb.AppendLine("        w.WriteConstructorId(Cid);") |> ignore
-        for line in emitWrites "w" fields (propName name) do
-            sb.AppendLine($"        {line}") |> ignore
-        sb.AppendLine("    }") |> ignore
-        // Deserialize
-        sb.AppendLine($"    public static {name} Deserialize(TlReadBuffer r)") |> ignore
-        sb.AppendLine("    {") |> ignore
-        sb.AppendLine("        r.ReadConstructorId();") |> ignore
+        let body = stmt "w.WriteConstructorId(Cid);" :: emitWrites enclosing "w" fields access
+
+        F
+            .MethodDeclaration(ty "void", F.Identifier "Serialize")
+            .AddModifiers(mods)
+            .AddParameterListParameters(F.Parameter(F.Identifier "w").WithType(ty "TlWriteBuffer"))
+            .WithBody(block body)
+
+    /// A reader method over the type's fields. `readCid` prepends the cid read
+    /// (the union case path has already consumed it in the base dispatcher).
+    let private readerMethod
+        (name: string)
+        (methodName: string)
+        (modifiers: SyntaxToken[])
+        (readCid: bool)
+        (fields: GeneratedField list)
+        : MemberDeclarationSyntax =
         let stmts, inits = emitReads name "r" fields
-        for s in stmts do sb.AppendLine($"        {s}") |> ignore
-        sb.AppendLine($"        return new {name}") |> ignore
-        sb.AppendLine("        {") |> ignore
-        for (p, v) in inits do sb.AppendLine($"            {p} = {v},") |> ignore
-        sb.AppendLine("        };") |> ignore
-        sb.AppendLine("    }") |> ignore
-        sb.AppendLine("}") |> ignore
-        sb.AppendLine() |> ignore
+
+        let body =
+            [ if readCid then
+                  yield stmt "r.ReadConstructorId();"
+              yield! stmts
+              yield returnNew name inits ]
+
+        F
+            .MethodDeclaration(ty name, F.Identifier methodName)
+            .AddModifiers(modifiers)
+            .AddParameterListParameters(F.Parameter(F.Identifier "r").WithType(ty "TlReadBuffer"))
+            .WithBody(block body)
+
+    // ── Top-level declarations ─────────────────────────────────────────────
+
+    let private recordClass (name: string) (fields: GeneratedField list) (cid: uint32) : MemberDeclarationSyntax =
+        let members =
+            [ yield cidField cid
+              yield constructorIdProp false
+              for f in dataFields fields -> fieldDecl name f
+              yield serializeMethod false name fields (propName name)
+              yield
+                  readerMethod
+                      name
+                      "Deserialize"
+                      [| pub; modifier SyntaxKind.StaticKeyword |]
+                      true
+                      fields ]
+
+        F
+            .ClassDeclaration(name)
+            .AddModifiers(pub, modifier SyntaxKind.SealedKeyword)
+            .AddBaseListTypes(F.SimpleBaseType(ty "ITlObject"))
+            .AddMembers(Array.ofList members)
 
     /// Abstract boxed type for a union: dispatch-only Deserialize over cid+aliases.
-    let private emitUnionBase (sb: StringBuilder) (name: string) (cases: UnionCase list) =
+    let private unionBaseClass (name: string) (cases: UnionCase list) : MemberDeclarationSyntax =
         let baseName = baseNameOf name
-        sb.AppendLine($"public abstract class {baseName} : ITlObject") |> ignore
-        sb.AppendLine("{") |> ignore
-        sb.AppendLine("    public abstract uint ConstructorId { get; }") |> ignore
-        sb.AppendLine("    public abstract void Serialize(TlWriteBuffer w);") |> ignore
-        sb.AppendLine($"    public static {baseName} Deserialize(TlReadBuffer r)") |> ignore
-        sb.AppendLine("    {") |> ignore
-        sb.AppendLine("        uint cid = r.ReadConstructorId();") |> ignore
-        sb.AppendLine("        return cid switch") |> ignore
-        sb.AppendLine("        {") |> ignore
-        for c in cases do
-            let allCids = (c.ConstructorId :: c.AliasCids) |> List.map (sprintf "0x%08Xu") |> String.concat " or "
-            sb.AppendLine($"            {allCids} => {c.Name}.ReadBody(r),") |> ignore
-        sb.AppendLine("            _ => throw new System.IO.InvalidDataException($\"Unknown constructor 0x{cid:x8} for " + baseName + "\"),") |> ignore
-        sb.AppendLine("        };") |> ignore
-        sb.AppendLine("    }") |> ignore
-        sb.AppendLine("}") |> ignore
-        sb.AppendLine() |> ignore
+
+        let arms =
+            [ for c in cases do
+                  let pattern =
+                      (c.ConstructorId :: c.AliasCids)
+                      |> List.map (fun cid -> F.ConstantPattern(expr (hex cid)) :> PatternSyntax)
+                      |> List.reduce (fun a b -> F.BinaryPattern(SyntaxKind.OrPattern, a, b) :> PatternSyntax)
+
+                  yield F.SwitchExpressionArm(pattern, expr $"{c.Name}.ReadBody(r)")
+
+              yield
+                  F.SwitchExpressionArm(
+                      F.DiscardPattern(),
+                      F.ThrowExpression(
+                          F
+                              .ObjectCreationExpression(ty "System.IO.InvalidDataException")
+                              .AddArgumentListArguments(
+                                  F.Argument(expr ("$\"Unknown constructor 0x{cid:x8} for " + baseName + "\""))
+                              )
+                      )
+                  ) ]
+
+        let deserialize =
+            F
+                .MethodDeclaration(ty baseName, F.Identifier "Deserialize")
+                .AddModifiers(pub, modifier SyntaxKind.StaticKeyword)
+                .AddParameterListParameters(F.Parameter(F.Identifier "r").WithType(ty "TlReadBuffer"))
+                .WithBody(
+                    block
+                        [ stmt "uint cid = r.ReadConstructorId();"
+                          F.ReturnStatement(F.SwitchExpression(F.IdentifierName "cid", commaListTrailing arms)) ]
+                )
+
+        let constructorId =
+            F
+                .PropertyDeclaration(ty "uint", F.Identifier "ConstructorId")
+                .AddModifiers(pub, modifier SyntaxKind.AbstractKeyword)
+                .AddAccessorListAccessors(
+                    F.AccessorDeclaration(SyntaxKind.GetAccessorDeclaration).WithSemicolonToken(semi)
+                )
+
+        let serialize =
+            F
+                .MethodDeclaration(ty "void", F.Identifier "Serialize")
+                .AddModifiers(pub, modifier SyntaxKind.AbstractKeyword)
+                .AddParameterListParameters(F.Parameter(F.Identifier "w").WithType(ty "TlWriteBuffer"))
+                .WithSemicolonToken(semi)
+
+        F
+            .ClassDeclaration(baseName)
+            .AddModifiers(pub, modifier SyntaxKind.AbstractKeyword)
+            .AddBaseListTypes(F.SimpleBaseType(ty "ITlObject"))
+            .AddMembers(constructorId, serialize, deserialize)
 
     /// One union case as a clean top-level sealed class deriving from the base.
-    let private emitCaseClass (sb: StringBuilder) (unionName: string) (c: UnionCase) =
-        let baseName = baseNameOf unionName
-        let cidHex = sprintf "0x%08Xu" c.ConstructorId
-        sb.AppendLine($"public sealed class {c.Name} : {baseName}") |> ignore
-        sb.AppendLine("{") |> ignore
-        sb.AppendLine($"    public const uint Cid = {cidHex};") |> ignore
-        sb.AppendLine($"    public override uint ConstructorId => Cid;") |> ignore
-        for f in dataFields c.Fields do sb.AppendLine(propDecl c.Name f) |> ignore
-        sb.AppendLine("    public override void Serialize(TlWriteBuffer w)") |> ignore
-        sb.AppendLine("    {") |> ignore
-        sb.AppendLine("        w.WriteConstructorId(Cid);") |> ignore
-        for line in emitWrites "w" c.Fields (propName c.Name) do
-            sb.AppendLine($"        {line}") |> ignore
-        sb.AppendLine("    }") |> ignore
-        sb.AppendLine($"    internal static {c.Name} ReadBody(TlReadBuffer r)") |> ignore
-        sb.AppendLine("    {") |> ignore
-        let stmts, inits = emitReads c.Name "r" c.Fields
-        for s in stmts do sb.AppendLine($"        {s}") |> ignore
-        sb.AppendLine($"        return new {c.Name}") |> ignore
-        sb.AppendLine("        {") |> ignore
-        for (p, v) in inits do sb.AppendLine($"            {p} = {v},") |> ignore
-        sb.AppendLine("        };") |> ignore
-        sb.AppendLine("    }") |> ignore
-        sb.AppendLine("}") |> ignore
-        sb.AppendLine() |> ignore
+    let private caseClass (unionName: string) (c: UnionCase) : MemberDeclarationSyntax =
+        let members =
+            [ yield cidField c.ConstructorId
+              yield constructorIdProp true
+              for f in dataFields c.Fields -> fieldDecl c.Name f
+              yield serializeMethod true c.Name c.Fields (propName c.Name)
+              yield
+                  readerMethod
+                      c.Name
+                      "ReadBody"
+                      [| modifier SyntaxKind.InternalKeyword; modifier SyntaxKind.StaticKeyword |]
+                      false
+                      c.Fields ]
 
-    let private emitFunctionClass (sb: StringBuilder) (fn: GeneratedFunction) =
-        let cidHex = sprintf "0x%08Xu" fn.ConstructorId
-        sb.AppendLine($"public sealed class {fn.Name} : ITlObject") |> ignore
-        sb.AppendLine("{") |> ignore
-        sb.AppendLine($"    public const uint Cid = {cidHex};") |> ignore
-        sb.AppendLine($"    public uint ConstructorId => Cid;") |> ignore
-        for f in dataFields fn.Params do sb.AppendLine(propDecl fn.Name f) |> ignore
-        sb.AppendLine("    public void Serialize(TlWriteBuffer w)") |> ignore
-        sb.AppendLine("    {") |> ignore
-        sb.AppendLine("        w.WriteConstructorId(Cid);") |> ignore
-        for line in emitWrites "w" fn.Params (propName fn.Name) do
-            sb.AppendLine($"        {line}") |> ignore
-        sb.AppendLine("    }") |> ignore
-        sb.AppendLine($"    public static {fn.Name} DeserializeFields(TlReadBuffer r)") |> ignore
-        sb.AppendLine("    {") |> ignore
-        let stmts, inits = emitReads fn.Name "r" fn.Params
-        for s in stmts do sb.AppendLine($"        {s}") |> ignore
-        sb.AppendLine($"        return new {fn.Name}") |> ignore
-        sb.AppendLine("        {") |> ignore
-        for (p, v) in inits do sb.AppendLine($"            {p} = {v},") |> ignore
-        sb.AppendLine("        };") |> ignore
-        sb.AppendLine("    }") |> ignore
-        sb.AppendLine($"    public static {fn.Name} Deserialize(TlReadBuffer r)") |> ignore
-        sb.AppendLine("    {") |> ignore
-        sb.AppendLine("        r.ReadConstructorId();") |> ignore
-        sb.AppendLine("        return DeserializeFields(r);") |> ignore
-        sb.AppendLine("    }") |> ignore
-        sb.AppendLine("}") |> ignore
-        sb.AppendLine() |> ignore
+        F
+            .ClassDeclaration(c.Name)
+            .AddModifiers(pub, modifier SyntaxKind.SealedKeyword)
+            .AddBaseListTypes(F.SimpleBaseType(ty (baseNameOf unionName)))
+            .AddMembers(Array.ofList members)
+
+    let private functionClass (fn: GeneratedFunction) : MemberDeclarationSyntax =
+        let deserialize =
+            F
+                .MethodDeclaration(ty fn.Name, F.Identifier "Deserialize")
+                .AddModifiers(pub, modifier SyntaxKind.StaticKeyword)
+                .AddParameterListParameters(F.Parameter(F.Identifier "r").WithType(ty "TlReadBuffer"))
+                .WithBody(block [ stmt "r.ReadConstructorId();"; stmt "return DeserializeFields(r);" ])
+
+        let members =
+            [ yield cidField fn.ConstructorId
+              yield constructorIdProp false
+              for f in dataFields fn.Params -> fieldDecl fn.Name f
+              yield serializeMethod false fn.Name fn.Params (propName fn.Name)
+              yield
+                  readerMethod
+                      fn.Name
+                      "DeserializeFields"
+                      [| pub; modifier SyntaxKind.StaticKeyword |]
+                      false
+                      fn.Params
+              yield deserialize ]
+
+        F
+            .ClassDeclaration(fn.Name)
+            .AddModifiers(pub, modifier SyntaxKind.SealedKeyword)
+            .AddBaseListTypes(F.SimpleBaseType(ty "ITlObject"))
+            .AddMembers(Array.ofList members)
+
+    // ── Request → response constructor ids ─────────────────────────────────
+
+    [<Literal>]
+    let ReturnTypeMapName = "GeneratedReturnTypes"
+
+    /// Constructor ids a response of IR type `t` may legally carry. Bare
+    /// primitives have no cid on the wire and map to an empty set.
+    let private responseCidsOf (types: GeneratedType list) =
+        let byName = System.Collections.Generic.Dictionary<string, uint32 list>()
+
+        for t in types do
+            match t with
+            | Record(name, _, cid) -> byName[name] <- [ cid ]
+            | Union(name, cases) ->
+                byName[name] <-
+                    [ for c in cases do
+                          yield c.ConstructorId
+                          yield! c.AliasCids ]
+
+        fun (irType: string) ->
+            if isArrayIr irType then
+                [ VectorCid ]
+            else
+                // `bool` collapses to the C# primitive in field position, but on the
+                // wire a Bool response is still boolTrue/boolFalse.
+                let key = if baseIr irType = "bool" then "Bool" else baseIr irType
+
+                match byName.TryGetValue key with
+                | true, cids -> cids
+                | _ -> []
+
+    /// `public static class GeneratedReturnTypes` — request cid → legal response
+    /// cids. Nothing between a handler and the wire otherwise checks that a
+    /// response belongs to the method's declared TL return type.
+    let private returnTypeMapClass (types: GeneratedType list) (functions: GeneratedFunction list) : MemberDeclarationSyntax =
+        let cidsOf = responseCidsOf types
+
+        let entries =
+            [ for fn in functions do
+                  match cidsOf fn.ReturnType with
+                  | [] -> ()
+                  | cids ->
+                      let values = cids |> List.map hex |> String.concat ", "
+
+                      yield
+                          F.AssignmentExpression(
+                              SyntaxKind.SimpleAssignmentExpression,
+                              F.ImplicitElementAccess().AddArgumentListArguments(F.Argument(expr (hex fn.ConstructorId))),
+                              expr $"[{values}]"
+                          )
+                          :> ExpressionSyntax ]
+
+        let dictionary =
+            F
+                .ObjectCreationExpression(ty "System.Collections.Generic.Dictionary<uint, uint[]>")
+                .WithInitializer(F.InitializerExpression(SyntaxKind.ObjectInitializerExpression, commaListTrailing entries))
+
+        let field =
+            F
+                .FieldDeclaration(
+                    F
+                        .VariableDeclaration(ty "System.Collections.Generic.IReadOnlyDictionary<uint, uint[]>")
+                        .AddVariables(
+                            F.VariableDeclarator(F.Identifier "ByRequest").WithInitializer(F.EqualsValueClause dictionary)
+                        )
+                )
+                .AddModifiers(pub, modifier SyntaxKind.StaticKeyword, modifier SyntaxKind.ReadOnlyKeyword)
+
+        F
+            .ClassDeclaration(ReturnTypeMapName)
+            .AddModifiers(pub, modifier SyntaxKind.StaticKeyword)
+            .AddMembers(field)
+
+    // ── File assembly ──────────────────────────────────────────────────────
+
+    /// Auto-generated banner + `#nullable enable`, attached once per file.
+    /// Parsed rather than hand-assembled: a directive built from bare tokens
+    /// carries no whitespace of its own and renders as `#nullableenable`.
+    let private headerTrivia =
+        F.ParseLeadingTrivia(
+            "// <auto-generated> td-tl-gen C# backend. Do not edit. </auto-generated>\n#nullable enable\n"
+        )
+
+    /// Render top-level declarations into one file-scoped-namespace source file.
+    /// Any parse diagnostic here means the emitter produced invalid C#; failing
+    /// now beats shipping it to the consumer's build.
+    let private render (namespaceName: string) (members: MemberDeclarationSyntax list) : string =
+        let ns =
+            F.FileScopedNamespaceDeclaration(F.ParseName namespaceName).AddMembers(Array.ofList members)
+
+        let unit = F.CompilationUnit().AddMembers(ns).NormalizeWhitespace()
+
+        if unit.ContainsDiagnostics then
+            let d =
+                unit.GetDiagnostics() |> Seq.map (fun x -> x.ToString()) |> String.concat "; "
+
+            failwithf "EmitCSharp: emitted invalid C# — %s" d
+
+        unit.WithLeadingTrivia(headerTrivia).ToFullString().TrimEnd() + "\n"
 
     /// Shared initialisation: set global refs and check for duplicate top-level
     /// names. Called by both buildModule and buildFiles.
     let private setup (namespaceName: string) (types: GeneratedType list) (functions: GeneratedFunction list) =
         nsRef <- namespaceName
+
         collidingUnions <-
             types
             |> List.choose (function
@@ -368,60 +658,59 @@ module EmitCSharp =
         // Guard against top-level name clashes (records, union cases, functions
         // all share the namespace now that cases aren't nested).
         let seen = System.Collections.Generic.HashSet<string>()
+
         let claim (n: string) =
             if not (seen.Add n) then
                 failwithf "EmitCSharp: duplicate top-level type name '%s' — needs disambiguation" n
+
+        claim ReturnTypeMapName
+
         for t in types do
             match t with
             | Record(name, _, _) -> claim name
             | Union(name, cases) ->
                 claim (baseNameOf name)
-                for c in cases do claim c.Name
-        for fn in functions do claim fn.Name
+                for c in cases do
+                    claim c.Name
 
-    /// Per-file header: auto-generated banner + nullable enable + file-scoped namespace.
-    let private fileHeader (namespaceName: string) =
-        let sb = StringBuilder()
-        sb.AppendLine("// <auto-generated> td-tl-gen C# backend. Do not edit. </auto-generated>") |> ignore
-        sb.AppendLine("#nullable enable") |> ignore
-        sb.AppendLine($"namespace {namespaceName};") |> ignore
-        sb.AppendLine() |> ignore
-        sb
+        for fn in functions do
+            claim fn.Name
+
+    let private declarationsOf (t: GeneratedType) : MemberDeclarationSyntax list =
+        match t with
+        | Record(name, fields, cid) -> [ recordClass name fields cid ]
+        | Union(name, cases) -> unionBaseClass name cases :: [ for c in cases -> caseClass name c ]
 
     /// Build the whole C# module as a single string (original behaviour).
     let buildModule (namespaceName: string) (types: GeneratedType list) (functions: GeneratedFunction list) : string =
         setup namespaceName types functions
-        let sb = fileHeader namespaceName
-        for t in types do
-            match t with
-            | Record(name, fields, cid) -> emitRecordClass sb name fields cid
-            | Union(name, cases) ->
-                emitUnionBase sb name cases
-                for c in cases do emitCaseClass sb name c
-        for fn in functions do
-            emitFunctionClass sb fn
-        sb.ToString()
+
+        let members =
+            [ for t in types do
+                  yield! declarationsOf t
+              for fn in functions -> functionClass fn
+              yield returnTypeMapClass types functions ]
+
+        render namespaceName members
 
     /// Build one .g.cs file per top-level declaration and return (filename, content) pairs.
     /// Unions emit their abstract base and all case classes into a single file named
     /// after the base type (e.g. UserBase.g.cs), so cross-case references stay local.
     /// Call before writing to allow the caller to --clean the output directory first.
-    let buildFiles (namespaceName: string) (types: GeneratedType list) (functions: GeneratedFunction list) : (string * string) list =
+    let buildFiles
+        (namespaceName: string)
+        (types: GeneratedType list)
+        (functions: GeneratedFunction list)
+        : (string * string) list =
         setup namespaceName types functions
-        [
-            for t in types do
-                match t with
-                | Record(name, fields, cid) ->
-                    let sb = fileHeader namespaceName
-                    emitRecordClass sb name fields cid
-                    yield (name + ".g.cs", sb.ToString())
-                | Union(name, cases) ->
-                    let sb = fileHeader namespaceName
-                    emitUnionBase sb name cases
-                    for c in cases do emitCaseClass sb name c
-                    yield (baseNameOf name + ".g.cs", sb.ToString())
-            for fn in functions do
-                let sb = fileHeader namespaceName
-                emitFunctionClass sb fn
-                yield (fn.Name + ".g.cs", sb.ToString())
-        ]
+
+        [ for t in types do
+              let fileName =
+                  match t with
+                  | Record(name, _, _) -> name
+                  | Union(name, _) -> baseNameOf name
+
+              yield (fileName + ".g.cs", render namespaceName (declarationsOf t))
+          for fn in functions do
+              yield (fn.Name + ".g.cs", render namespaceName [ functionClass fn ])
+          yield (ReturnTypeMapName + ".g.cs", render namespaceName [ returnTypeMapClass types functions ]) ]

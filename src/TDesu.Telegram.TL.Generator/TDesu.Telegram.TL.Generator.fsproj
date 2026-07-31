@@ -55,6 +55,7 @@
 
     <ItemGroup>
         <PackageReference Include="Fantomas.Core" />
+        <PackageReference Include="Microsoft.CodeAnalysis.CSharp" />
         <PackageReference Include="Fantomas.FCS" />
         <PackageReference Include="FSharp.Data" />
         <PackageReference Include="MinVer" PrivateAssets="all" />

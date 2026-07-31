@@ -1,0 +1,7 @@
+union Bool = BoolFalse#bc799737 | BoolTrue#997275b5
+record Message#5a686d7c(flags, out, text)
+record BindAuthKeyInner#75a3f765(nonce, tempAuthKeyId, permAuthKeyId, tempSessionId, expiresAt)
+record Pong#347773c5(msgId, pingId)
+function Ping#12ab34cd -> bool
+skipped ping -> Ping (owned by api.tl)
+skipped message -> Message (owned by api.tl)

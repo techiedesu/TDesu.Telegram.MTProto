@@ -18,6 +18,8 @@
         <Compile Include="CodeGeneratorTests.fs" />
         <Compile Include="SchemaAugmentTests.fs" />
         <Compile Include="WriterGeneratorTests.fs" />
+        <Compile Include="CSharpMergeTests.fs" />
+        <Compile Include="EmitCSharpTests.fs" />
     </ItemGroup>
 
     <ItemGroup>

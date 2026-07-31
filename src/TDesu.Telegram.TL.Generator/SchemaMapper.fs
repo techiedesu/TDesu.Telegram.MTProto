@@ -64,6 +64,155 @@ module SchemaMapper =
 
         (types, functions)
 
+    let private typeName = function Record(n, _, _) -> n | Union(n, _) -> n
+
+    /// Every top-level C# identifier `EmitCSharp.setup` claims for a mapped
+    /// surface: records, union bases (including the `…Base` rename applied when
+    /// a case shares its union's name), union cases and functions.
+    ///
+    /// Mirrored here so collision filtering keys off the *emitted* identity and
+    /// not the TL name — `pascalCase` folds `_` and `.` away, so `msgs_ack` and
+    /// `msgsAck` (or `help.configSimple` and `helpConfigSimple`) are distinct in
+    /// TL yet the same C# class.
+    let emittedTopLevelNames (types: GeneratedType list) (functions: GeneratedFunction list) : Set<string> =
+        let colliding =
+            types
+            |> List.choose (function
+                | Union(name, cases) when cases |> List.exists (fun c -> c.Name = name) -> Some name
+                | _ -> None)
+            |> Set.ofList
+        seq {
+            for t in types do
+                match t with
+                | Record(name, _, _) -> yield name
+                | Union(name, cases) ->
+                    // Claim both the union name and its emitted base name: the
+                    // latter is what fields are typed as, the former is what a
+                    // foreign schema would reuse as a result type.
+                    yield name
+                    if colliding.Contains name then yield name + "Base"
+                    for c in cases do yield c.Name
+            for f in functions do yield f.Name
+        }
+        |> Set.ofSeq
+
+    /// One mtproto declaration dropped by `mergeMtprotoForCSharp`.
+    type MtprotoSkip = {
+        /// TL name of the dropped declaration. A mapped type has no single TL
+        /// name once constructors are grouped, so those report their C# name.
+        Declaration: string
+        /// The emitted C# name that was already taken.
+        CSharpName: string
+        /// Schema that owns that name: `api.tl` or `mtproto.tl`.
+        Owner: string
+    }
+
+    /// Merge an mtproto schema into the api surface for the C# backend.
+    ///
+    /// `EmitCSharp.setup` hard-fails on a duplicate top-level name, and the two
+    /// schemas overlap (`message`, `rpc_error`, `ping`, …). Policy: **api.tl
+    /// wins** — an mtproto declaration whose emitted C# name (or result-type /
+    /// union name) is already claimed by api.tl is dropped here so a collision
+    /// can never reach the emitter.
+    ///
+    /// mtproto also collides with *itself* (`rpc_drop_answer` is both a function
+    /// and, boxed, the `RpcDropAnswer` union). There the type wins: the emitted
+    /// return-type map points functions at their result union, so dropping the
+    /// union would leave a dangling reference, while dropping the request class
+    /// leaves nothing pointing at it.
+    ///
+    /// Returns the merged surface plus one `MtprotoSkip` per dropped
+    /// declaration, for the caller to log.
+    let mergeMtprotoForCSharp
+        (apiSchema: TlSchema)
+        (mtSchema: TlSchema)
+        : GeneratedType list * GeneratedFunction list * MtprotoSkip list =
+
+        let apiTypes, apiFunctions = mapSchema apiSchema
+        let claimed = emittedTopLevelNames apiTypes apiFunctions
+        let skipped = ResizeArray<MtprotoSkip>()
+
+        // A name outside the api claim set can only have been taken by an
+        // earlier mtproto declaration.
+        let ownerOf (csharpName: string) =
+            if claimed.Contains csharpName then "api.tl" else "mtproto.tl"
+
+        let skip (declaration: string) (csharpName: string) =
+            skipped.Add
+                { Declaration = declaration
+                  CSharpName = csharpName
+                  Owner = ownerOf csharpName }
+
+        // Predict each mtproto constructor's emitted names the way `mapSchema`
+        // groups them: sole constructor of a result type → a record named after
+        // the result type; otherwise a case named after the combinator, under
+        // the result-type base.
+        let groupSizes =
+            mtSchema.Constructors
+            |> List.countBy (fun c -> CodeModelMapping.getResultTypeName c.ResultType)
+            |> Map.ofList
+
+        let keepConstructor (c: TlCombinator) =
+            let resultName = CodeModelMapping.getResultTypeName c.ResultType
+            let candidates =
+                if groupSizes[resultName] = 1 then [ resultName ]
+                else [ resultName; Combinator.pascalName c ]
+            match candidates |> List.tryFind claimed.Contains with
+            | Some hit ->
+                skip (Combinator.tlName c) hit
+                false
+            | None -> true
+
+        let keepFunction (f: TlCombinator) =
+            let name = Combinator.pascalName f
+            if claimed.Contains name then
+                skip (Combinator.tlName f) name
+                false
+            else
+                true
+
+        let survivingFunctions = mtSchema.Functions |> List.filter keepFunction
+
+        let mtTypes, mtFunctions =
+            mapSchema
+                { mtSchema with
+                    Constructors = mtSchema.Constructors |> List.filter keepConstructor
+                    Functions = survivingFunctions }
+
+        // Second pass over the *mapped* surface. Dropping cases can rename a
+        // declaration (a union reduced to one case becomes a record), and
+        // mtproto declarations can also collide with each other, so the
+        // prediction above is not the last word. A HashSet rather than a
+        // `let mutable` because the accumulator is captured by the filters.
+        let running = System.Collections.Generic.HashSet<string>(claimed)
+
+        let tlNameOfFunction =
+            survivingFunctions
+            |> List.map (fun f -> Combinator.pascalName f, Combinator.tlName f)
+            |> Map.ofList
+
+        let acceptType (t: GeneratedType) =
+            let names = emittedTopLevelNames [ t ] []
+            match names |> Seq.tryFind running.Contains with
+            | Some hit ->
+                skip (typeName t) hit
+                false
+            | None ->
+                running.UnionWith names
+                true
+
+        let acceptFunction (f: GeneratedFunction) =
+            if running.Add f.Name then
+                true
+            else
+                skip (defaultArg (tlNameOfFunction.TryFind f.Name) f.Name) f.Name
+                false
+
+        // Types before functions: see the `rpc_drop_answer` note above.
+        let mergedTypes = apiTypes @ (mtTypes |> List.filter acceptType)
+        let mergedFunctions = apiFunctions @ (mtFunctions |> List.filter acceptFunction)
+        (mergedTypes, mergedFunctions, List.ofSeq skipped)
+
     module Whitelist =
 
         let private primitives = Set.ofList [
