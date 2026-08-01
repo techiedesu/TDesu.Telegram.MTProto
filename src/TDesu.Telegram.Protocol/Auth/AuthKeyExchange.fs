@@ -49,37 +49,80 @@ module AuthKeyExchange =
     [<Literal>]
     let private MaxFingerprints = 32
 
-    /// Factorize pq into p and q (p < q) using Pollard's rho algorithm
-    let factorizePQ (pq: uint64) : uint64 * uint64 =
-        if pq % 2UL = 0UL then
-            (2UL, pq / 2UL)
+    /// Pollard's rho iteration budget, shared across both attempts.
+    ///
+    /// `pq` is read off an unauthenticated, pre-handshake resPQ, so the server picks the work.
+    /// Two measurements bound the choice:
+    ///   * The realistic case — the 63-bit semiprime 2147483647 * 2147483629 — collides after
+    ///     27 081 iterations, 24 ms. Its analytic cost is sqrt of the smaller factor,
+    ///     sqrt 2147483629 = 46 341 iterations; that is the scale any legitimate 63-bit pq pays.
+    ///   * The hostile case — the largest prime below 2^63, 9223372036854775783 — has no factor
+    ///     to find, so rho runs the whole cycle: sqrt pq = 3 037 000 500 iterations. Sampled at
+    ///     0.48 us/iteration here that is ~1453 s; an independent fit at 8.1e-7 s/iteration put
+    ///     it at ~41 min. Uninterruptible, and the old code then returned (1, pq).
+    ///
+    /// Four orders of magnitude separate the two, so this is not a tuning knob. The cap is
+    /// 32 x 46 341 = 1 482 912: 55x what the realistic case actually needed, 0.049% of what the
+    /// hostile input needs, ~0.7 s of worst-case work here. Rho's chance of missing a factor
+    /// after t iterations falls off as exp(-t^2 / 2p), so at t = 32 sqrt(p) a false failure on a
+    /// real semiprime is exp(-512)-improbable. Anyone raising this is buying nothing for a
+    /// legitimate server and paying the attacker directly.
+    [<Literal>]
+    let private MaxRhoIterations = 1482912
+
+    /// Factorize pq into p and q (p less than q) using Pollard's rho algorithm.
+    ///
+    /// Both loops are capped at MaxRhoIterations between them and poll `ct` every iteration.
+    /// Budget exhaustion, cancellation, and a result that is not a factorisation are all
+    /// Error — never a guess, and never thrown.
+    let factorizePQ (pq: uint64) (ct: System.Threading.CancellationToken) : Result<uint64 * uint64, MtProtoError> =
+        // A usable answer multiplies back to pq with both factors > 1. The unbounded version
+        // returned (1, pq) on a prime, which the caller cannot tell from a real factorisation —
+        // it would encrypt that into p_q_inner_data and fail far later with a useless error.
+        let validated (a: uint64) (b: uint64) =
+            if a > 1UL && b > 1UL && a * b = pq then Ok (if a < b then (a, b) else (b, a))
+            else Error (MtProtoError.AuthKeyExchangeFailed $"pq %d{pq} is not a product of two factors > 1")
+
+        // 0..3 have no factorisation into two factors > 1, and rho on pq = 1 would spend the
+        // entire budget proving it — every gcd against 1 is 1, so the loop never settles.
+        if pq < 4UL then
+            validated 1UL pq
+        elif pq % 2UL = 0UL then
+            validated 2UL (pq / 2UL)
         else
-            let mutable x = 2UL
-            let mutable y = 2UL
-            let mutable d = 1UL
-            let mutable c = 1UL
+            let bigPq = BigInteger(pq)
 
-            let f xv =
-                let bx = BigInteger(uint64 xv)
-                (BigInteger.Multiply(bx, bx) + BigInteger(uint64 c)) % BigInteger(uint64 pq) |> uint64
-
-            while d = 1UL do
-                x <- f x
-                y <- f (f y)
-                d <- BigInteger.GreatestCommonDivisor(BigInteger(int64 (if x > y then x - y else y - x)), BigInteger(uint64 pq)) |> uint64
-
-            if d = pq then
-                c <- c + 1UL
-                x <- 2UL
-                y <- 2UL
-                d <- 1UL
-                while d = 1UL do
+            // Returns the divisor found and the budget left, so the retry below cannot spend the
+            // budget twice. (A closure cannot capture a mutable local in F#, hence the threading.)
+            let rho (c: uint64) (startBudget: int) =
+                let bigC = BigInteger(c)
+                let f (xv: uint64) =
+                    let bx = BigInteger(xv)
+                    (BigInteger.Multiply(bx, bx) + bigC) % bigPq |> uint64
+                let mutable x = 2UL
+                let mutable y = 2UL
+                let mutable d = 1UL
+                let mutable budget = startBudget
+                while d = 1UL && budget > 0 && not ct.IsCancellationRequested do
+                    budget <- budget - 1
                     x <- f x
                     y <- f (f y)
-                    d <- BigInteger.GreatestCommonDivisor(BigInteger(int64 (if x > y then x - y else y - x)), BigInteger(uint64 pq)) |> uint64
+                    // |x - y| as uint64: the old int64 cast wrapped negative above 2^63 and fed
+                    // gcd a different number than the one the algorithm computed.
+                    let diff = if x > y then x - y else y - x
+                    d <- BigInteger.GreatestCommonDivisor(BigInteger(diff), bigPq) |> uint64
+                struct (d, budget)
 
-            let other = pq / d
-            if d < other then (d, other) else (other, d)
+            let struct (d1, budget1) = rho 1UL MaxRhoIterations
+            // d = pq means rho collided on the trivial divisor; one retry with a different c.
+            let struct (d, budget) = if d1 = pq then rho 2UL budget1 else struct (d1, budget1)
+
+            if ct.IsCancellationRequested then
+                Error (MtProtoError.AuthKeyExchangeFailed $"pq factorisation cancelled after %d{MaxRhoIterations - budget} iterations")
+            elif d = 1UL then
+                Error (MtProtoError.AuthKeyExchangeFailed $"pq %d{pq} did not factor within %d{MaxRhoIterations} Pollard-rho iterations")
+            else
+                validated d (pq / d)
 
     /// Serialize req_pq_multi message
     let serializeReqPqMulti (nonce: byte[]) : byte[] =
@@ -211,7 +254,11 @@ module AuthKeyExchange =
 
             let fingerprints = Array.init fingerprintCount (fun _ -> resReader.ReadInt64())
 
-            let (p, q) = factorizePQ pqValue
+            // Bounded and cancellable: pq is unauthenticated, so a hostile value must cost the
+            // caller a prompt Error, not an uninterruptible CPU burn ConnectAsync's ct cannot stop.
+            match factorizePQ pqValue ct with
+            | Error e -> return Error e
+            | Ok (p, q) ->
 
             // Pick the key in the server's advertised order — the first fingerprint is the one the
             // server prefers (the RSA_PAD key), so honour that instead of our local key order.

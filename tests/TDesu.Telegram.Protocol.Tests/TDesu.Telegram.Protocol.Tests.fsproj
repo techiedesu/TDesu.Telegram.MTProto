@@ -8,6 +8,7 @@
 
     <ItemGroup>
         <Compile Include="PersistenceTests.fs" />
+        <Compile Include="FactorizePqTests.fs" />
         <Compile Include="MessageFramingTests.fs" />
         <Compile Include="TransportFramingTests.fs" />
         <Compile Include="TransportSelectionTests.fs" />
