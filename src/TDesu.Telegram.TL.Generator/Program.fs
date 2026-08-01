@@ -84,6 +84,125 @@ Sample overrides config: samples/SedBotOverrides/sedbot-overrides.toml
         eprintfn "%s" usage
         1
 
+    /// Every flag the generator understands, and whether it takes a value.
+    /// `tryGetArg` answers "is this flag present" and nothing else, so before
+    /// this table a mistyped flag was a silent nil: `--mtproto-schemaa`
+    /// deleted the 37 transport types the `cid` target needs and exited 0
+    /// (#65's family). Anything not named here is now a hard error.
+    let private knownFlags : Map<string, bool> =
+        Map.ofList [
+            "--schema", true
+            "--mtproto-schema", true
+            "--layer-base-schema", true
+            "--output", true
+            "--namespace", true
+            "--overrides", true
+            "--target", true
+            "--tests-namespace", true
+            "--client-namespace", true
+            "--split-domains", true
+            "--split-by-domain", false
+            "--no-whitelist", false
+            "--split-by-class", false
+            "--clean", false
+        ]
+
+    /// Reject an argument the generator does not recognise, and any bare word
+    /// that is not the value of a flag. Returns the list of complaints; empty
+    /// means the command line is well formed.
+    let internal unknownArguments (argv: string[]) : string list =
+        let complaints = ResizeArray<string>()
+        let mutable i = 0
+        while i < argv.Length do
+            let a = argv[i]
+            match knownFlags.TryFind a with
+            | Some takesValue ->
+                if takesValue then
+                    if i + 1 >= argv.Length then
+                        complaints.Add $"%s{a} requires a value"
+                        i <- i + 1
+                    else
+                        i <- i + 2
+                else
+                    i <- i + 1
+            | None ->
+                // Name the nearest known flag: the whole point of this check is
+                // the one-character typo, and "did you mean" is the difference
+                // between a five-second fix and an afternoon.
+                let suggestion =
+                    knownFlags.Keys
+                    |> Seq.filter (fun k ->
+                        k.StartsWith(a, System.StringComparison.Ordinal)
+                        || a.StartsWith(k, System.StringComparison.Ordinal))
+                    |> Seq.sortBy String.length
+                    |> Seq.tryHead
+                if a.StartsWith("--", System.StringComparison.Ordinal) then
+                    match suggestion with
+                    | Some s -> complaints.Add $"unknown flag %s{a} (did you mean %s{s}?)"
+                    | None -> complaints.Add $"unknown flag %s{a}"
+                else
+                    complaints.Add $"unexpected argument '%s{a}' — it is not a flag and no flag takes it as a value"
+                i <- i + 1
+        List.ofSeq complaints
+
+    /// What reads a given input.
+    type internal ReadBy =
+        /// Every target folds it in (`[[extra_combinators]]` joins the schema
+        /// before any target runs), so it is never discarded.
+        | AllTargets
+        /// Only these targets read it.
+        | Targets of string list
+        /// Nothing in the generator reads it. Parsed, validated, dropped.
+        | NoTarget
+
+    /// Inputs the command line supplied that NONE of the selected targets
+    /// reads. Accepting one and then discarding it in silence is the same
+    /// failure mode as the mistyped flag — the operator believes something
+    /// took effect.
+    let internal ignoredInputs (argv: string[]) (config: OverrideConfig) (targets: Set<string>) : (string * ReadBy) list =
+        let flagGiven name = (argv |> tryGetArg name).IsSome
+        let switchGiven name = argv |> Array.exists (fun s -> s = name)
+
+        let flags =
+            [ "--mtproto-schema", flagGiven "--mtproto-schema", Targets [ "cid"; "csharp" ]
+              "--layer-base-schema", flagGiven "--layer-base-schema", Targets [ "layer-aliases" ]
+              "--tests-namespace", flagGiven "--tests-namespace", Targets [ "tests" ]
+              "--client-namespace", flagGiven "--client-namespace", Targets [ "client-cids"; "client-parsers" ]
+              "--split-by-domain", switchGiven "--split-by-domain", Targets [ "types" ]
+              "--split-domains", flagGiven "--split-domains", Targets [ "types" ]
+              "--no-whitelist", switchGiven "--no-whitelist", Targets [ "types"; "writers"; "tests"; "client-parsers" ]
+              "--split-by-class", switchGiven "--split-by-class", Targets [ "csharp" ]
+              "--clean", switchGiven "--clean", Targets [ "csharp" ] ]
+
+        // The overrides file is one `--overrides` argument carrying twelve
+        // independent channels. A target set that reads none of a populated
+        // channel discards it just as silently as a mistyped flag does.
+        let sections =
+            [ "[[layer_variants]]", not config.LayerVariants.IsEmpty,
+              Targets [ "cid"; "types"; "tests"; "client-parsers"; "writers" ]
+              "[[structural_overlays]]", not config.StructuralOverlays.IsEmpty, Targets [ "writers" ]
+              "[[aliases]]", not config.Aliases.IsEmpty,
+              Targets [ "cid"; "types"; "tests"; "client-parsers"; "coverage"; "return-types" ]
+              "[[extras]]", not config.Extras.IsEmpty, Targets [ "cid" ]
+              "[[extra_combinators]]", not config.ExtraCombinators.IsEmpty, AllTargets
+              "[layer_type_info]", not config.LayerTypeInfo.IsEmpty, NoTarget
+              "[whitelists].types", not config.TypeWhitelist.IsEmpty, Targets [ "types"; "tests"; "client-parsers" ]
+              "[whitelists].writers", not config.WriterWhitelist.IsEmpty, Targets [ "writers" ]
+              "[whitelists].writer_layer_types", not config.WriterLayerTypes.IsEmpty, Targets [ "writers" ]
+              "[whitelists].stub_types", not config.StubTypes.IsEmpty, Targets [ "types"; "tests"; "client-parsers" ]
+              "[whitelists].client_parsers", not config.ClientParserWhitelist.IsEmpty, Targets [ "client-parsers" ]
+              "[whitelists].writer_record_per_case_unions", not config.WriterRecordPerCaseUnions.IsEmpty,
+              Targets [ "writers" ] ]
+
+        [ for name, given, readBy in flags @ sections do
+              if given then
+                  match readBy with
+                  | AllTargets -> ()
+                  | NoTarget -> yield name, NoTarget
+                  | Targets consumers ->
+                      if not (consumers |> List.exists targets.Contains) then
+                          yield name, Targets consumers ]
+
     let private parseTargets (raw: string) : Set<string> =
         let normalised =
             raw.Split([| ','; ' ' |], System.StringSplitOptions.RemoveEmptyEntries)
@@ -130,6 +249,17 @@ Sample overrides config: samples/SedBotOverrides/sedbot-overrides.toml
         let splitByClass = argv |> Array.exists (fun s -> s = "--split-by-class")
         let clean = argv |> Array.exists (fun s -> s = "--clean")
 
+        match unknownArguments argv with
+        | _ :: _ as complaints ->
+            // Before every other check: a mistyped flag means the command line
+            // does not say what the operator thinks it says, and running the
+            // rest of it produces a confidently wrong tree and exit 0.
+            for c in complaints do
+                log.LogError("{Complaint}", c)
+            eprintfn "%s" usage
+            1
+        | [] ->
+
         match schemaPath, outputDir, nsOpt, overridesPath, targetRaw with
         | None, _, _, _, _ -> fail log "--schema is required"
         | _, None, _, _, _ -> fail log "--output is required"
@@ -145,6 +275,23 @@ Sample overrides config: samples/SedBotOverrides/sedbot-overrides.toml
             else
                 log.LogInformation("Loading overrides from {Path}...", overridesPath)
                 let config = Config.load overridesPath
+
+                // Accepted, parsed, and then read by nothing that runs. Warned
+                // on stderr rather than discarded: the operator supplied it
+                // because they expected it to do something.
+                for name, readBy in ignoredInputs argv config targets do
+                    match readBy with
+                    | Targets consumers ->
+                        eprintfn
+                            "td-tl-gen: warning: %s is ignored — it is read only by the %s target(s), and this run selected %s"
+                            name
+                            (String.concat ", " consumers)
+                            (targets |> Set.toList |> String.concat ", ")
+                    | NoTarget ->
+                        eprintfn
+                            "td-tl-gen: warning: %s is populated but no target in this generator reads it"
+                            name
+                    | AllTargets -> ()
 
                 match parseSchema log "API" schemaPath with
                 | None -> 1

@@ -1,0 +1,12 @@
+# Snapshot goldens are compared byte for byte, line endings included: the
+# emitters commit to LF on every platform (EmitCSharp's NormalizeWhitespace,
+# Fantomas EndOfLineStyle.LF, Append('\n') in EmitTemplates), and the previous
+# `Replace("\r\n", "\n")` in the comparison is *why* an Environment.NewLine
+# defect survived a year unseen. A checkout that rewrote these to CRLF would
+# fail the suite for a reason that has nothing to do with the code.
+*.expected -text
+
+# Emitted code the generator writes is LF by contract, in this repo and in
+# every consumer's tree.
+*.g.fs   text eol=lf
+*.g.cs   text eol=lf

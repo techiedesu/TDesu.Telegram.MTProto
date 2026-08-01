@@ -374,6 +374,14 @@ let formatAst (parsedInput: ParsedInput) =
             ExperimentalElmish = true
             MultilineBracketStyle = MultilineBracketStyle.Stroustrup
             SpaceBeforeParameter = true
+            // Same reason the C# backend pins NormalizeWhitespace's eol: the
+            // default is Environment.NewLine, so the committed bytes would
+            // depend on the machine that ran the generator. Worse than
+            // uniformly wrong, Fantomas mixed the two WITHIN one file —
+            // `GeneratedTlWriters.g.fs` came out 25447 CRLF of 30605 lines,
+            // because the interpolated string literals the emitters build
+            // carry their own '\n' while Fantomas ended lines with CRLF.
+            EndOfLine = EndOfLineStyle.LF
             // Effectively disable line-length-based wrapping. Long DU cases,
             // record expressions and function signatures stay on one line;
             // they're not meant to be hand-read anyway. Bump only if you

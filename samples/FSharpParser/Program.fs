@@ -32,7 +32,9 @@ match AstFactory.parse schema with
             match id.Namespace with
             | Some ns -> $"{ns}.{id.Name}"
             | None -> id.Name
-        | TlTypeExpr.Vector inner -> $"Vector<{formatType inner}>"
+        | TlTypeExpr.Vector(isBare, inner) ->
+            let keyword = if isBare then "vector" else "Vector"
+            $"{keyword}<{formatType inner}>"
         | TlTypeExpr.Conditional(field, bit, inner) -> $"{field}.{bit}?{formatType inner}"
         | TlTypeExpr.TypeVar name -> $"!{name}"
         | TlTypeExpr.Nat -> "#"

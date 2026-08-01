@@ -7,6 +7,112 @@ open TDesu.Telegram.TL.AST
 // Intermediate representation: TL schema mapped to F# type model
 // ----------------------------------------------------------------
 
+/// The IR's field-type vocabulary.
+///
+/// A field type is a **string**: one base token, optionally wrapped by a
+/// vector suffix (` array` / ` barevector`) and then ` option`. That one
+/// string does two jobs — it is the F#/C# type spelling *and* the wire
+/// encoding — and both shipped encoding defects are the second job having no
+/// channel of its own:
+///
+///   * **#116** — `int128` and `int256` collapsed to `byte[]`, which already
+///     means the length-prefixed `bytes` primitive. A 16-byte nonce went out
+///     with a TL length envelope in front of it and padding behind it.
+///   * **#117** — `vector<T>` and `Vector<T>` collapsed to `T array`, and a
+///     bare element to the same spelling as a boxed one, so `future_salts`
+///     shipped a `0x1CB5C415` header and a per-element constructor id that a
+///     real client reads as an element count of 482,092,053.
+///
+/// The width channel the audit asked for is `FixedBytes`; here it is a base
+/// token (`Int128` / `Int256`) with `fixedWidth` as its accessor, because in
+/// a string-typed IR a token *is* the node. A discriminated union would have
+/// to replace `GeneratedField.FSharpType` outright, and that string is also
+/// where the overrides file injects arbitrary consumer-supplied F# type
+/// spellings (`stub_types`, structural-overlay extras) — a DU would need a
+/// `Raw of string` escape hatch for them and would buy nothing over this.
+///
+/// The three wire-only markers below are **not** part of the type spelling:
+/// `spelling` erases them and every site that only wants a type name calls
+/// it; every site that emits a read or a write interprets them instead.
+/// They are deliberately not valid C#/F# identifiers, so a marker that leaks
+/// into emitted source is a hard error at the Roslyn parse check or at the
+/// consumer's compile, never a silent wire change.
+module IrType =
+
+    /// Opaque type ref: a complete pre-serialized TL value, written raw.
+    [<Literal>]
+    let RawBytes = "rawBytes"
+
+    /// `int128 4*[ int ]` — 16 raw bytes, no length prefix, no padding.
+    [<Literal>]
+    let Int128 = "int128"
+
+    /// `int256 8*[ int ]` — 32 raw bytes.
+    [<Literal>]
+    let Int256 = "int256"
+
+    /// Marks a reference to a generated type that is written WITHOUT its
+    /// constructor id (TL's lowercase type reference).
+    [<Literal>]
+    let BarePrefix = "bare:"
+
+    /// `Vector<T>`: `0x1CB5C415`, count, elements.
+    [<Literal>]
+    let ArraySuffix = " array"
+
+    /// `vector<T>`: count, elements. No constructor id.
+    [<Literal>]
+    let BareVectorSuffix = " barevector"
+
+    [<Literal>]
+    let OptionSuffix = " option"
+
+    let private endsWith (suffix: string) (t: string) =
+        t.EndsWith(suffix, System.StringComparison.Ordinal)
+
+    /// Byte width of a fixed-width TL scalar, or None.
+    ///
+    /// The family is closed: `grep -nE '\*\[ ' schema/*.tl` yields only
+    /// `int128 4*[ int ]` and `int256 8*[ int ]`, so there is no third case
+    /// to generalise for. A new one would be a new token here.
+    let fixedWidth (t: string) : int option =
+        match t with
+        | Int128 -> Some 16
+        | Int256 -> Some 32
+        | _ -> None
+
+    let isFixedBytes (t: string) = (fixedWidth t).IsSome
+
+    let bare (name: string) = BarePrefix + name
+    let isBare (t: string) = t.StartsWith(BarePrefix, System.StringComparison.Ordinal)
+    let unbare (t: string) = if isBare t then t.Substring BarePrefix.Length else t
+
+    let isBoxedVector (t: string) = endsWith ArraySuffix t
+    let isBareVector (t: string) = endsWith BareVectorSuffix t
+    let isVector (t: string) = isBoxedVector t || isBareVector t
+
+    let vectorOf (isBareVec: bool) (element: string) =
+        element + (if isBareVec then BareVectorSuffix else ArraySuffix)
+
+    /// The element type of a vector; the type itself if it is not one.
+    let element (t: string) =
+        if isBareVector t then t.Substring(0, t.Length - BareVectorSuffix.Length)
+        elif isBoxedVector t then t.Substring(0, t.Length - ArraySuffix.Length)
+        else t
+
+    let isOption (t: string) = endsWith OptionSuffix t
+    let unoption (t: string) = if isOption t then t.Substring(0, t.Length - OptionSuffix.Length) else t
+
+    /// Erase every wire-only marker. What is left is exactly the vocabulary
+    /// the emitters spoke before #116/#117: `byte[]`, `X array`, `X option`,
+    /// `rawBytes` and generated type names. Call this wherever a type NAME is
+    /// wanted; never where a read or a write is being emitted.
+    let rec spelling (t: string) : string =
+        if isOption t then spelling (unoption t) + OptionSuffix
+        elif isVector t then spelling (element t) + ArraySuffix
+        elif isFixedBytes t then "byte[]"
+        else unbare t
+
 type GeneratedType =
     | Record of name: string * fields: GeneratedField list * constructorId: uint32
     | Union of name: string * cases: UnionCase list
@@ -110,6 +216,8 @@ module FieldHelpers =
         | "double" -> Some "double"
         | "string" -> Some "string"
         | "bytes" -> Some "byte[]"
+        | "int128" -> Some IrType.Int128
+        | "int256" -> Some IrType.Int256
         | "bool" -> Some "bool"
         | _ -> None
 
@@ -254,15 +362,18 @@ module CodeModelMapping =
     /// instead of `WriteBytes`. Recognized in `mkSynType`, the writer/reader
     /// emit functions, and the writer-target's `isPrimitive` set.
     [<Literal>]
-    let RawBytesSentinel = "rawBytes"
+    let RawBytesSentinel = IrType.RawBytes
 
     let rec mapPrimitiveType (name: string) : string =
         match name.ToLowerInvariant() with
         | "int" -> "int32"
         | "long" -> "int64"
         | "double" -> "double"
-        | "int128" -> "byte[]"
-        | "int256" -> "byte[]"
+        // Fixed-width raw scalars, NOT the `bytes` primitive: 16 and 32 bytes
+        // with no length prefix and no padding. They kept their TL spelling as
+        // the IR token so the width survives to the emitters (#116).
+        | "int128" -> IrType.Int128
+        | "int256" -> IrType.Int256
         | "string" -> "string"
         | "bytes" -> "byte[]"
         | "bool" -> "bool"
@@ -273,21 +384,33 @@ module CodeModelMapping =
             let pc = pascalCase name
             if opaqueTypes.Contains pc then RawBytesSentinel else pc
 
+    /// Scalar tokens: everything `mapPrimitiveType` can produce that is not a
+    /// reference to a generated type. Only a generated-type reference can be
+    /// bare — a primitive has no constructor id to omit.
+    let private scalarTokens =
+        Set.ofList [ "int32"; "int64"; "double"; "string"; "byte[]"; "bool"; "obj"
+                     IrType.Int128; IrType.Int256; IrType.RawBytes ]
+
     let rec private mapTypeExpr (expr: TlTypeExpr) : string =
         match expr with
-        | TlTypeExpr.Bare id -> mapIdentType id
-        | TlTypeExpr.Boxed id -> mapIdentType id
+        | TlTypeExpr.Bare id -> mapIdentType true id
+        | TlTypeExpr.Boxed id -> mapIdentType false id
         | TlTypeExpr.TypeVar _ -> "obj"
-        | TlTypeExpr.Vector inner -> $"%s{mapTypeExpr inner} array"
+        | TlTypeExpr.Vector(isBare, inner) -> IrType.vectorOf isBare (mapTypeExpr inner)
         | TlTypeExpr.Nat -> "int32"
         | TlTypeExpr.Conditional(_, _, inner) -> mapTypeExpr inner
 
-    and private mapIdentType (id: TlIdentifier) : string =
+    /// `isBareRef` is TL's lowercase type reference: the constructor's fields
+    /// with no constructor id in front. It names a *constructor*, which for
+    /// every bare reference in api.tl/mtproto.tl pascal-cases to the same
+    /// identifier the emitter gives that constructor's class.
+    and private mapIdentType (isBareRef: bool) (id: TlIdentifier) : string =
         let fullName =
             match id.Namespace with
             | Some ns -> $"%s{ns}.%s{id.Name}"
             | None -> id.Name
-        mapPrimitiveType fullName
+        let mapped = mapPrimitiveType fullName
+        if isBareRef && not (scalarTokens.Contains mapped) then IrType.bare mapped else mapped
 
     let private recordName (name: string) = Naming.pascalCase name
 
@@ -321,7 +444,7 @@ module CodeModelMapping =
             match id.Namespace with
             | Some ns -> pascalCase $"%s{ns}.%s{id.Name}"
             | None -> pascalCase id.Name
-        | TlTypeExpr.Vector inner -> $"%s{mapTypeExpr inner} array"
+        | TlTypeExpr.Vector(isBare, inner) -> IrType.vectorOf isBare (mapTypeExpr inner)
         | _ -> mapTypeExpr expr
 
     let internal mapTypeExprPublic = mapTypeExpr

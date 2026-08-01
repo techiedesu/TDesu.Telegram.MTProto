@@ -41,7 +41,7 @@ let ``combinator parses resPQ`` () =
     equals c.Params[0].Name "nonce"
     equals c.Params[0].Type (TlTypeExpr.Bare { Namespace = None; Name = "int128" })
     equals c.Params[3].Name "server_public_key_fingerprints"
-    equals c.Params[3].Type (TlTypeExpr.Vector(TlTypeExpr.Bare { Namespace = None; Name = "long" }))
+    equals c.Params[3].Type (TlTypeExpr.Vector(false, TlTypeExpr.Bare { Namespace = None; Name = "long" }))
     equals c.ResultType (TlTypeExpr.Boxed { Namespace = None; Name = "ResPQ" })
 
 [<Test>]

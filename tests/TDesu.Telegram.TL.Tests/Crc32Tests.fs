@@ -51,12 +51,48 @@ let ``computeForCombinator with params`` () =
             { Name = "nonce"; Type = TlTypeExpr.Bare { Namespace = None; Name = "int128" } }
             { Name = "server_nonce"; Type = TlTypeExpr.Bare { Namespace = None; Name = "int128" } }
             { Name = "pq"; Type = TlTypeExpr.Bare { Namespace = None; Name = "string" } }
-            { Name = "server_public_key_fingerprints"; Type = TlTypeExpr.Vector(TlTypeExpr.Bare { Namespace = None; Name = "long" }) }
+            { Name = "server_public_key_fingerprints"; Type = TlTypeExpr.Vector(false, TlTypeExpr.Bare { Namespace = None; Name = "long" }) }
         ]
         ResultType = TlTypeExpr.Boxed { Namespace = None; Name = "ResPQ" }
     }
     let crc = Crc32.computeForCombinator c
     equals crc 0x05162463u
+
+/// The bare/boxed distinction is part of the declaration text an id is
+/// computed over, and Telegram's own published id is the arbiter: this
+/// declaration hashes to `ae500895` only when the keyword is spelled
+/// `vector` (lowercase, space-separated). Folding it to `Vector` — which is
+/// what a case-insensitive parser produced — gives 0x94E2D547 instead.
+///
+/// It matters beyond bookkeeping: `resPQ` above pins the BOXED spelling
+/// against a published id too, so the pair proves the two forms are distinct
+/// and that each one is right, rather than that one of them happens to work.
+[<Test>]
+let ``computeForCombinator distinguishes a bare vector from a boxed one`` () =
+    // future_salts#ae500895 req_msg_id:long now:int salts:vector<future_salt> = FutureSalts
+    let c = {
+        Id = { Namespace = None; Name = "future_salts" }
+        ConstructorId = None
+        TypeParams = []
+        Params = [
+            { Name = "req_msg_id"; Type = TlTypeExpr.Bare { Namespace = None; Name = "long" } }
+            { Name = "now"; Type = TlTypeExpr.Bare { Namespace = None; Name = "int" } }
+            { Name = "salts"
+              Type = TlTypeExpr.Vector(true, TlTypeExpr.Bare { Namespace = None; Name = "future_salt" }) }
+        ]
+        ResultType = TlTypeExpr.Boxed { Namespace = None; Name = "FutureSalts" }
+    }
+    equals (Crc32.computeForCombinator c) 0xAE500895u
+
+    let asBoxed =
+        { c with
+            Params =
+                c.Params
+                |> List.map (fun p ->
+                    match p.Type with
+                    | TlTypeExpr.Vector(_, inner) -> { p with Type = TlTypeExpr.Vector(false, inner) }
+                    | _ -> p) }
+    Assert.That(Crc32.computeForCombinator asBoxed, Is.Not.EqualTo 0xAE500895u)
 
 [<Test>]
 let ``compute CRC32 empty string`` () =

@@ -6,10 +6,19 @@ type TlConstructorId = TlConstructorId of uint32
 
 [<RequireQualifiedAccess>]
 type TlTypeExpr =
+    /// A lowercase type reference: the constructor's fields with NO
+    /// constructor id in front of them.
     | Bare of TlIdentifier
+    /// An uppercase type reference: a constructor id followed by its fields.
     | Boxed of TlIdentifier
     | TypeVar of string
-    | Vector of TlTypeExpr
+    /// `Vector<T>` (`isBare = false`) writes `0x1CB5C415`, a count and the
+    /// elements; `vector<T>` (`isBare = true`) writes the count and the
+    /// elements only. TL spells the difference with one capital letter and
+    /// means two different wire formats by it, so the node has to carry it —
+    /// folding the two together put a vector header inside `future_salts`
+    /// that a real client reads as its element count (#117).
+    | Vector of isBare: bool * inner: TlTypeExpr
     | Nat
     | Conditional of fieldRef: string * bitIndex: int * innerType: TlTypeExpr
 

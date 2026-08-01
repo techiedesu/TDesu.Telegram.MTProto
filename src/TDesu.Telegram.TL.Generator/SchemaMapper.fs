@@ -219,10 +219,11 @@ module SchemaMapper =
             "int32"; "int64"; "double"; "bool"; "string"; "byte[]"; "obj"
         ]
 
+        /// The generated type a field depends on, or None for a scalar.
+        /// `IrType.spelling` first: bareness and fixed widths are wire-only
+        /// markers and must not reach a whitelist key or a topsort node name.
         let extractReferencedTypeName (fsharpType: string) : string option =
-            let mutable t = fsharpType
-            if t.EndsWith(" option") then t <- t.Substring(0, t.Length - 7)
-            if t.EndsWith(" array") then t <- t.Substring(0, t.Length - 6)
+            let t = IrType.spelling fsharpType |> IrType.unoption |> IrType.element
             if primitives.Contains t then None else Some t
 
         let resolve

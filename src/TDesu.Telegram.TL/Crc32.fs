@@ -39,7 +39,11 @@ module Crc32 =
                 | Some ns -> $"{ns}.{id.Name}"
                 | None -> id.Name
             | TlTypeExpr.TypeVar name -> $"!{name}"
-            | TlTypeExpr.Vector inner -> $"Vector {fmt inner}"
+            // The keyword's case is part of the declaration text the id is
+            // computed over, and it is also the bare/boxed distinction.
+            | TlTypeExpr.Vector (isBare, inner) ->
+                let keyword = if isBare then "vector" else "Vector"
+                $"{keyword} {fmt inner}"
             | TlTypeExpr.Nat -> "#"
             | TlTypeExpr.Conditional (fieldRef, bitIndex, inner) ->
                 $"{fieldRef}.{bitIndex}?{fmt inner}"

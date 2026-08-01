@@ -43,8 +43,12 @@ module EmitTemplates =
     /// Generate the Cid + LayerCid modules with overrides applied.
     let generateCidModule (ns: string) (config: OverrideConfig) (mtprotoSchema: TlSchema) (apiSchema: TlSchema) : string =
         let sb = System.Text.StringBuilder()
-        let ln (s: string) = sb.AppendLine(s) |> ignore
-        let ln0 () = sb.AppendLine() |> ignore
+        // `AppendLine` writes Environment.NewLine, so the emitted bytes would
+        // depend on the machine that ran the generator — CRLF on Windows, LF
+        // everywhere else — for a file the consumer commits. Pinned to LF, the
+        // same way the C# backend pins NormalizeWhitespace.
+        let ln (s: string) = sb.Append(s).Append('\n') |> ignore
+        let ln0 () = sb.Append('\n') |> ignore
 
         ln "// Auto-generated TL constructor IDs. Do not edit manually."
         ln "// Re-generate with: td-tl-gen --target cid --overrides <your.toml>"
@@ -207,7 +211,7 @@ module EmitTemplates =
             SchemaMapper.mapSchemaWhitelisted apiSchema config.TypeWhitelist config.StubTypes aliasMap
 
         let sb = System.Text.StringBuilder()
-        let ln (s: string) = sb.AppendLine(s) |> ignore
+        let ln (s: string) = sb.Append(s).Append('\n') |> ignore
 
         ln "// Auto-generated round-trip tests. Do not edit manually."
         ln "// Re-generate with: td-tl-gen --target tests --overrides <your.toml>"
@@ -233,13 +237,15 @@ module EmitTemplates =
         // Auto-build DU defaults from schema: pick the case with fewest fields (prefer Empty cases)
         let types, _ = SchemaMapper.mapSchemaWhitelisted apiSchema config.TypeWhitelist config.StubTypes aliasMap
 
-        let rec simpleDefaultPrim (t: string) =
-            match t with
+        // `IrType.spelling` first: bareness and fixed widths steer the wire
+        // encoding, never the CLR value a test fixture has to construct.
+        let rec simpleDefaultPrim (raw: string) =
+            match IrType.spelling raw with
             | "int32" -> "0" | "int64" -> "0L" | "double" -> "0.0"
             | "bool" -> "false" | "string" -> "\"\"" | "byte[]" -> "Array.empty"
             | t when t.EndsWith(" option") -> "None"
             | t when t.EndsWith(" array") -> "[||]"
-            | _ -> $"Unchecked.defaultof<%s{t}>"
+            | t -> $"Unchecked.defaultof<%s{t}>"
 
         let duDefaults =
             let auto =
@@ -262,8 +268,8 @@ module EmitTemplates =
             auto |> Map.fold (fun acc k v -> if Map.containsKey k acc then acc else Map.add k v acc) duOverrides
 
         // Simple default (no record lookup)
-        let simpleDefault (t: string) =
-            match t with
+        let simpleDefault (raw: string) =
+            match IrType.spelling raw with
             | "int32" -> "0" | "int64" -> "0L" | "double" -> "0.0"
             | "bool" -> "false" | "string" -> "\"\"" | "byte[]" -> "Array.empty"
             | t when t.EndsWith(" option") -> "None"
@@ -291,7 +297,8 @@ module EmitTemplates =
                     name, $"{{ %s{name}.%s{inits} }}")
                 |> Map.ofList
             // Pass 2: rebuild using pass1 for nested record references
-            let lookup t =
+            let lookup raw =
+                let t = IrType.spelling raw
                 match duDefaults |> Map.tryFind t with
                 | Some e -> e
                 | None -> pass1 |> Map.tryFind t |> Option.defaultValue (simpleDefault t)
@@ -311,7 +318,7 @@ module EmitTemplates =
                 dataFields
                 |> List.map (fun p ->
                     let def =
-                        match recordDefaults |> Map.tryFind p.FSharpType with
+                        match recordDefaults |> Map.tryFind (IrType.spelling p.FSharpType) with
                         | Some expr -> expr
                         | None -> simpleDefault p.FSharpType
                     $"{p.RecordName} = {def}")
@@ -349,8 +356,8 @@ module EmitTemplates =
     /// Use this when you need a server to accept method calls from clients on different layers.
     let generateLayerAliases (ns: string) (baseSchema: TlSchema) (newSchema: TlSchema) (outputPath: string) =
         let sb = System.Text.StringBuilder()
-        let ln (s: string) = sb.AppendLine(s) |> ignore
-        let ln0 () = sb.AppendLine() |> ignore
+        let ln (s: string) = sb.Append(s).Append('\n') |> ignore
+        let ln0 () = sb.Append('\n') |> ignore
 
         ln "// Auto-generated layer CID aliases. Do not edit manually."
         ln "// Re-generate with: td-tl-gen --target layer-aliases --layer-base-schema <old.tl>"
@@ -446,8 +453,8 @@ module EmitTemplates =
     /// Generate handler coverage validator: checks registered CIDs against known TL functions.
     let generateCoverageValidator (ns: string) (config: OverrideConfig) (apiSchema: TlSchema) (outputPath: string) =
         let sb = System.Text.StringBuilder()
-        let ln (s: string) = sb.AppendLine(s) |> ignore
-        let ln0 () = sb.AppendLine() |> ignore
+        let ln (s: string) = sb.Append(s).Append('\n') |> ignore
+        let ln0 () = sb.Append('\n') |> ignore
 
         ln "// Auto-generated handler coverage validator. Do not edit manually."
         ln "// Re-generate with: td-tl-gen --target coverage --overrides <your.toml>"
@@ -524,8 +531,8 @@ module EmitTemplates =
     /// Generate RPC function -> return type mapping for typed handler validation.
     let generateReturnTypeMap (ns: string) (config: OverrideConfig) (apiSchema: TlSchema) (outputPath: string) =
         let sb = System.Text.StringBuilder()
-        let ln (s: string) = sb.AppendLine(s) |> ignore
-        let ln0 () = sb.AppendLine() |> ignore
+        let ln (s: string) = sb.Append(s).Append('\n') |> ignore
+        let ln0 () = sb.Append('\n') |> ignore
 
         ln "// Auto-generated RPC return type mapping. Do not edit manually."
         ln "// Re-generate with: td-tl-gen --target return-types --overrides <your.toml>"
@@ -594,8 +601,8 @@ module EmitTemplates =
     /// override pipeline.
     let generateClientCids (ns: string) (apiSchema: TlSchema) (outputPath: string) =
         let sb = System.Text.StringBuilder()
-        let ln (s: string) = sb.AppendLine(s) |> ignore
-        let ln0 () = sb.AppendLine() |> ignore
+        let ln (s: string) = sb.Append(s).Append('\n') |> ignore
+        let ln0 () = sb.Append('\n') |> ignore
 
         ln "// Auto-generated client CID constants. Do not edit manually."
         ln "// Re-generate with: td-tl-gen --target client-cids"

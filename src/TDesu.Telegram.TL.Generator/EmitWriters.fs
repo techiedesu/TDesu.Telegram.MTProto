@@ -140,17 +140,25 @@ module EmitWriters =
         (singleTypes: Map<string, string>)
         : string =
 
-        let hasOption = fsharpType.EndsWith(" option")
-        let afterOption =
-            if hasOption then fsharpType[.. fsharpType.Length - 8] else fsharpType
-        let hasArray = afterOption.EndsWith(" array")
-        let baseType =
-            if hasArray then afterOption[.. afterOption.Length - 7] else afterOption
+        let hasOption = IrType.isOption fsharpType
+        let afterOption = IrType.unoption fsharpType
+        let isBareVec = IrType.isBareVector afterOption
+        let hasArray = IrType.isVector afterOption
+        let baseType = IrType.element afterOption
+        // TL's lowercase type reference. It survives resolution because the
+        // writer still has to omit the constructor id (#117).
+        let isBareRef = IrType.isBare baseType
+        let bareName = IrType.unbare baseType
 
         let resolved =
-            if isPrimitive baseType then baseType
-            elif unionTypes.Contains baseType then $"Write%s{baseType}"
-            elif singleTypes.ContainsKey baseType then $"Write%s{singleTypes[baseType]}Params"
+            // `int128`/`int256` are the declared width in raw bytes. This
+            // target is write-only and the caller owns the array, so they
+            // resolve to the same `rawBytes` path the opaque refs use —
+            // `WriteRawBytes`, no length envelope, no padding (#116).
+            if IrType.isFixedBytes bareName then IrType.RawBytes
+            elif isPrimitive bareName then bareName
+            elif unionTypes.Contains bareName then $"Write%s{bareName}"
+            elif singleTypes.ContainsKey bareName then $"Write%s{singleTypes[bareName]}Params"
             // TL union/single ref not in the writers whitelist — caller is expected
             // to pass a complete pre-serialized TL blob (constructor id + payload).
             // Use the `rawBytes` sentinel so the writer emits `WriteRawBytes`; the
@@ -161,10 +169,22 @@ module EmitWriters =
             // id. SedBot's `documentAttributeSticker.stickerset:InputStickerSet`
             // hit this; the symptom was Telethon
             // `TypeNotFoundError(constructor=0x00000000)` in messages.getAvailableReactions.
-            else "rawBytes"
+            else IrType.RawBytes
 
-        let withArray = if hasArray then $"%s{resolved} array" else resolved
-        if hasOption then $"%s{withArray} option" else withArray
+        // A bare reference that resolved to a generated `write{X}` cannot be
+        // honoured here: that function writes the constructor id by
+        // definition, and this target has no body-only entry point. Refuse
+        // rather than emit the boxed form, which is the defect. A bare
+        // reference that fell through to `rawBytes` is fine — the caller
+        // hands over the exact bytes either way.
+        if isBareRef && resolved <> IrType.RawBytes then
+            failwithf
+                "EmitWriters: bare TL reference to '%s' — the writers target emits `write%s` which writes a constructor id, and it has no body-only form. Drop it from the writer whitelist to pass it as raw bytes, or use the types/csharp backend."
+                bareName
+                bareName
+
+        let withArray = if hasArray then IrType.vectorOf isBareVec resolved else resolved
+        if hasOption then withArray + IrType.OptionSuffix else withArray
 
     // ----------------------------------------------------------------
     // Layer dependency analysis (unchanged)
@@ -188,10 +208,8 @@ module EmitWriters =
                         cs
                         |> List.collect (fun c -> c.Params |> List.map CodeModelMapping.mapParam)
                         |> List.choose (fun f ->
-                            let t = f.FSharpType
                             let stripped =
-                                let s1 = if t.EndsWith(" option") then t[.. t.Length - 8] else t
-                                if s1.EndsWith(" array") then s1[.. s1.Length - 7] else s1
+                                IrType.spelling f.FSharpType |> IrType.unoption |> IrType.element
                             if isPrimitive stripped then None else Some (pascalCase stripped))
                     if refs |> List.exists needsLayer.Contains then
                         needsLayer <- needsLayer.Add rt
@@ -212,9 +230,7 @@ module EmitWriters =
             fields
             |> List.choose (fun f ->
                 let resolved = resolveFieldType f.FSharpType unionTypes singleTypes
-                let stripped =
-                    let s1 = if resolved.EndsWith(" option") then resolved[.. resolved.Length - 8] else resolved
-                    if s1.EndsWith(" array") then s1[.. s1.Length - 7] else s1
+                let stripped = resolved |> IrType.unoption |> IrType.element
                 if stripped.StartsWith "Write" && stripped.EndsWith "Params" then
                     let name = stripped[5 .. stripped.Length - 7]
                     if allTypeNames.Contains name then Some name else None
@@ -256,7 +272,9 @@ module EmitWriters =
         // separators. Pre-2026-04-17 this produced
         // `_b1: rawBytes array` which the F# compiler then inferred as
         // `obj` and broke `for item in _b1`.
-        let t = t.Replace("rawBytes", "byte[]")
+        // A bare vector's F# spelling is a plain array — bareness only steers
+        // whether the emitted writer prefixes `0x1CB5C415`.
+        let t = t.Replace(IrType.BareVectorSuffix, IrType.ArraySuffix).Replace("rawBytes", "byte[]")
         if t.EndsWith(" option") then
             SynType.App(
                 typeName = SynType.LongIdent(SynLongIdent.Create([ Ident.Create "option" ])),
@@ -297,8 +315,24 @@ module EmitWriters =
             | _ -> failwith $"Unknown primitive: %s{t}"
         mkApp (mkDotGet wExpr methodName) (mkParen valueExpr)
 
+    /// The write sequence for a vector: `0x1CB5C415` + count + elements for
+    /// `Vector<T>`, count + elements for the bare `vector<T>`. One helper for
+    /// all four call sites, so the two encodings cannot drift (#117).
+    let private vectorWriteExprs (isBare: bool) (arrExpr: SynExpr) (itemExpr: SynExpr) : SynExpr list =
+        [ if not isBare then
+              mkApp (mkDotGet wExpr "WriteConstructorId") (mkParen (mkHexUInt32 0x1CB5C415u))
+          mkApp (mkDotGet wExpr "WriteInt32") (mkParen (mkDotGet arrExpr "Length"))
+          mkForEach "item" arrExpr itemExpr ]
+
+    /// The same, for an absent optional vector whose flag bit a paired
+    /// presence flag has already set: an empty vector, still correctly shaped.
+    let private emptyVectorWriteExprs (isBare: bool) : SynExpr list =
+        [ if not isBare then
+              mkApp (mkDotGet wExpr "WriteConstructorId") (mkParen (mkHexUInt32 0x1CB5C415u))
+          mkApp (mkDotGet wExpr "WriteInt32") (mkParen (mkInt32 0)) ]
+
     let rec private innerWriteAstExpr (resolvedType: string) (valueExpr: SynExpr) (needsLayer: Set<string>) : SynExpr =
-        if resolvedType.EndsWith(" array") then
+        if IrType.isVector resolvedType then
             // Vector<T> for any T (primitive or composite). Pre-2026-04-17 only
             // the top-level required/optional field paths handled `T array`;
             // when a bundled `Vector<long>` (e.g. `chatFull.recent_requesters`)
@@ -307,13 +341,9 @@ module EmitWriters =
             // primitive: int64 array". Now handled uniformly here so any
             // call site (top-level, bundle, future paths) emits correct
             // vector-header + foreach + per-item write.
-            let inner = resolvedType[.. resolvedType.Length - 7]
+            let inner = IrType.element resolvedType
             let itemExpr = innerWriteAstExpr inner (mkIdent "item") needsLayer
-            mkSeq [
-                mkApp (mkDotGet wExpr "WriteConstructorId") (mkParen (mkHexUInt32 0x1CB5C415u))
-                mkApp (mkDotGet wExpr "WriteInt32") (mkParen (mkDotGet valueExpr "Length"))
-                mkForEach "item" valueExpr itemExpr
-            ]
+            mkSeq (vectorWriteExprs (IrType.isBareVector resolvedType) valueExpr itemExpr)
         elif isPrimitive resolvedType then
             primitiveWriteExpr resolvedType valueExpr
         elif resolvedType.StartsWith "Write" then
@@ -377,16 +407,13 @@ module EmitWriters =
         if isPresenceFlag f then
             []
         elif f.IsOptional then
-            let innerResolved = resolvedType[.. resolvedType.Length - 8]
-            if innerResolved.EndsWith(" array") then
-                let arrayInner = innerResolved[.. innerResolved.Length - 7]
+            let innerResolved = IrType.unoption resolvedType
+            if IrType.isVector innerResolved then
+                let isBareVec = IrType.isBareVector innerResolved
+                let arrayInner = IrType.element innerResolved
                 let itemExpr = innerWriteAstExpr arrayInner (mkIdent "item") needsLayer
                 let writeArr arrName =
-                    mkSeq [
-                        mkApp (mkDotGet wExpr "WriteConstructorId") (mkParen (mkHexUInt32 0x1CB5C415u))
-                        mkApp (mkDotGet wExpr "WriteInt32") (mkParen (mkDotGet (mkIdent arrName) "Length"))
-                        mkForEach "item" (mkIdent arrName) itemExpr
-                    ]
+                    mkSeq (vectorWriteExprs isBareVec (mkIdent arrName) itemExpr)
                 match sharedPresenceFlag with
                 | Some pf ->
                     // Bit is set by the presence flag — write empty vector when
@@ -396,10 +423,9 @@ module EmitWriters =
                             mkMatchClause
                                 (mkPatLongIdent [ "Some" ] [ mkPatNamed "arr" ])
                                 (writeArr "arr")
-                            mkMatchClause (mkPatLongIdentSimple [ "None" ]) (mkSeq [
-                                mkApp (mkDotGet wExpr "WriteConstructorId") (mkParen (mkHexUInt32 0x1CB5C415u))
-                                mkApp (mkDotGet wExpr "WriteInt32") (mkParen (mkInt32 0))
-                            ])
+                            mkMatchClause
+                                (mkPatLongIdentSimple [ "None" ])
+                                (mkSeq (emptyVectorWriteExprs isBareVec))
                         ]) None ]
                 | None ->
                     gate [ mkMatch (fieldAccess f.Name) [
@@ -429,14 +455,10 @@ module EmitWriters =
                         (mkApp (mkLongIdent [ "Option"; "iter" ]) (mkParen (mkLambda [ "v" ] wExprInner)))
                     ]
         else
-            if resolvedType.EndsWith(" array") then
-                let arrayInner = resolvedType[.. resolvedType.Length - 7]
+            if IrType.isVector resolvedType then
+                let arrayInner = IrType.element resolvedType
                 let itemExpr = innerWriteAstExpr arrayInner (mkIdent "item") needsLayer
-                gate [
-                    mkApp (mkDotGet wExpr "WriteConstructorId") (mkParen (mkHexUInt32 0x1CB5C415u))
-                    mkApp (mkDotGet wExpr "WriteInt32") (mkParen (mkDotGet (fieldAccess f.Name) "Length"))
-                    mkForEach "item" (fieldAccess f.Name) itemExpr
-                ]
+                gate (vectorWriteExprs (IrType.isBareVector resolvedType) (fieldAccess f.Name) itemExpr)
             else
                 gate [ innerWriteAstExpr resolvedType (fieldAccess f.Name) needsLayer ]
 
@@ -845,12 +867,10 @@ module EmitWriters =
                                 let writes = [
                                     for (_, rt), dName in List.zip items destructNames do
                                         let innerType = stripOption rt
-                                        if innerType.EndsWith(" array") then
-                                            let arrayInner = innerType[.. innerType.Length - 7]
+                                        if IrType.isVector innerType then
+                                            let arrayInner = IrType.element innerType
                                             let itemExpr = innerWriteAstExpr arrayInner (mkIdent "item") needsLayerSet
-                                            yield mkApp (mkDotGet wExpr "WriteConstructorId") (mkParen (mkHexUInt32 0x1CB5C415u))
-                                            yield mkApp (mkDotGet wExpr "WriteInt32") (mkParen (mkDotGet (mkIdent dName) "Length"))
-                                            yield mkForEach "item" (mkIdent dName) itemExpr
+                                            yield! vectorWriteExprs (IrType.isBareVector innerType) (mkIdent dName) itemExpr
                                         else
                                             yield innerWriteAstExpr innerType (mkIdent dName) needsLayerSet
                                 ]
@@ -885,7 +905,7 @@ module EmitWriters =
             // Bundles emit as "(t1 * t2) option" — handle option suffix first.
             if resolvedType.EndsWith(" option") then
                 Some (mkLongIdent [ "None" ])
-            elif resolvedType.EndsWith(" array") then
+            elif IrType.isVector resolvedType then
                 Some (mkArrayExpr [])
             else
                 match resolvedType with
@@ -979,7 +999,8 @@ module EmitWriters =
         // shape: option/array map element-wise, nested generated types recurse,
         // everything else (scalars, byte[], stubs, obj) passes through.
         let rec convReq (acc: string) (t: string) : string =
-            let t = t.Trim()
+            // Wire markers never change the CLR shape a converter has to move.
+            let t = IrType.spelling (t.Trim())
             if t.EndsWith " option" then
                 let inner = t.Substring(0, t.Length - 7)
                 let b = convReq "__v" inner
@@ -996,7 +1017,7 @@ module EmitWriters =
             else acc
 
         let defaultFor (t: string) : string =
-            let t = t.Trim()
+            let t = IrType.spelling (t.Trim())
             if t.EndsWith " option" then "None"
             elif t.EndsWith " array" || t.EndsWith "[]" then "[||]"
             elif t = "bool" then "false"

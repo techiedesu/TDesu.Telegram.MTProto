@@ -14,6 +14,62 @@ module EmitTypes =
     let private reader = mkIdent "reader"
     let private value = mkIdent "value"
 
+    // --- Bare references (#117) ---
+
+    /// Names this surface references *barely* — TL's lowercase type
+    /// reference, whose wire form is the fields with no constructor id in
+    /// front of them. These types also emit a `SerializeBody` /
+    /// `DeserializeBody` pair for a bare reference to call.
+    ///
+    /// Only single-constructor types can be in here. A bare reference to a
+    /// union CASE has no F# spelling at all — a DU case is not a type, so
+    /// there is nothing to give the field and nothing to hang a body-only
+    /// codec on. `declareBareReferences` refuses one outright rather than
+    /// falling back to the boxed form, which is the defect being fixed.
+    let mutable private bareRecords: Set<string> = Set.empty
+
+    let rec private bareNamesIn (t: string) : string list =
+        if IrType.isOption t then bareNamesIn (IrType.unoption t)
+        elif IrType.isVector t then bareNamesIn (IrType.element t)
+        elif IrType.isBare t then [ IrType.unbare t ]
+        else []
+
+    /// Register the surface's bare references before any declaration is
+    /// built. Every emit entry point calls this, and an unregistered bare
+    /// reference fails generation — a forgotten call must not degrade to a
+    /// silently boxed write.
+    let declareBareReferences (types: GeneratedType list) (functions: GeneratedFunction list) =
+        let fieldTypes =
+            [ for t in types do
+                  match t with
+                  | Record(_, fields, _) ->
+                      for f in fields do
+                          yield f.FSharpType
+                  | Union(_, cases) ->
+                      for c in cases do
+                          for f in c.Fields do
+                              yield f.FSharpType
+              for fn in functions do
+                  for f in fn.Params do
+                      yield f.FSharpType
+                  yield fn.ReturnType ]
+
+        let referenced = fieldTypes |> List.collect bareNamesIn |> Set.ofList
+
+        let recordNames =
+            types
+            |> List.choose (function
+                | Record(name, _, _) -> Some name
+                | Union _ -> None)
+            |> Set.ofList
+
+        match Set.difference referenced recordNames |> Set.toList with
+        | [] -> bareRecords <- referenced
+        | unrepresentable ->
+            failwithf
+                "EmitTypes: bare reference(s) to %s — a bare TL reference names a constructor, and a constructor of a multi-case union is an F# DU case, not a type. The F# backend cannot spell that field or emit its body-only codec; the C# backend can."
+                (String.concat ", " unrepresentable)
+
     // --- Serialize/Deserialize expression builders ---
 
     let rec private serializeExprFor (fsharpType: string) (valueExpr: SynExpr) : SynExpr =
@@ -27,16 +83,27 @@ module EmitTypes =
         // Opaque type ref — caller provides a complete pre-serialized TL
         // value; write it raw without the bytes-primitive length prefix.
         | "rawBytes" -> mkApp (mkDotGet writer "WriteRawBytes") (mkParen valueExpr)
-        | t when t.EndsWith(" option") ->
-            let inner = t[.. t.Length - 8]
+        // `int128`/`int256`: the declared width in raw bytes. NOT the `bytes`
+        // primitive, which would prefix a length and pad to 4 (#116).
+        | t when IrType.isFixedBytes t -> mkApp (mkDotGet writer "WriteRawBytes") (mkParen valueExpr)
+        | t when IrType.isOption t ->
+            let inner = IrType.unoption t
             let innerCall = serializeExprFor inner (mkIdent "v")
 
             mkMatch
                 valueExpr
                 [ mkMatchClause (mkPatLongIdent [ "Some" ] [ mkPatNamed "v" ]) innerCall
                   mkMatchClause (mkPatLongIdentSimple [ "None" ]) mkUnit ]
-        | t when t.EndsWith(" array") ->
-            let inner = t[.. t.Length - 7]
+        | t when IrType.isBareVector t ->
+            // `vector<T>`: the count and the elements, and nothing else.
+            // Inlined rather than routed through the runtime's `WriteVector`,
+            // which writes `0x1CB5C415` by definition (#117).
+            let inner = IrType.element t
+            mkSeq
+                [ mkApp (mkDotGet writer "WriteInt32") (mkParen (mkDotGet valueExpr "Length"))
+                  mkForEach "item" valueExpr (serializeExprFor inner (mkIdent "item")) ]
+        | t when IrType.isBoxedVector t ->
+            let inner = IrType.element t
             let innerCall = serializeExprFor inner (mkIdent "item")
             let lambdaBody = mkLet "writer" (mkIdent "w") innerCall
             let lambda = mkLambda [ "w"; "item" ] lambdaBody
@@ -46,10 +113,22 @@ module EmitTypes =
             mkApp
                 (mkDotGet writer "WriteVector")
                 (mkParen (mkTuple [ valueExpr; lambda ]))
+        | t when IrType.isBare t ->
+            mkApp
+                (mkLongIdent [ bareTargetOf t; "SerializeBody" ])
+                (mkParen (mkTuple [ writer; valueExpr ]))
         | typeName ->
             mkApp
                 (mkLongIdent [ typeName; "Serialize" ])
                 (mkParen (mkTuple [ writer; valueExpr ]))
+
+    and private bareTargetOf (t: string) : string =
+        let name = IrType.unbare t
+        if not (bareRecords.Contains name) then
+            failwithf
+                "EmitTypes: bare reference to '%s' was never registered — call EmitTypes.declareBareReferences for the whole surface before building declarations"
+                name
+        name
 
     let rec private deserializeExprFor (fsharpType: string) : SynExpr =
         match fsharpType with
@@ -63,13 +142,25 @@ module EmitTypes =
         // the schema; ReadBytes preserves prior behavior. Callers that need
         // structured access should whitelist the opaque type's constructors.
         | "rawBytes" -> mkApp (mkDotGet reader "ReadBytes") mkUnit
-        | t when t.EndsWith(" array") ->
-            let inner = t[.. t.Length - 7]
+        | t when IrType.isFixedBytes t ->
+            mkApp (mkDotGet reader "ReadRawBytes") (mkParen (mkInt32 (IrType.fixedWidth t).Value))
+        | t when IrType.isBareVector t ->
+            // `Array.init` runs its generator ascending — FSharp.Core fills the
+            // array with a `for i = 0 to n-1` loop — which is the order a
+            // sequential reader requires.
+            let inner = IrType.element t
+            mkApp
+                (mkApp (mkLongIdent [ "Array"; "init" ]) (mkParen (mkApp (mkDotGet reader "ReadInt32") mkUnit)))
+                (mkParen (mkLambda [ "_i" ] (deserializeExprFor inner)))
+        | t when IrType.isBoxedVector t ->
+            let inner = IrType.element t
             let innerCall = deserializeExprFor inner
             let lambdaBody = mkLet "reader" (mkIdent "r") innerCall
             let lambda = mkLambda [ "r" ] lambdaBody
 
             mkApp (mkDotGet reader "ReadVector") (mkParen lambda)
+        | t when IrType.isBare t ->
+            mkApp (mkLongIdent [ bareTargetOf t; "DeserializeBody" ]) (mkParen reader)
         | typeName ->
             mkApp (mkLongIdent [ typeName; "Deserialize" ]) (mkParen reader)
 
@@ -138,9 +229,16 @@ module EmitTypes =
 
     // --- Member builders ---
 
-    let private mkSerializeMember (name: string) (fields: GeneratedField list) (ctorId: uint32) =
+    /// The field writes, optionally preceded by `prefix` (the constructor-id
+    /// write). Shared so `SerializeBody` and `Serialize` cannot drift.
+    ///
+    /// `prefix` sits INSIDE the `let mutable flags = 0` wrapper rather than
+    /// before it. It makes no difference to the bytes — the cid write does not
+    /// touch a flag word — but it keeps the emitted text of every type that is
+    /// not bare-referenced exactly what it was, so this fix shows up in a
+    /// consumer's diff only where the wire format actually changed.
+    let private serializeBodyExprWith (prefix: SynExpr list) (fields: GeneratedField list) =
         let flagFields = flagFieldNames fields
-        let writeCtorId = mkApp (mkDotGet writer "WriteConstructorId") (mkParen (mkUInt32 ctorId))
 
         let flagExprs =
             flagFields |> List.collect (fun ff -> flagsComputationExprs ff fields)
@@ -150,25 +248,47 @@ module EmitTypes =
             |> List.filter (fun f -> not (isRawFlagField flagFields f))
             |> List.choose serializeFieldExpr
 
-        let bodyParts = [ writeCtorId ] @ flagExprs @ fieldExprs
-
         // Wrap in mutable let for each flag field
-        let body =
-            let inner = mkSeq bodyParts
+        let inner = mkSeq (prefix @ flagExprs @ fieldExprs)
 
-            (inner, flagFields |> List.rev)
-            ||> List.fold (fun acc ff -> mkLetMutable ff (mkInt32 0) acc)
+        (inner, flagFields |> List.rev)
+        ||> List.fold (fun acc ff -> mkLetMutable ff (mkInt32 0) acc)
 
-        let writerPat =
-            mkPatTyped (mkPatNamed "writer") (mkSynType "TlWriteBuffer")
-
+    let private writerValuePats (name: string) =
+        let writerPat = mkPatTyped (mkPatNamed "writer") (mkSynType "TlWriteBuffer")
         let valuePat = mkPatTyped (mkPatNamed "value") (mkSynType name)
+        [ SynPat.CreateTuple([ writerPat; valuePat ]) ]
+
+    /// `SerializeBody(writer, value)` — the wire form of a bare reference to
+    /// this type. Emitted only for types the surface references barely.
+    let private mkSerializeBodyMember (name: string) (fields: GeneratedField list) =
+        mkStaticMemberWithReturnType
+            "SerializeBody"
+            (writerValuePats name)
+            (Some(mkSynType "unit"))
+            (serializeBodyExprWith [] fields)
+
+    /// `hasBody`: this type also emits `SerializeBody`, so `Serialize` writes
+    /// the id and delegates instead of carrying a second copy of the writes.
+    let private mkSerializeMemberWith (hasBody: bool) (name: string) (fields: GeneratedField list) (ctorId: uint32) =
+        let writeCtorId = mkApp (mkDotGet writer "WriteConstructorId") (mkParen (mkUInt32 ctorId))
+
+        let body =
+            if hasBody then
+                mkSeq
+                    [ writeCtorId
+                      mkApp (mkLongIdent [ name; "SerializeBody" ]) (mkParen (mkTuple [ writer; value ])) ]
+            else
+                serializeBodyExprWith [ writeCtorId ] fields
 
         mkStaticMemberWithReturnType
             "Serialize"
-            [ SynPat.CreateTuple([ writerPat; valuePat ]) ]
+            (writerValuePats name)
             (Some(mkSynType "unit"))
             body
+
+    let private mkSerializeMember (name: string) (fields: GeneratedField list) (ctorId: uint32) =
+        mkSerializeMemberWith false name fields ctorId
 
     let private mkDeserializeRecordBody
         (fields: GeneratedField list)
@@ -236,9 +356,27 @@ module EmitTypes =
         else
             withFieldReads
 
-    let private mkDeserializeRecordMember (name: string) (fields: GeneratedField list) =
+    /// `DeserializeBody(reader)` — the fields, with the constructor id
+    /// already consumed (or never present, for a bare reference).
+    let private mkDeserializeBodyMember (name: string) (fields: GeneratedField list) =
+        let body = mkDeserializeRecordBody fields (flagFieldNames fields) false
+
+        let readerPat =
+            mkPatTyped (mkPatNamed "reader") (mkSynType "TlReadBuffer")
+
+        mkStaticMemberWithReturnType "DeserializeBody" [ readerPat ] (Some(mkSynType name)) body
+
+    let private mkDeserializeRecordMember (hasBody: bool) (name: string) (fields: GeneratedField list) =
         let flagFields = flagFieldNames fields
-        let body = mkDeserializeRecordBody fields flagFields true
+
+        let body =
+            if hasBody then
+                mkLet
+                    "_cid"
+                    (mkApp (mkDotGet reader "ReadConstructorId") mkUnit)
+                    (mkApp (mkLongIdent [ name; "DeserializeBody" ]) (mkParen reader))
+            else
+                mkDeserializeRecordBody fields flagFields true
 
         let readerPat =
             mkPatTyped (mkPatNamed "reader") (mkSynType "TlReadBuffer")
@@ -266,12 +404,20 @@ module EmitTypes =
 
         let synFields =
             recordFields
-            |> List.map (fun f -> mkRecordField f.RecordName (mkSynType f.FSharpType))
+            |> List.map (fun f -> mkRecordField f.RecordName (mkSynType (IrType.spelling f.FSharpType)))
+
+        // Referenced barely somewhere in the surface: split the constructor id
+        // off the field codec so a bare reference can reach the fields alone.
+        let bare = bareRecords.Contains name
 
         let members =
             [ mkConstructorIdMember constructorId
-              mkSerializeMember name fields constructorId
-              mkDeserializeRecordMember name fields ]
+              mkSerializeMemberWith bare name fields constructorId
+              if bare then
+                  mkSerializeBodyMember name fields
+              mkDeserializeRecordMember bare name fields
+              if bare then
+                  mkDeserializeBodyMember name fields ]
 
         mkRecordType
             name
@@ -556,7 +702,7 @@ module EmitTypes =
                     caseFields
                     |> List.map (fun f ->
                         SynField.Create(
-                            fieldType = mkSynType f.FSharpType,
+                            fieldType = mkSynType (IrType.spelling f.FSharpType),
                             idOpt = Ident.Create f.Name
                         ))
 
@@ -590,7 +736,7 @@ module EmitTypes =
                 [ mkRecordField "_placeholder" (mkSynType "unit") ]
             else
                 recordFields
-                |> List.map (fun f -> mkRecordField f.RecordName (mkSynType f.FSharpType))
+                |> List.map (fun f -> mkRecordField f.RecordName (mkSynType (IrType.spelling f.FSharpType)))
 
         // DeserializeFields member (reads params without CID)
         let deserializeFieldsBody =
@@ -646,7 +792,9 @@ module EmitTypes =
         | Union(n, _) -> n
 
     let private extractTypeRefs (fsharpType: string) =
-        let mutable s = fsharpType
+        // `IrType.spelling` first: bareness and fixed widths are wire-only and
+        // must never become a graph node name.
+        let mutable s = IrType.spelling fsharpType
 
         // Strip ` option` / ` array` suffixes — may stack (`X option array`,
         // `X array option`) so apply both repeatedly until stable.
@@ -851,6 +999,8 @@ module EmitTypes =
         (types: GeneratedType list)
         (functions: GeneratedFunction list)
         : string =
+        declareBareReferences types functions
+
         let typeBlocks = renderTypeSccs types
         let funcBlocks =
             functions
@@ -902,7 +1052,7 @@ module EmitTypes =
     ]
 
     let private extractTypeRefsLocal (fsharpType: string) =
-        let mutable s = fsharpType
+        let mutable s = IrType.spelling fsharpType
         if s.EndsWith(" option") then s <- s[.. s.Length - 8]
         if s.EndsWith(" array") then s <- s[.. s.Length - 7]
         match s with
@@ -921,6 +1071,8 @@ module EmitTypes =
         (types: GeneratedType list)
         (functions: GeneratedFunction list)
         : PerDomainOutput list =
+
+        declareBareReferences types functions
 
         let allNames =
             (types |> List.map nameOf)

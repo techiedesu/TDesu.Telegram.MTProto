@@ -55,6 +55,36 @@ module EmitCSharp =
     let private baseNameOf (unionName: string) =
         if Set.contains unionName collidingUnions then unionName + "Base" else unionName
 
+    /// Types some declaration in this surface references *barely*. Only these
+    /// get the constructor-id-free `SerializeBody` / `ReadBody` pair, so a
+    /// schema with no bare reference emits exactly what it emitted before.
+    let mutable private bareBodied: Set<string> = Set.empty
+
+    /// Whether any declaration carries a bare `vector<T>`, and therefore
+    /// whether the `TlBare` helper class is emitted at all.
+    let mutable private needsBareVector = false
+
+    /// The generated helper holding the bare-vector codec. Generated rather
+    /// than required of the runtime: the C# backend's runtime contract (see
+    /// the module docstring) is a consumer-owned file, and a codegen fix that
+    /// forces a hand-edit there is a fix consumers cannot take by regenerating.
+    [<Literal>]
+    let BareHelperName = "TlBare"
+
+    /// Names referenced barely anywhere inside a field type, walking through
+    /// the ` option` / vector suffixes.
+    let rec private bareNamesIn (t: string) : string list =
+        if IrType.isOption t then bareNamesIn (IrType.unoption t)
+        elif IrType.isVector t then bareNamesIn (IrType.element t)
+        elif IrType.isBare t then [ IrType.unbare t ]
+        else []
+
+    let rec private hasBareVector (t: string) : bool =
+        if IrType.isOption t then hasBareVector (IrType.unoption t)
+        elif IrType.isBareVector t then true
+        elif IrType.isVector t then hasBareVector (IrType.element t)
+        else false
+
     /// C# reserved words that need `@` escaping when used as identifiers.
     let private csKeywords =
         set [ "abstract";"as";"base";"bool";"break";"byte";"case";"catch";"char";"checked";
@@ -75,10 +105,18 @@ module EmitCSharp =
 
     let private hex (cid: uint32) = sprintf "0x%08Xu" cid
 
-    /// Map an IR FSharpType string to a C# type spelling.
+    /// Map an IR FSharpType string to a C# type spelling. The wire-only
+    /// markers have no spelling of their own: a bare `future_salt` is still a
+    /// `FutureSalt`, an `int128` is still a `byte[]`.
     let rec csType (t: string) : string =
-        if t.EndsWith(" array") then csType (t.Substring(0, t.Length - 6)) + "[]"
-        elif t.EndsWith(" option") then csType (t.Substring(0, t.Length - 7)) + "?"
+        if IrType.isOption t then csType (IrType.unoption t) + "?"
+        elif IrType.isVector t then csType (IrType.element t) + "[]"
+        elif IrType.isBare t then
+            // A bare reference names a CONSTRUCTOR, so it resolves to the case
+            // class — never to the `…Base` abstract type `baseNameOf` would
+            // hand a boxed reference to the same union.
+            let nm = IrType.unbare t
+            if nsRef = "" then nm else nsRef + "." + nm
         else
             match t with
             | "int32" -> "int"
@@ -89,17 +127,18 @@ module EmitCSharp =
             | "bool" -> "bool"
             | "obj" -> "byte[]"
             | CodeModelMapping.RawBytesSentinel -> "byte[]"
+            | fixed' when IrType.isFixedBytes fixed' -> "byte[]"
             | other ->
                 let nm = baseNameOf other
                 if nsRef = "" then nm else nsRef + "." + nm
 
     /// Strip a single suffix layer to get the base IR type.
     let private baseIr (t: string) : string =
-        if t.EndsWith(" array") then t.Substring(0, t.Length - 6)
-        elif t.EndsWith(" option") then t.Substring(0, t.Length - 7)
+        if IrType.isVector t then IrType.element t
+        elif IrType.isOption t then IrType.unoption t
         else t
 
-    let private isArrayIr (t: string) = t.EndsWith(" array")
+    let private isArrayIr (t: string) = IrType.isVector t
 
     let private isValueCs (cs: string) =
         let b = if cs.EndsWith("?") then cs.Substring(0, cs.Length - 1) else cs
@@ -116,6 +155,16 @@ module EmitCSharp =
         | "byte[]" -> $"{w}.WriteBytes({expr});"
         | "obj" -> $"{w}.WriteRawBytes({expr});"
         | CodeModelMapping.RawBytesSentinel -> $"{w}.WriteRawBytes({expr});"
+        | _ when IrType.isFixedBytes t ->
+            // `int128`/`int256`: exactly N raw bytes — no length prefix, no
+            // padding. The width is a wire invariant `byte[]` cannot state, so
+            // it is checked instead of silently truncated: every byte after a
+            // short nonce is off by the difference (#116).
+            let n = (IrType.fixedWidth t).Value
+            $"{{ if ({expr}.Length != {n}) throw new System.InvalidOperationException(\"{t} must be exactly {n} bytes, got \" + {expr}.Length); {w}.WriteRawBytes({expr}); }}"
+        | _ when IrType.isBare t ->
+            // TL's lowercase reference: the fields, with no constructor id.
+            $"{expr}.SerializeBody({w});"
         | _ -> $"{expr}.Serialize({w});"
 
     /// Expression reading a scalar of IR base type `t`.
@@ -129,6 +178,8 @@ module EmitCSharp =
         | "byte[]" -> $"{r}.ReadBytes()"
         | "obj" -> $"{r}.ReadRawBytes({r}.Remaining)"
         | CodeModelMapping.RawBytesSentinel -> $"{r}.ReadRawBytes({r}.Remaining)"
+        | _ when IrType.isFixedBytes t -> $"{r}.ReadRawBytes({(IrType.fixedWidth t).Value})"
+        | _ when IrType.isBare t -> $"{csType t}.ReadBody({r})"
         | csName -> $"{csType csName}.Deserialize({r})"
 
     /// Statement writing value `expr` of full IR type `t` (may be "X array...").
@@ -137,7 +188,13 @@ module EmitCSharp =
             let elem = baseIr t
             let elemCs = csType elem
             let inner = writeValueStmt "w_" elem "it"
-            $"{w}.WriteVector<{elemCs}>({expr}, (w_, it) => {{ {inner} }});"
+            // `Vector<T>` prefixes `0x1CB5C415`; `vector<T>` writes the count
+            // and the elements and nothing else. Same emitted shape either
+            // way, so the two cannot drift apart (#117).
+            if IrType.isBareVector t then
+                $"TlBare.WriteVector<{elemCs}>({w}, {expr}, (w_, it) => {{ {inner} }});"
+            else
+                $"{w}.WriteVector<{elemCs}>({expr}, (w_, it) => {{ {inner} }});"
         else
             writeScalarStmt w t expr
 
@@ -147,7 +204,10 @@ module EmitCSharp =
             let elem = baseIr t
             let elemCs = csType elem
             let inner = readValueExpr "r_" elem
-            $"{r}.ReadVector<{elemCs}>(r_ => {inner})"
+            if IrType.isBareVector t then
+                $"TlBare.ReadVector<{elemCs}>({r}, r_ => {inner})"
+            else
+                $"{r}.ReadVector<{elemCs}>(r_ => {inner})"
         else
             readScalarExpr r t
 
@@ -177,12 +237,22 @@ module EmitCSharp =
     /// Initializer expression silencing CS8618 on non-nullable reference fields
     /// (deserialize always overwrites; manual construction sets what it needs).
     /// We avoid `required` so partial object construction still compiles.
-    let private defaultInit (cs: string) : string option =
+    ///
+    /// `irType` carries the wire markers `cs` has erased: a fixed-width scalar
+    /// defaults to an array of the DECLARED width, not to an empty one. The
+    /// zero value of an `int128` is sixteen zero bytes — an empty array is not
+    /// a smaller nonce, it is a malformed message — and a default-constructed
+    /// instance has to satisfy `Serialize`'s width check or every fixture that
+    /// builds one (Altergram's `tl-fuzz` truncation sweep, for instance) stops
+    /// reaching the type at all.
+    let private defaultInit (irType: string) (cs: string) : string option =
         if cs.EndsWith("?") then None
         elif cs = "int" || cs = "long" || cs = "double" || cs = "bool" then None
         elif cs = "string" then Some "\"\""
-        elif cs.EndsWith("[]") then Some "[]"
-        else Some "null!"
+        else
+            match IrType.fixedWidth irType with
+            | Some n -> Some $"new byte[{n}]"
+            | None -> if cs.EndsWith("[]") then Some "[]" else Some "null!"
 
     /// Local name for a flag word (its raw TL name: "flags"/"flags2").
     let private flagLocal (name: string) = escId name
@@ -242,7 +312,7 @@ module EmitCSharp =
         let declarator = F.VariableDeclarator(F.Identifier(propName enclosing f))
 
         let declarator =
-            match defaultInit cs with
+            match defaultInit f.FSharpType cs with
             | Some init -> declarator.WithInitializer(F.EqualsValueClause(expr init))
             | None -> declarator
 
@@ -376,8 +446,25 @@ module EmitCSharp =
 
         List.ofSeq stmts, List.ofSeq inits
 
+    /// `SerializeBody` — the fields with no constructor id, which is what a
+    /// bare TL reference puts on the wire. Emitted only for the types some
+    /// declaration references barely.
+    let private serializeBodyMethod
+        (enclosing: string)
+        (fields: GeneratedField list)
+        (access: GeneratedField -> string)
+        : MemberDeclarationSyntax =
+        F
+            .MethodDeclaration(ty "void", F.Identifier "SerializeBody")
+            .AddModifiers(modifier SyntaxKind.InternalKeyword)
+            .AddParameterListParameters(F.Parameter(F.Identifier "w").WithType(ty "TlWriteBuffer"))
+            .WithBody(block (emitWrites enclosing "w" fields access))
+
+    /// `hasBody`: this type also emits `SerializeBody`, so `Serialize` is the
+    /// cid plus a call to it rather than a second copy of the field writes.
     let private serializeMethod
         (isOverride: bool)
+        (hasBody: bool)
         (enclosing: string)
         (fields: GeneratedField list)
         (access: GeneratedField -> string)
@@ -385,7 +472,11 @@ module EmitCSharp =
         let mods =
             if isOverride then [| pub; modifier SyntaxKind.OverrideKeyword |] else [| pub |]
 
-        let body = stmt "w.WriteConstructorId(Cid);" :: emitWrites enclosing "w" fields access
+        let body =
+            if hasBody then
+                [ stmt "w.WriteConstructorId(Cid);"; stmt "SerializeBody(w);" ]
+            else
+                stmt "w.WriteConstructorId(Cid);" :: emitWrites enclosing "w" fields access
 
         F
             .MethodDeclaration(ty "void", F.Identifier "Serialize")
@@ -419,18 +510,37 @@ module EmitCSharp =
     // ── Top-level declarations ─────────────────────────────────────────────
 
     let private recordClass (name: string) (fields: GeneratedField list) (cid: uint32) : MemberDeclarationSyntax =
+        // Referenced barely somewhere: split the cid off the field codec so a
+        // bare reference can reach the fields on their own.
+        let bare = bareBodied.Contains name
+
+        let deserialize =
+            if bare then
+                F
+                    .MethodDeclaration(ty name, F.Identifier "Deserialize")
+                    .AddModifiers(pub, modifier SyntaxKind.StaticKeyword)
+                    .AddParameterListParameters(F.Parameter(F.Identifier "r").WithType(ty "TlReadBuffer"))
+                    .WithBody(block [ stmt "r.ReadConstructorId();"; stmt "return ReadBody(r);" ])
+                :> MemberDeclarationSyntax
+            else
+                readerMethod name "Deserialize" [| pub; modifier SyntaxKind.StaticKeyword |] true fields
+
         let members =
             [ yield cidField cid
               yield constructorIdProp false
               for f in dataFields fields -> fieldDecl name f
-              yield serializeMethod false name fields (propName name)
-              yield
-                  readerMethod
-                      name
-                      "Deserialize"
-                      [| pub; modifier SyntaxKind.StaticKeyword |]
-                      true
-                      fields ]
+              yield serializeMethod false bare name fields (propName name)
+              if bare then
+                  yield serializeBodyMethod name fields (propName name)
+              yield deserialize
+              if bare then
+                  yield
+                      readerMethod
+                          name
+                          "ReadBody"
+                          [| modifier SyntaxKind.InternalKeyword; modifier SyntaxKind.StaticKeyword |]
+                          false
+                          fields ]
 
         F
             .ClassDeclaration(name)
@@ -497,11 +607,18 @@ module EmitCSharp =
 
     /// One union case as a clean top-level sealed class deriving from the base.
     let private caseClass (unionName: string) (c: UnionCase) : MemberDeclarationSyntax =
+        // `ReadBody` already exists on every case — the union's dispatcher has
+        // consumed the cid before it calls one. Only the write half is
+        // conditional.
+        let bare = bareBodied.Contains c.Name
+
         let members =
             [ yield cidField c.ConstructorId
               yield constructorIdProp true
               for f in dataFields c.Fields -> fieldDecl c.Name f
-              yield serializeMethod true c.Name c.Fields (propName c.Name)
+              yield serializeMethod true bare c.Name c.Fields (propName c.Name)
+              if bare then
+                  yield serializeBodyMethod c.Name c.Fields (propName c.Name)
               yield
                   readerMethod
                       c.Name
@@ -528,7 +645,7 @@ module EmitCSharp =
             [ yield cidField fn.ConstructorId
               yield constructorIdProp false
               for f in dataFields fn.Params -> fieldDecl fn.Name f
-              yield serializeMethod false fn.Name fn.Params (propName fn.Name)
+              yield serializeMethod false false fn.Name fn.Params (propName fn.Name)
               yield
                   readerMethod
                       fn.Name
@@ -564,7 +681,13 @@ module EmitCSharp =
                           yield! c.AliasCids ]
 
         fun (irType: string) ->
-            if isArrayIr irType then
+            // A bare vector puts no constructor id on the wire at all, and
+            // neither does a bare reference — there is nothing for a caller to
+            // match against, so the entry is omitted rather than asserted
+            // wrongly (#117).
+            if IrType.isBareVector irType || IrType.isBare irType then
+                []
+            elif isArrayIr irType then
                 [ VectorCid ]
             else
                 // `bool` collapses to the C# primitive in field position, but on the
@@ -647,6 +770,63 @@ module EmitCSharp =
 
         unit.WithLeadingTrivia(headerTrivia).ToFullString().TrimEnd() + "\n"
 
+    /// `static class TlBare` — the bare-vector codec, mirroring the runtime's
+    /// `WriteVector`/`ReadVector` minus the `0x1CB5C415` header. Emitted only
+    /// when some declaration carries a `vector<T>`.
+    ///
+    /// It is generated rather than demanded of the runtime because the runtime
+    /// is a consumer-owned file: a codegen fix that also needs a hand-edit
+    /// there is a fix consumers cannot take by regenerating. The element-count
+    /// bound is the runtime's own rule — every TL element costs at least four
+    /// bytes, so a count that cannot fit in `Remaining` is a lie and is
+    /// rejected before anything is allocated.
+    let private bareHelperClass () : MemberDeclarationSyntax =
+        let writeVector =
+            F
+                .MethodDeclaration(ty "void", F.Identifier "WriteVector")
+                .AddModifiers(pub, modifier SyntaxKind.StaticKeyword)
+                .AddTypeParameterListParameters(F.TypeParameter "T")
+                .AddParameterListParameters(
+                    F.Parameter(F.Identifier "w").WithType(ty "TlWriteBuffer"),
+                    F.Parameter(F.Identifier "items").WithType(ty "System.Collections.Generic.IReadOnlyList<T>"),
+                    F.Parameter(F.Identifier "writeItem").WithType(ty "System.Action<TlWriteBuffer, T>")
+                )
+                .WithBody(
+                    block
+                        [ stmt "w.WriteInt32(items.Count);"
+                          stmt "foreach (var it in items) { writeItem(w, it); }" ]
+                )
+
+        let readVector =
+            F
+                .MethodDeclaration(ty "T[]", F.Identifier "ReadVector")
+                .AddModifiers(pub, modifier SyntaxKind.StaticKeyword)
+                .AddTypeParameterListParameters(F.TypeParameter "T")
+                .AddParameterListParameters(
+                    F.Parameter(F.Identifier "r").WithType(ty "TlReadBuffer"),
+                    F.Parameter(F.Identifier "readItem").WithType(ty "System.Func<TlReadBuffer, T>")
+                )
+                .WithBody(
+                    block
+                        [ stmt "var count = r.ReadInt32();"
+                          stmt
+                              "if (count < 0 || (long)count * 4 > r.Remaining) throw new System.IO.InvalidDataException($\"TL bare vector: implausible element count {count} with {r.Remaining} bytes remaining\");"
+                          // `return [];` is what the runtime writes, but
+                          // NormalizeWhitespace renders it `return[];` — legal,
+                          // and needlessly startling in a committed file.
+                          stmt "if (count == 0) { return System.Array.Empty<T>(); }"
+                          // Grow with the data actually decoded — never trust
+                          // the count enough to pre-size, even after the bound.
+                          stmt "var items = new System.Collections.Generic.List<T>(System.Math.Min(count, 64));"
+                          stmt "for (var i = 0; i < count; i++) { items.Add(readItem(r)); }"
+                          stmt "return items.ToArray();" ]
+                )
+
+        F
+            .ClassDeclaration(BareHelperName)
+            .AddModifiers(modifier SyntaxKind.InternalKeyword, modifier SyntaxKind.StaticKeyword)
+            .AddMembers(writeVector, readVector)
+
     /// Shared initialisation: set global refs and check for duplicate top-level
     /// names. Called by both buildModule and buildFiles.
     let private setup (namespaceName: string) (types: GeneratedType list) (functions: GeneratedFunction list) =
@@ -658,6 +838,31 @@ module EmitCSharp =
                 | Union(name, cases) when cases |> List.exists (fun c -> c.Name = name) -> Some name
                 | _ -> None)
             |> Set.ofList
+
+        // Every field type in the surface, plus every declared return type:
+        // the wire markers #116/#117 introduced decide which extra members get
+        // emitted, so they have to be collected before anything is built.
+        let allFieldTypes =
+            seq {
+                for t in types do
+                    match t with
+                    | Record(_, fields, _) ->
+                        for f in fields do
+                            yield f.FSharpType
+                    | Union(_, cases) ->
+                        for c in cases do
+                            for f in c.Fields do
+                                yield f.FSharpType
+                for fn in functions do
+                    for f in fn.Params do
+                        yield f.FSharpType
+                    yield fn.ReturnType
+            }
+            |> Seq.toList
+
+        bareBodied <- allFieldTypes |> List.collect bareNamesIn |> Set.ofList
+        needsBareVector <- allFieldTypes |> List.exists hasBareVector
+
         // Guard against top-level name clashes (records, union cases, functions
         // all share the namespace now that cases aren't nested).
         let seen = System.Collections.Generic.HashSet<string>()
@@ -667,6 +872,9 @@ module EmitCSharp =
                 failwithf "EmitCSharp: duplicate top-level type name '%s' — needs disambiguation" n
 
         claim ReturnTypeMapName
+
+        if needsBareVector then
+            claim BareHelperName
 
         for t in types do
             match t with
@@ -678,6 +886,28 @@ module EmitCSharp =
 
         for fn in functions do
             claim fn.Name
+
+        // A bare reference has to name a CONSTRUCTOR: only a constructor has a
+        // body to write without an id. Catch a reference that resolved to an
+        // abstract union base (or to nothing) here, where the message can name
+        // the type, rather than as a missing-method error in the consumer.
+        let concrete =
+            seq {
+                for t in types do
+                    match t with
+                    | Record(name, _, _) -> yield name
+                    | Union(_, cases) ->
+                        for c in cases do
+                            yield c.Name
+            }
+            |> Set.ofSeq
+
+        match bareBodied - concrete |> Set.toList with
+        | [] -> ()
+        | missing ->
+            failwithf
+                "EmitCSharp: bare reference(s) to %s — a bare TL type reference names a constructor, not a boxed type"
+                (String.concat ", " missing)
 
     let private declarationsOf (t: GeneratedType) : MemberDeclarationSyntax list =
         match t with
@@ -692,7 +922,9 @@ module EmitCSharp =
             [ for t in types do
                   yield! declarationsOf t
               for fn in functions -> functionClass fn
-              yield returnTypeMapClass types functions ]
+              yield returnTypeMapClass types functions
+              if needsBareVector then
+                  yield bareHelperClass () ]
 
         render namespaceName members
 
@@ -716,4 +948,6 @@ module EmitCSharp =
               yield (fileName + ".g.cs", render namespaceName (declarationsOf t))
           for fn in functions do
               yield (fn.Name + ".g.cs", render namespaceName [ functionClass fn ])
-          yield (ReturnTypeMapName + ".g.cs", render namespaceName [ returnTypeMapClass types functions ]) ]
+          yield (ReturnTypeMapName + ".g.cs", render namespaceName [ returnTypeMapClass types functions ])
+          if needsBareVector then
+              yield (BareHelperName + ".g.cs", render namespaceName [ bareHelperClass () ]) ]
