@@ -1,9 +1,18 @@
 // What the C# backend actually puts on the wire, for two builds of the emitter,
-// from one declaration file.
+// from the same declarations.
 //
 //   dotnet fsi tools/wire-probe.fsx                    # working tree vs HEAD
-//   dotnet fsi tools/wire-probe.fsx --baseline v0.8.0  # vs any git ref
+//   dotnet fsi tools/wire-probe.fsx --baseline c55e303 # vs any git ref
 //   dotnet fsi tools/wire-probe.fsx --baseline none    # working tree only
+//
+// Only the working tree is asserted; the baseline is printed for contrast and
+// is allowed to be wrong. `--baseline c55e303` is the commit before #116/#117
+// were fixed, and reproduces what those bugs looked like:
+//
+//   future_salts     baseline BAD 44  working ok 36   -8   (bare vector + bare element)
+//   accessPointRule  baseline BAD 32  working ok 28   -4   (bare vector, boxed element)
+//   msgs_ack         baseline  ok 28  working ok 28    0   CONTROL, boxed, must not move
+//   req_pq_multi     baseline BAD 24  working ok 20   -4   (int128 as length-prefixed bytes)
 //
 // ── why a byte probe, when the suite is green ─────────────────────────────────
 //
@@ -42,9 +51,9 @@
 //                 ---
 //                  28     unchanged by the #117 fix, in both builds.
 //
-//   req_pq#60469778 nonce:int128           — #116, on the same run:
+//   req_pq_multi#be7e8ef1 nonce:int128      — #116, on the same run:
 //
-//     cid           4     60469778
+//     cid           4     be7e8ef1
 //     nonce        16     RAW. Not the `bytes` primitive: no length byte, no
 //                 ---     padding to 4, which cost +4 and made it 24.
 //                  20
@@ -274,8 +283,8 @@ let probesOf (asm: Assembly) : Probe list =
     let msgsAck =
         serialize asm "MsgsAck" (fun o -> set o "MsgIds" [| 0x51E57AC42770964AL; 0x51E57AC42770964BL |])
 
-    // req_pq: a fixed-width scalar.
-    let reqPq = serialize asm "ReqPq" (fun o -> set o "Nonce" (Array.zeroCreate<byte> 16))
+    // req_pq_multi: a fixed-width scalar.
+    let reqPq = serialize asm "ReqPqMulti" (fun o -> set o "Nonce" (Array.zeroCreate<byte> 16))
 
     // accessPointRule: the two bits are independent — a BARE vector whose
     // elements are BOXED. Drop the wrong one and this case still moves.
@@ -298,7 +307,7 @@ let probesOf (asm: Assembly) : Probe list =
     [ { Case = "future_salts     vector<future_salt>  bare vector, bare element"; Expected = 36; Actual = futureSalts }
       { Case = "accessPointRule  vector<IpPort>       bare vector, BOXED element"; Expected = 28; Actual = accessPointRule }
       { Case = "msgs_ack         Vector<long>         boxed vector  [CONTROL]"; Expected = 28; Actual = msgsAck }
-      { Case = "req_pq           nonce:int128         raw fixed width"; Expected = 20; Actual = reqPq } ]
+      { Case = "req_pq_multi     nonce:int128         raw fixed width"; Expected = 20; Actual = reqPq } ]
 
 // ── the run ──────────────────────────────────────────────────────────────────
 
