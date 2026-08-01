@@ -844,3 +844,32 @@ Pipeline.generateSerializationTypes config apiSchema outputPath
 let code = EmitTemplates.generateCidModule "YourApp.Serialization" config mtprotoSchema apiSchema
 Pipeline.generateSerializationTypes "YourApp.Serialization" config apiSchema outputPath
 ```
+
+## 0.9.0
+
+Breaking: `AuthKeyExchange.factorizePQ` takes a `CancellationToken` and returns
+`Result<uint64 * uint64, MtProtoError>` instead of a bare tuple. Nothing outside
+`performExchange` called it, but it is public, so this is a minor bump rather
+than a patch.
+
+- **fix(auth): bound `factorizePQ`.** `pq` is parsed off an unauthenticated,
+  pre-handshake `resPQ`, so the server chooses how much CPU the client spends.
+  Neither Pollard-rho loop polled the token or counted iterations, and nothing
+  established that the input was a semiprime. Measured: the largest prime below
+  2^63 runs ~24 minutes uninterruptible and then returns `(1, pq)`, which is not
+  a factorisation — so the defect had a silent mode as well as a loud one. Capped
+  at 32*sqrt(2147483629) iterations, shared across both attempts; a result that
+  does not multiply back to `pq` with both factors above 1 is an `Error` even
+  inside budget. Cancellation is now immediate and free (~1 ns polled against a
+  0.48 us iteration). The realistic case is unchanged at 10.8 ms.
+- **fix(tl): bare `vector<T>` is not boxed `Vector<T>`.** The parser folded case
+  and the IR could not carry the distinction, so every bare vector went out with
+  the boxed `0x1CB5C415` header. `future_salts` was 44 bytes where the wire
+  format is 36, and a real client read that header as an element count of
+  482,092,053. `int128`/`int256` travelled the same road as length-prefixed
+  `bytes`. Both were invisible to a round-trip test — reader and writer were
+  wrong the same way.
+- **fix(cli): an unknown argument is an error.** `--mtproto-schemaa` parsed as
+  nothing, emitted 37 fewer types and exited 0.
+- **fix(tests): a missing snapshot now fails** instead of writing the golden file
+  and passing, and the comparison no longer strips `\r\n` before diffing.
