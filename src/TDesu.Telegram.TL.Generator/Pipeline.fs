@@ -60,7 +60,7 @@ module Pipeline =
     /// Same content as `generateSerializationTypes`, but split into per-domain
     /// files under `<outputDir>/Requests/`. Domain detection is by leading
     /// PascalCase prefix (`MessagesSendMessage` → "Messages"); types without
-    /// a recognized prefix go into `Base.Generated.fs`.
+    /// a recognized prefix go into `Base.g.fs`.
     ///
     /// Cycle resolution: any non-Base type referenced from a Base type is
     /// promoted to Base (transitively). On the current schema this only moves
@@ -68,8 +68,7 @@ module Pipeline =
     ///
     /// Side effects:
     /// * Wipes managed files in `<outputDir>/Requests/` before writing —
-    ///   safe-wipe by the `//# td-tl-gen-managed` marker + a legacy `.g.fs`
-    ///   sweep for the pre-`.Generated.fs` transition. Hand-added `.fs`
+    ///   safe-wipe by the `//# td-tl-gen-managed` marker. Hand-added `.fs`
     ///   files without the marker survive.
     /// * Writes `<outputDir>/Requests/Requests.targets` (MSBuild manifest
     ///   with `<Compile Include>` entries in topological compile order).
@@ -103,9 +102,8 @@ module Pipeline =
         let requestsDir = Path.Combine(outputDir, "Requests")
         if Directory.notExists requestsDir then Directory.create requestsDir
 
-        // Safe-wipe: delete files WE wrote (marker present) + legacy .g.fs
-        // from the pre-.Generated.fs era. Hand-added .fs alongside our
-        // output survive because they never carry the marker.
+        // Safe-wipe: delete files WE wrote (marker present). Hand-added
+        // .fs alongside our output survive because they never carry the marker.
         Managed.sweep requestsDir
 
         let outputs =

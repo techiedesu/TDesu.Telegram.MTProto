@@ -1032,9 +1032,8 @@ module EmitTypes =
     // --- Per-domain split ---
 
     /// Result of `buildPerDomainModules`: one entry per non-empty TL domain.
-    /// `Filename` is just the leaf (e.g. `Base.Generated.fs`); the caller
-    /// decides the directory. Order is topological — `Base` first, then
-    /// domains reachable only from already-emitted ones.
+    /// `Filename` is just the leaf (e.g. `Base.g.fs`); the caller decides
+    /// the directory. Order is topological — `Base` first, then domains
     type PerDomainOutput = {
         Domain: string
         Filename: string

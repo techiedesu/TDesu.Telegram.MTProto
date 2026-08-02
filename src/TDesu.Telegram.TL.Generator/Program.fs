@@ -19,7 +19,7 @@ Usage:
 
 Required flags:
   --schema <path>             Path to .tl schema file (e.g. cached/api.tl)
-  --output <dir>              Directory where generated .Generated.fs files are written
+  --output <dir>              Directory where generated .g.fs files are written
   --namespace <ns>            F# namespace for emitted code (e.g. MyApp.Serialization)
   --overrides <toml>          Path to TOML override config (no embedded default in 0.1.0+)
   --target <names>            Comma-separated list of targets to generate
@@ -50,10 +50,10 @@ Optional flags:
                               (defaults to <namespace>.Client.Api)
   --split-by-domain           For `types` target: emit one F# file per TL domain
                               under <output>/Requests/, plus a Requests.targets
-                              per-domain <Domain>.Generated.fs files under
+                              per-domain <Domain>.g.fs files under
                               <output>/Requests/ plus a Requests.targets
                               MSBuild manifest, instead of a single
-                              GeneratedTlRequests.Generated.fs.
+                              GeneratedTlRequests.g.fs.
   --split-domains <list>      Override the default domain prefix list when
                               --split-by-domain is set (comma-separated, e.g.
                               "Account,Auth,Channels"; default lists all known

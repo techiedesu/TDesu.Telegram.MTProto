@@ -22,7 +22,7 @@ module CodeGeneratorTests =
         | Error e -> failwith e
 
     let private withTempFile (action: string -> unit) =
-        let path = Path.Combine(Path.GetTempPath(), $"tl_test_{System.Guid.NewGuid()}.Generated.fs")
+        let path = Path.Combine(Path.GetTempPath(), $"tl_test_{System.Guid.NewGuid()}.g.fs")
 
         try
             action path
@@ -164,7 +164,7 @@ module CodeGeneratorTests =
         for o in outputs do
             if not (o.Code.Contains "namespace TDesu.Serialization.Requests") then
                 Assert.Fail($"missing namespace in {o.Filename}:\n{o.Code}")
-            Assert.That(o.Filename, Does.EndWith ".Generated.fs")
+            Assert.That(o.Filename, Does.EndWith ".g.fs")
 
         // The Messages domain must contain MessagesSendMessage; Auth must
         // contain AuthSignIn. (Functions get sorted into their domain bucket.)
