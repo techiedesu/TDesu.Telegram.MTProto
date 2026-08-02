@@ -1017,7 +1017,7 @@ module EmitTypes =
         let formatted = runFormat parsed
 
         let header =
-            $"// Auto-generated at %A{System.DateTimeOffset.Now}\n// Do not edit manually.\n\n"
+            Managed.banner "dotnet fsi tools/regen-tl.fsx (or td-tl-gen --target types)"
 
         header + formatted
 
@@ -1032,9 +1032,9 @@ module EmitTypes =
     // --- Per-domain split ---
 
     /// Result of `buildPerDomainModules`: one entry per non-empty TL domain.
-    /// `Filename` is just the leaf (e.g. `Base.g.fs`); the caller decides
-    /// the directory. Order is topological — `Base` first, then domains
-    /// reachable only from already-emitted ones.
+    /// `Filename` is just the leaf (e.g. `Base.Generated.fs`); the caller
+    /// decides the directory. Order is topological — `Base` first, then
+    /// domains reachable only from already-emitted ones.
     type PerDomainOutput = {
         Domain: string
         Filename: string
@@ -1177,7 +1177,7 @@ module EmitTypes =
                 remaining <- Set.remove x remaining
 
         let header =
-            $"// Auto-generated at %A{System.DateTimeOffset.Now}\n// Do not edit manually.\n\n"
+            Managed.banner "dotnet fsi tools/regen-tl.fsx (or td-tl-gen --target types)"
 
         [
             for dom in ordered do
@@ -1209,7 +1209,7 @@ module EmitTypes =
                     let formatted = runFormat parsed
                     yield {
                         Domain = dom
-                        Filename = dom + ".g.fs"
+                        Filename = dom + Managed.Ext
                         Code = header + formatted
                     }
         ]

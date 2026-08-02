@@ -50,14 +50,12 @@ module EmitTemplates =
         let ln (s: string) = sb.Append(s).Append('\n') |> ignore
         let ln0 () = sb.Append('\n') |> ignore
 
-        ln "// Auto-generated TL constructor IDs. Do not edit manually."
-        ln "// Re-generate with: td-tl-gen --target cid --overrides <your.toml>"
-        ln0 ()
+        sb.Append(Managed.banner "dotnet fsi tools/regen-tl.fsx (or td-tl-gen --target cid)") |> ignore
         ln $"namespace {ns}"
         ln0 ()
 
         // --- GeneratedCid module ---
-        ln "/// Auto-generated constructor IDs from TL schema + client overrides."
+        ln "/// Constructor IDs from TL schema + client overrides."
         ln "[<RequireQualifiedAccess>]"
         ln "module GeneratedCid ="
         ln0 ()
@@ -213,9 +211,7 @@ module EmitTemplates =
         let sb = System.Text.StringBuilder()
         let ln (s: string) = sb.Append(s).Append('\n') |> ignore
 
-        ln "// Auto-generated round-trip tests. Do not edit manually."
-        ln "// Re-generate with: td-tl-gen --target tests --overrides <your.toml>"
-        ln ""
+        sb.Append(Managed.banner "dotnet fsi tools/regen-tl.fsx (or td-tl-gen --target tests)") |> ignore
         ln $"module {ns}"
         ln ""
         ln "open NUnit.Framework"
@@ -349,7 +345,7 @@ module EmitTemplates =
         if Directory.notExists dir then
             Directory.create dir
         File.WriteAllText(outputPath, sb.ToString())
-        log.LogInformation("Wrote GeneratedRoundTripTests.g.fs ({count} tests)", functions.Length)
+        log.LogInformation("Wrote {Path} ({Count} tests)", outputPath, functions.Length)
 
     /// Generate function CID alias map by comparing two schemas.
     /// Detects: same-name CID changes + namespace-moved functions (channels→messages).
@@ -359,9 +355,7 @@ module EmitTemplates =
         let ln (s: string) = sb.Append(s).Append('\n') |> ignore
         let ln0 () = sb.Append('\n') |> ignore
 
-        ln "// Auto-generated layer CID aliases. Do not edit manually."
-        ln "// Re-generate with: td-tl-gen --target layer-aliases --layer-base-schema <old.tl>"
-        ln0 ()
+        sb.Append(Managed.banner "dotnet fsi tools/regen-tl.fsx (or td-tl-gen --target layer-aliases)") |> ignore
         ln $"namespace {ns}"
         ln0 ()
         ln "/// L223→L216 function CID aliases for dual-layer compatibility."
@@ -448,7 +442,7 @@ module EmitTemplates =
         let dir = System.IO.Path.GetDirectoryName(outputPath)
         if Directory.notExists dir then Directory.create dir
         File.WriteAllText(outputPath, sb.ToString())
-        log.LogInformation("Wrote GeneratedLayerAliases.g.fs ({count} aliases, {notModCount} notModified CIDs)", sorted.Length, notModifiedCids.Length)
+        log.LogInformation("Wrote {Path} ({Count} aliases, {NotModCount} notModified CIDs)", outputPath, sorted.Length, notModifiedCids.Length)
 
     /// Generate handler coverage validator: checks registered CIDs against known TL functions.
     let generateCoverageValidator (ns: string) (config: OverrideConfig) (apiSchema: TlSchema) (outputPath: string) =
@@ -456,9 +450,7 @@ module EmitTemplates =
         let ln (s: string) = sb.Append(s).Append('\n') |> ignore
         let ln0 () = sb.Append('\n') |> ignore
 
-        ln "// Auto-generated handler coverage validator. Do not edit manually."
-        ln "// Re-generate with: td-tl-gen --target coverage --overrides <your.toml>"
-        ln0 ()
+        sb.Append(Managed.banner "dotnet fsi tools/regen-tl.fsx (or td-tl-gen --target coverage)") |> ignore
         ln $"namespace {ns}"
         ln0 ()
         ln "/// Validates handler coverage: which TL functions have registered handlers."
@@ -526,7 +518,7 @@ module EmitTemplates =
         let dir = System.IO.Path.GetDirectoryName(outputPath)
         if Directory.notExists dir then Directory.create dir
         File.WriteAllText(outputPath, sb.ToString())
-        log.LogInformation("Wrote GeneratedCoverageValidator.g.fs ({count} functions)", functions.Length)
+        log.LogInformation("Wrote {Path} ({Count} functions)", outputPath, functions.Length)
 
     /// Generate RPC function -> return type mapping for typed handler validation.
     let generateReturnTypeMap (ns: string) (config: OverrideConfig) (apiSchema: TlSchema) (outputPath: string) =
@@ -534,9 +526,7 @@ module EmitTemplates =
         let ln (s: string) = sb.Append(s).Append('\n') |> ignore
         let ln0 () = sb.Append('\n') |> ignore
 
-        ln "// Auto-generated RPC return type mapping. Do not edit manually."
-        ln "// Re-generate with: td-tl-gen --target return-types --overrides <your.toml>"
-        ln0 ()
+        sb.Append(Managed.banner "dotnet fsi tools/regen-tl.fsx (or td-tl-gen --target return-types)") |> ignore
         ln $"namespace {ns}"
         ln0 ()
         ln "/// Maps each RPC function CID to its expected TL return type name."
@@ -594,7 +584,7 @@ module EmitTemplates =
         let dir = System.IO.Path.GetDirectoryName(outputPath)
         if Directory.notExists dir then Directory.create dir
         File.WriteAllText(outputPath, sb.ToString())
-        log.LogInformation("Wrote GeneratedReturnTypes.g.fs ({count} functions)", functions.Length)
+        log.LogInformation("Wrote {Path} ({Count} functions)", outputPath, functions.Length)
 
     /// Generate CID constants module from an API schema (every function + constructor).
     /// Useful for clients that need a flat literal table without going through the full
@@ -604,13 +594,12 @@ module EmitTemplates =
         let ln (s: string) = sb.Append(s).Append('\n') |> ignore
         let ln0 () = sb.Append('\n') |> ignore
 
-        ln "// Auto-generated client CID constants. Do not edit manually."
-        ln "// Re-generate with: td-tl-gen --target client-cids"
+        sb.Append(Managed.banner "dotnet fsi tools/regen-tl.fsx (or td-tl-gen --target client-cids)") |> ignore
         ln $"// Source: {apiSchema.Functions.Length} functions, {apiSchema.Constructors.Length} constructors"
         ln0 ()
         ln $"namespace {ns}"
         ln0 ()
-        ln "/// Auto-generated TL constructor and function CIDs from the API schema."
+        ln "/// TL constructor and function CIDs from the API schema."
         ln "[<RequireQualifiedAccess>]"
         ln "module ClientCid ="
         ln0 ()

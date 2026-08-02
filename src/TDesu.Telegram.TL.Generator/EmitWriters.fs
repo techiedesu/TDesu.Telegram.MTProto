@@ -1136,7 +1136,6 @@ module EmitWriters =
                 + "\n"
 
         let header =
-            "// Auto-generated TL writer functions. Do not edit manually.\n"
-            + "// Re-generate with: dotnet run --project src/MTProto.TL.Generator -- --writers\n\n"
+            Managed.banner "dotnet fsi tools/regen-tl.fsx (or td-tl-gen --writers)"
 
         header + formatted + convertersText

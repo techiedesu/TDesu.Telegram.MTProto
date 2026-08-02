@@ -19,7 +19,7 @@ Usage:
 
 Required flags:
   --schema <path>             Path to .tl schema file (e.g. cached/api.tl)
-  --output <dir>              Directory where generated .g.fs files are written
+  --output <dir>              Directory where generated .Generated.fs files are written
   --namespace <ns>            F# namespace for emitted code (e.g. MyApp.Serialization)
   --overrides <toml>          Path to TOML override config (no embedded default in 0.1.0+)
   --target <names>            Comma-separated list of targets to generate
@@ -50,8 +50,10 @@ Optional flags:
                               (defaults to <namespace>.Client.Api)
   --split-by-domain           For `types` target: emit one F# file per TL domain
                               under <output>/Requests/, plus a Requests.targets
+                              per-domain <Domain>.Generated.fs files under
+                              <output>/Requests/ plus a Requests.targets
                               MSBuild manifest, instead of a single
-                              GeneratedTlRequests.g.fs.
+                              GeneratedTlRequests.Generated.fs.
   --split-domains <list>      Override the default domain prefix list when
                               --split-by-domain is set (comma-separated, e.g.
                               "Account,Auth,Channels"; default lists all known
@@ -334,7 +336,7 @@ Sample overrides config: samples/SedBotOverrides/sedbot-overrides.toml
                     if not (Directory.Exists outputDir) then
                         Directory.CreateDirectory(outputDir) |> ignore
 
-                    let path name = Path.Combine(outputDir, name)
+                    let path name = Managed.outputPath outputDir name
                     let resolvedTestsNs = defaultArg testsNs $"{ns}.Tests.GeneratedRoundTripTests"
                     let resolvedClientNs = defaultArg clientNs $"{ns}.Client.Api"
 
@@ -354,7 +356,7 @@ Sample overrides config: samples/SedBotOverrides/sedbot-overrides.toml
                             | None -> failed <- true
                             | Some mtSchema ->
                                 let code = EmitTemplates.generateCidModule ns config mtSchema apiSchema
-                                let outPath = path "GeneratedCid.g.fs"
+                                let outPath = path "GeneratedCid"
                                 File.WriteAllText(outPath, code)
                                 log.LogInformation("Wrote {Path} ({Bytes} bytes)", outPath, code.Length)
 
@@ -369,19 +371,19 @@ Sample overrides config: samples/SedBotOverrides/sedbot-overrides.toml
                                 | None -> EmitTypes.defaultRequestDomains
                             Pipeline.generateSerializationTypesSplit ns config apiSchema outputDir domains
                         else
-                            Pipeline.generateSerializationTypes ns config apiSchema (path "GeneratedTlRequests.g.fs")
+                            Pipeline.generateSerializationTypes ns config apiSchema (path "GeneratedTlRequests")
 
                     if targets.Contains "writers" then
-                        Pipeline.generateWriterModule ns config apiSchema (path "GeneratedTlWriters.g.fs")
+                        Pipeline.generateWriterModule ns config apiSchema (path "GeneratedTlWriters")
 
                     if targets.Contains "coverage" then
-                        EmitTemplates.generateCoverageValidator ns config apiSchema (path "GeneratedCoverageValidator.g.fs")
+                        EmitTemplates.generateCoverageValidator ns config apiSchema (path "GeneratedCoverageValidator")
 
                     if targets.Contains "return-types" then
-                        EmitTemplates.generateReturnTypeMap ns config apiSchema (path "GeneratedReturnTypes.g.fs")
+                        EmitTemplates.generateReturnTypeMap ns config apiSchema (path "GeneratedReturnTypes")
 
                     if targets.Contains "tests" then
-                        EmitTemplates.generateRoundTripTests resolvedTestsNs ns config apiSchema (path "GeneratedRoundTripTests.g.fs")
+                        EmitTemplates.generateRoundTripTests resolvedTestsNs ns config apiSchema (path "GeneratedRoundTripTests")
 
                     if targets.Contains "layer-aliases" then
                         match layerBasePath with
@@ -392,13 +394,13 @@ Sample overrides config: samples/SedBotOverrides/sedbot-overrides.toml
                             match parseSchema log "layer-base" basePath with
                             | None -> failed <- true
                             | Some baseSchema ->
-                                EmitTemplates.generateLayerAliases ns baseSchema apiSchema (path "GeneratedLayerAliases.g.fs")
+                                EmitTemplates.generateLayerAliases ns baseSchema apiSchema (path "GeneratedLayerAliases")
 
                     if targets.Contains "client-cids" then
-                        EmitTemplates.generateClientCids resolvedClientNs apiSchema (path "GeneratedClientCid.g.fs")
+                        EmitTemplates.generateClientCids resolvedClientNs apiSchema (path "GeneratedClientCid")
 
                     if targets.Contains "client-parsers" then
-                        Pipeline.generateClientParsers resolvedClientNs config apiSchema (path "GeneratedResponseParsers.g.fs")
+                        Pipeline.generateClientParsers resolvedClientNs config apiSchema (path "GeneratedResponseParsers")
 
                     if targets.Contains "csharp" then
                         // Single-layer C# backend: full schema surface, no whitelist.
