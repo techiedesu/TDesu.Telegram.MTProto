@@ -292,7 +292,12 @@ module EmitErgonomics =
                 let sep = if i < orderedCases.Length - 1 then "" else " -> ValueSome v"
                 emitLine sb 2 $"| {name}.{case.Name}({fieldName} = v){sep}"
 
-            emitLine sb 2 "| _ -> ValueNone"
+            // Emit the catch-all only when the DU has cases WITHOUT this
+            // field. F#'s FS0026 fires on an unreachable rule if the match
+            // is already exhaustive.
+            if List.length casesWithField < List.length cases then
+                emitLine sb 2 "| _ -> ValueNone"
+
             emitLine sb 0 ""
 
     // ── Entry point ─────────────────────────────────────────────
