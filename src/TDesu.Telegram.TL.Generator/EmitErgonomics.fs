@@ -256,7 +256,12 @@ module EmitErgonomics =
             |> List.sortBy (fun (n, _, _) -> n)
 
         for (fieldName, fsharpType, casesWithField) in candidates do
-            let pn = patternName fieldName
+            // Prefix the pattern with the DU name — F# module-level active
+            // patterns share a single flat namespace, so two DUs each
+            // carrying a `pts` field would produce a duplicate `(|Pts|_|)`.
+            // Emit `(|UpdatePts|_|)` / `(|MessagePts|_|)` — reads as
+            // "this DU's extractor" and never collides.
+            let pn = name + patternName fieldName
             let tySpelling = IrType.spelling fsharpType
 
             emitLine sb 1 $"/// Extract `{fieldName}` from any `{name}` case that carries it."
