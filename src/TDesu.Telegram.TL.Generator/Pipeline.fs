@@ -219,3 +219,29 @@ module Pipeline =
         File.WriteAllText(outputPath, header + code)
         log.LogInformation("Wrote {Path} ({Types} types, {Funcs} functions)",
             outputPath, types.Length, functions.Length)
+
+
+    /// Generate ergonomics file — Create factories on records + DU cases
+    /// plus struct field-extractor active patterns. Uses the same
+    /// whitelist-filtered type set as `generateSerializationTypes` so the
+    /// Create/Pattern surface exactly matches the emitted types.
+    let generateErgonomics
+        (runtimeNs: string)
+        (config: OverrideConfig)
+        (apiSchema: TlSchema)
+        (outputPath: string) =
+
+        let aliasMap = EmitTemplates.buildAliasMap config
+        let types, functions =
+            SchemaMapper.mapSchemaWhitelisted
+                apiSchema
+                config.TypeWhitelist
+                config.StubTypes
+                aliasMap
+
+        let code = EmitErgonomics.generate $"{runtimeNs}.Requests" types functions
+
+        let dir = System.IO.Path.GetDirectoryName(outputPath)
+        if Directory.notExists dir then Directory.create dir
+        File.WriteAllText(outputPath, code)
+        log.LogInformation("Wrote {Path} ({Bytes} bytes)", outputPath, code.Length)

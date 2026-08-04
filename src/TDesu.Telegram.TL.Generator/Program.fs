@@ -399,6 +399,9 @@ Sample overrides config: samples/SedBotOverrides/sedbot-overrides.toml
                     if targets.Contains "client-cids" then
                         EmitTemplates.generateClientCids resolvedClientNs apiSchema (path "GeneratedClientCid")
 
+
+                    if targets.Contains "ergonomics" then
+                        Pipeline.generateErgonomics ns config apiSchema (path "GeneratedErgonomics")
                     if targets.Contains "client-parsers" then
                         Pipeline.generateClientParsers resolvedClientNs config apiSchema (path "GeneratedResponseParsers")
 
@@ -450,7 +453,8 @@ Sample overrides config: samples/SedBotOverrides/sedbot-overrides.toml
                         let known =
                             Set.ofList [
                                 "cid"; "types"; "writers"; "coverage"; "return-types"
-                                "tests"; "layer-aliases"; "client-cids"; "client-parsers"; "csharp"
+                                "tests"; "layer-aliases"; "client-cids"; "client-parsers"
+                                "ergonomics"; "csharp"
                             ]
                         targets |> Set.filter (fun t -> not (known.Contains t))
                     if not unknown.IsEmpty then

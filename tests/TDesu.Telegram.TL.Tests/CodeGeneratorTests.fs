@@ -82,6 +82,16 @@ module CodeGeneratorTests =
             Pipeline.generateSerializationTypes testNs config apiSchema path
             assertMatchesSnapshot (normalizeTimestamp (File.ReadAllText path)) "CodeGen_SerializationTypes")
 
+    [<Test>]
+    let ``generateErgonomics`` () =
+        let config =
+            { OverrideConfig.empty with
+                TypeWhitelist = set [ "MessagesSendMessage"; "AuthSignIn" ] }
+
+        withTempFile (fun path ->
+            Pipeline.generateErgonomics testNs config apiSchema path
+            assertMatchesSnapshot (File.ReadAllText path) "CodeGen_Ergonomics")
+
     /// Regression: `[[layer_variants]]` CIDs must flow into the generated
     /// `Deserialize`'s pattern match via `AliasCids`. Without this, a layer
     /// 223 client sending the post-216 CID for `messages.sendMessage` is
