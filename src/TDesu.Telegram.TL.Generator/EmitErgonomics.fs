@@ -225,8 +225,15 @@ module EmitErgonomics =
             "Error"; "Ok"; "Choice1Of2"; "Choice2Of2"
         ]
 
+    /// Active-pattern identifier from a field name. Field names arrive
+    /// backtick-escaped when they collide with F# keywords (`type`,
+    /// `class`, etc.); strip the escape before PascalCase — active-pattern
+    /// identifiers form their own namespace and can freely reuse a keyword
+    /// spelling without escape (`(|Type|_|)` compiles fine even though
+    /// `type` is reserved in some positions).
     let private patternName (fieldName: string) : string =
-        Naming.pascalCase fieldName
+        let unescaped = fieldName.Replace("`", "")
+        Naming.pascalCase unescaped
 
     let private emitDuActivePatterns (sb: StringBuilder) (name: string) (cases: UnionCase list) =
         // Group case-field occurrences by (fieldName, fsharpType).
