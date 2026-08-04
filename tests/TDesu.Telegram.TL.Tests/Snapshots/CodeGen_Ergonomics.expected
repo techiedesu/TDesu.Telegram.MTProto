@@ -7,8 +7,6 @@
 
 namespace TDesu.Serialization.Requests
 
-open TDesu.Serialization
-
 /// Create factories for records and DU cases. Optional args (`?arg`)
 /// mirror TL `flags.N?T` fields and presence-bool flags.
 module Ergonomics =

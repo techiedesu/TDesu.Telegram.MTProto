@@ -292,7 +292,13 @@ module EmitErgonomics =
         |> ignore
 
         sb.Append($"namespace {ns}\n\n") |> ignore
-        sb.Append($"open TDesu.Serialization\n\n") |> ignore
+        // NOTE: no `open TDesu.Serialization` — the shared namespace holds
+        // hand-written types (UserStatus, DocumentAttribute, PeerType) whose
+        // names collide with generated Requests types. `open` would shadow
+        // the generated ones under our own namespace, and every Ergonomics
+        // reference to those types would resolve to the wrong CLR type. We
+        // already are in `<ns>` (which is Requests) — all generated names
+        // are visible unqualified.
 
         // ---- Ergonomics module: Create factories ----
         sb.Append("/// Create factories for records and DU cases. Optional args (`?arg`)\n") |> ignore
