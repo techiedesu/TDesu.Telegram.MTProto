@@ -246,12 +246,27 @@ module EmitErgonomics =
             |> List.groupBy (fun (n, t, _) -> n, t)
             |> List.map (fun ((n, t), grp) -> n, t, grp |> List.map (fun (_, _, c) -> c))
 
+        // Fields whose name appears with MORE than one distinct F# type in
+        // the same DU (e.g. `date: int32` in one case and `date: int32 option`
+        // in another) — skip. Emitting a partial pattern per type would
+        // duplicate `(|<DuName><PascalField>|_|)` and the F# compiler
+        // rejects both. A union pattern can't fuse `int32` and `int32 option`
+        // in a single voption anyway. Users can hand-write a targeted
+        // pattern for the specific case they care about.
+        let ambiguousFields =
+            occurrences
+            |> List.groupBy (fun (n, _, _) -> n)
+            |> List.choose (fun (n, xs) ->
+                let distinctTypes = xs |> List.map (fun (_, t, _) -> t) |> Set.ofList
+                if distinctTypes.Count > 1 then Some n else None)
+            |> Set.ofList
+
         let candidates =
             occurrences
-            |> List.filter (fun (_, _, cs) -> List.length cs >= MinCasesForPattern)
-            |> List.filter (fun (n, _, _) ->
-                let pn = patternName n
-                not (reservedPatternNames.Contains pn))
+            |> List.filter (fun (n, _, cs) ->
+                List.length cs >= MinCasesForPattern
+                && not (ambiguousFields.Contains n)
+                && not (reservedPatternNames.Contains (patternName n)))
             // Sort by field name for stable emit order.
             |> List.sortBy (fun (n, _, _) -> n)
 
