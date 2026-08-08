@@ -26,10 +26,12 @@ module Pipeline =
         (outputPath: string) =
 
         let aliasMap = EmitTemplates.buildAliasMap config
+        let seeds =
+            SchemaMapper.deriveTypeSeeds apiSchema config.TypeWhitelist config.WriterWhitelist config.WriterLayerTypes
         let types, functions =
             SchemaMapper.mapSchemaWhitelisted
                 apiSchema
-                config.TypeWhitelist
+                seeds
                 config.StubTypes
                 aliasMap
 
@@ -80,10 +82,12 @@ module Pipeline =
         (domains: string list) =
 
         let aliasMap = EmitTemplates.buildAliasMap config
+        let seeds =
+            SchemaMapper.deriveTypeSeeds apiSchema config.TypeWhitelist config.WriterWhitelist config.WriterLayerTypes
         let types, functions =
             SchemaMapper.mapSchemaWhitelisted
                 apiSchema
-                config.TypeWhitelist
+                seeds
                 config.StubTypes
                 aliasMap
 
@@ -182,8 +186,10 @@ module Pipeline =
         // side and Response-side types hit F# DU-case-name ambiguity and had
         // to wrap one side in its own submodule. BFS-resolve both whitelists,
         // emit only the response-only residual in ResponseParsers.
+        let requestSeeds =
+            SchemaMapper.deriveTypeSeeds apiSchema config.TypeWhitelist config.WriterWhitelist config.WriterLayerTypes
         let (requestTypes, _) =
-            SchemaMapper.mapSchemaWhitelisted apiSchema config.TypeWhitelist config.StubTypes aliasMap
+            SchemaMapper.mapSchemaWhitelisted apiSchema requestSeeds config.StubTypes aliasMap
         let requestTypeNames =
             requestTypes
             |> List.map (fun t ->
@@ -222,9 +228,13 @@ module Pipeline =
 
 
     /// Generate ergonomics file — Create factories on records + DU cases
-    /// plus struct field-extractor active patterns. Uses the same
-    /// whitelist-filtered type set as `generateSerializationTypes` so the
-    /// Create/Pattern surface exactly matches the emitted types.
+    /// plus struct field-extractor active patterns. Scoped to
+    /// `config.TypeWhitelist` only (unlike `generateSerializationTypes`,
+    /// which also closes over the writer whitelist — see
+    /// `SchemaMapper.deriveTypeSeeds`) so the Create/Pattern surface exactly
+    /// matches what a caller who whitelists only `types` gets; the wider
+    /// writer-implied types the `types` target additionally emits still
+    /// resolve fine without a factory.
     let generateErgonomics
         (runtimeNs: string)
         (config: OverrideConfig)

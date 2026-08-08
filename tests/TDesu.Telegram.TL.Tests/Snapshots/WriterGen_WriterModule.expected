@@ -112,21 +112,10 @@ module GeneratedTlWriters =
         | InputPeer.InputPeerChat(chatId) -> WriteInputPeer.InputPeerChat(chatId)
 
     and toWriteMessage (x: Message) : WriteMessageParams =
-        {
-            Out = x.Out
-            Text = x.Text
-            Entities = (x.Entities |> Option.map (fun __v -> (__v |> Array.map (fun __v -> (toWriteMessageEntity __v)))))
-        }
+        { Out = x.Out; Text = x.Text; Entities = (x.Entities |> Option.map (fun __v -> (__v |> Array.map (fun __v -> (toWriteMessageEntity __v))))) }
 
     and toWriteMessageEntity (x: MessageEntity) : WriteMessageEntityParams =
-        {
-            Offset = x.Offset
-            Length = x.Length
-        }
+        { Offset = x.Offset; Length = x.Length }
 
     and toWriteUser (x: User) : WriteUserParams =
-        {
-            Id = x.Id
-            AccessHash = x.AccessHash
-            FirstName = x.FirstName
-        }
+        { Id = x.Id; AccessHash = x.AccessHash; FirstName = x.FirstName }

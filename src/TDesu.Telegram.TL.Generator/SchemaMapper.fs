@@ -249,13 +249,60 @@ module SchemaMapper =
                         | Some(Union(_, cases)) -> cases |> List.collect (fun c -> extractDeps c.Fields)
                         | None ->
                             match allFunctions |> Map.tryFind name with
-                            | Some f -> extractDeps f.Params
+                            | Some f ->
+                                // A function seed also needs its RETURN type
+                                // closed over — e.g. a `client_parsers` seed
+                                // naming a request function is only useful if
+                                // the response type it decodes to is emitted
+                                // too. `f.Params` alone (the request side)
+                                // already covered the pre-existing behaviour;
+                                // this only adds coverage, never removes it.
+                                extractDeps f.Params
+                                @ (extractReferencedTypeName f.ReturnType |> Option.toList)
                             | None -> []
                     for dep in deps do
                         if not (visited.Contains dep) && not (stubs.Contains dep) then
                             queue.Enqueue dep
 
             visited
+
+    /// Boxed (PascalCase) result-type name of every schema constructor whose
+    /// raw TL name (`Combinator.tlName`, e.g. "peerUser", "updates.state") is
+    /// in `names`. Translates a writers-style whitelist (raw TL constructor
+    /// names) into `types`-style seeds (boxed result-type names) for
+    /// `Whitelist.resolve`.
+    let private boxedTypesOfConstructors (schema: TlSchema) (names: Set<string>) : Set<string> =
+        if names.IsEmpty then
+            Set.empty
+        else
+            schema.Constructors
+            |> List.choose (fun c ->
+                if names.Contains(Combinator.tlName c) then Some(Combinator.resultTypePascalName c.ResultType)
+                else None)
+            |> Set.ofList
+
+    /// Seeds for the `types` target's whitelist closure — a strict superset
+    /// of `typeWhitelist`. `writers` and `writer_layer_types` whitelist raw
+    /// TL constructor names (not the grouped boxed-type names `types` /
+    /// `client_parsers` use), so each name is resolved to the boxed type it
+    /// belongs to and added as its own seed.
+    ///
+    /// Without this, a `types` target scoped only to `typeWhitelist` can
+    /// omit a type that `EmitWriters`'s `toWrite{X}` converters (or DU case
+    /// fields) reference by name from `TDesu.Serialization.Requests`,
+    /// leaving an undefined-name compile error in `GeneratedTlWriters`.
+    ///
+    /// See docs/design/td-tl-gen-improvements.md §1 (SedBot repo) for the
+    /// full algorithm this implements.
+    let deriveTypeSeeds
+        (schema: TlSchema)
+        (typeWhitelist: Set<string>)
+        (writerWhitelist: Set<string>)
+        (writerLayerTypes: Set<string>)
+        : Set<string> =
+        typeWhitelist
+        |> Set.union (boxedTypesOfConstructors schema writerWhitelist)
+        |> Set.union (boxedTypesOfConstructors schema writerLayerTypes)
 
     let private topSortTypes (types: GeneratedType list) : GeneratedType list =
         let nameOf = function Record(n,_,_) -> n | Union(n,_) -> n

@@ -985,6 +985,27 @@ module EmitWriters =
         // rebuilt from the flat request fields, and writer-only (overlay) fields
         // default. Correctness gate: `Requests.X.Serialize` bytes must equal
         // `writeX (toWriteX x)` bytes (covered by round-trip tests + conformance).
+        // Every constructor for `rt` in the FULL schema, regardless of the
+        // writer whitelist. Two independent consumers below:
+        //   * `converterBody` uses it to tell whether the REQUEST side
+        //     (`types` target, which groups by the whole schema and is
+        //     never writer-whitelist-scoped) is a multi-constructor union
+        //     even when only some of its constructors are individually
+        //     writer-whitelisted — e.g. `AttachMenuBots` has 2 constructors
+        //     in the schema but only 1 writer-whitelisted, so `x` is still
+        //     `AttachMenuBots.AttachMenuBots(hash, bots, users)`, not a
+        //     record `x.Hash` can be read off directly.
+        //   * `convReq`'s fallback uses its keys as "is `t` a real
+        //     generated type" (every boxed type in the schema).
+        // The WRITER side's own shape (`Write{rt}` union vs
+        // `Write{name}Params` record) stays exactly what it always was:
+        // `cs.Length > 1` on the writer-whitelisted subset — `convertible`
+        // below is unchanged from before `fullGroups` existed.
+        let fullGroups =
+            schema.Constructors
+            |> List.groupBy (fun c -> getResultTypePascalName c.ResultType)
+            |> Map.ofList
+
         let convertible =
             groups
             |> List.choose (fun (rt, cs) ->
@@ -1014,6 +1035,16 @@ module EmitWriters =
                 let b = convReq "__v" inner
                 if b = "__v" then acc else $"({acc} |> Array.map (fun __v -> {b}))"
             elif converterTypes.Contains t then $"(toWrite{t} {acc})"
+            elif fullGroups.ContainsKey t then
+                // Boxed reference to a generated type outside the writer
+                // whitelist. `resolveFieldType` already resolved the
+                // sibling WriteXParams field to `rawBytes` (byte[]) for
+                // exactly this case (see its comment) — reproduce those
+                // bytes by re-serializing the request-side value through
+                // its own generated `Serialize`, matching
+                // `WriteRawBytes`'s contract: a byte[] that already IS the
+                // fully encoded TL value (constructor id + payload).
+                $"(use __buf = new TlWriteBuffer() in {t}.Serialize(__buf, {acc}); __buf.ToArray())"
             else acc
 
         let defaultFor (t: string) : string =
@@ -1029,13 +1060,127 @@ module EmitWriters =
 
         // Build one converter function body (without the leading let/and kw).
         let converterBody (rt: string) (cs: TlCombinator list) (isUnion: bool) : string =
-            if isUnion then
+            // `isUnion` is about the WRITER side only: `Write{rt}` is a union
+            // when more than one of `rt`'s constructors is writer-whitelisted,
+            // else there is exactly one and `Write{name}Params` is a record.
+            //
+            // The REQUEST side is independent: `Requests.{rt}` is a union
+            // whenever the FULL schema has more than one constructor for
+            // `rt`, regardless of how many are writer-whitelisted — e.g.
+            // `AttachMenuBots` has 2 schema constructors but only 1 writer-
+            // whitelisted, so `Write{rt}` stays a record while `x: AttachMenuBots`
+            // is still `AttachMenuBotsNotModified | AttachMenuBots of ...`.
+            // `requestIsUnion` tracks that so the converter pattern-matches
+            // (with a `failwith` fallback for unsupported cases) instead of
+            // doing `x.Field` on what is actually a DU case.
+            let trueCtorCount =
+                fullGroups |> Map.tryFind rt |> Option.map List.length |> Option.defaultValue cs.Length
+            let requestIsUnion = trueCtorCount > 1
+
+            // Writer-side RHS for one writer-whitelisted constructor `c`,
+            // reading its request-side fields from `reqByName` — bound names
+            // from a `match` pattern when `requestIsUnion`, or `x.Field`
+            // accessors (pre-bound into fake field names) otherwise. Either
+            // way this function only ever sees plain accessor expressions.
+            let buildRhs (c: TlCombinator) (reqByName: Map<string, GeneratedField>) : string =
+                let caseName = combinatorPascalName c
+                let writerFields = c.Params |> List.map CodeModelMapping.mapParam |> applyOverlays c |> dataFields
+                if isUnion then
+                    if writerFields.IsEmpty then
+                        $"Write{rt}.{caseName}"
+                    elif recordPerCaseUnions.Contains rt then
+                        let resolve f = resolveFieldType f.FSharpType unionResultTypes singleResultTypes
+                        let bundled = bundleFields writerFields resolve
+                        let fieldAssigns =
+                            bundled
+                            |> List.map (fun fb ->
+                                match fb with
+                                | Single(f, _) ->
+                                    match Map.tryFind f.Name reqByName with
+                                    | Some rf -> $"{f.RecordName} = {convReq rf.Name rf.FSharpType}"
+                                    | None -> $"{f.RecordName} = {defaultFor f.FSharpType}"
+                                | Bundle(bName, items, _, _) ->
+                                    let pats = items |> List.mapi (fun i _ -> $"Some __b{i}") |> String.concat ", "
+                                    let conv =
+                                        items
+                                        |> List.mapi (fun i (f, _) -> convReq $"__b{i}" (stripOption f.FSharpType))
+                                        |> String.concat ", "
+                                    let accessTuple =
+                                        items
+                                        |> List.map (fun (f, _) ->
+                                            match Map.tryFind f.Name reqByName with
+                                            | Some rf -> rf.Name
+                                            | None -> f.Name)
+                                        |> String.concat ", "
+                                    $"{bName} = (match {accessTuple} with | {pats} -> Some({conv}) | _ -> None)")
+                            |> String.concat "; "
+                        $"Write{rt}.{caseName}({{ {fieldAssigns} }})"
+                    else
+                        let resolve f = resolveFieldType f.FSharpType unionResultTypes singleResultTypes
+                        let bundled = bundleFields writerFields resolve
+                        let args =
+                            bundled
+                            |> List.map (fun fb ->
+                                match fb with
+                                | Single(f, _) ->
+                                    match Map.tryFind f.Name reqByName with
+                                    | Some rf -> convReq rf.Name rf.FSharpType
+                                    | None -> defaultFor f.FSharpType
+                                | Bundle(_, items, _, _) ->
+                                    let pats = items |> List.mapi (fun i _ -> $"Some __b{i}") |> String.concat ", "
+                                    let conv =
+                                        items
+                                        |> List.mapi (fun i (f, _) -> convReq $"__b{i}" (stripOption f.FSharpType))
+                                        |> String.concat ", "
+                                    let accessTuple =
+                                        items
+                                        |> List.map (fun (f, _) ->
+                                            match Map.tryFind f.Name reqByName with
+                                            | Some rf -> rf.Name
+                                            | None -> f.Name)
+                                        |> String.concat ", "
+                                    $"(match {accessTuple} with | {pats} -> Some({conv}) | _ -> None)")
+                            |> String.concat ", "
+                        $"Write{rt}.{caseName}({args})"
+                else
+                    let resolve f = resolveFieldType f.FSharpType unionResultTypes singleResultTypes
+                    let bundled = bundleFields writerFields resolve
+                    let assigns =
+                        bundled
+                        |> List.map (fun fb ->
+                            match fb with
+                            | Single(f, _) ->
+                                match Map.tryFind f.Name reqByName with
+                                | Some rf -> $"{f.RecordName} = {convReq rf.Name rf.FSharpType}"
+                                | None -> $"{f.RecordName} = {defaultFor f.FSharpType}"
+                            | Bundle(bName, items, _, _) ->
+                                let pats = items |> List.mapi (fun i _ -> $"Some __b{i}") |> String.concat ", "
+                                let conv =
+                                    items
+                                    |> List.mapi (fun i (f, _) -> convReq $"__b{i}" (stripOption f.FSharpType))
+                                    |> String.concat ", "
+                                let accessTuple =
+                                    items
+                                    |> List.map (fun (f, _) ->
+                                        match Map.tryFind f.Name reqByName with
+                                        | Some rf -> rf.Name
+                                        | None -> f.Name)
+                                    |> String.concat ", "
+                                $"{bName} = (match {accessTuple} with | {pats} -> Some({conv}) | _ -> None)")
+                        |> String.concat "; "
+                    // Single-line record so this is safe to splice directly
+                    // after `-> ` in a match arm (see `requestIsUnion` below)
+                    // as well as stand alone after `(x: {rt}) : {returnType} =`.
+                    $"{{ {assigns} }}"
+
+            let returnType = if isUnion then $"Write{rt}" else $"Write{combinatorPascalName cs.Head}Params"
+
+            if requestIsUnion then
                 let clauses =
                     cs
                     |> List.map (fun c ->
                         let caseName = combinatorPascalName c
                         let reqFields = c.Params |> List.map CodeModelMapping.mapParam |> dataFields
-                        let writerFields = c.Params |> List.map CodeModelMapping.mapParam |> applyOverlays c |> dataFields
                         let reqByName = reqFields |> List.map (fun f -> f.Name, f) |> Map.ofList
                         // request-side pattern binds flat data fields by name
                         let pat =
@@ -1043,82 +1188,25 @@ module EmitWriters =
                             else
                                 let names = reqFields |> List.map (fun f -> f.Name) |> String.concat ", "
                                 $"{rt}.{caseName}({names})"
-                        let rhs =
-                            if writerFields.IsEmpty then
-                                $"Write{rt}.{caseName}"
-                            elif recordPerCaseUnions.Contains rt then
-                                let resolve f = resolveFieldType f.FSharpType unionResultTypes singleResultTypes
-                                let bundled = bundleFields writerFields resolve
-                                let fieldAssigns =
-                                    bundled
-                                    |> List.map (fun fb ->
-                                        match fb with
-                                        | Single(f, _) ->
-                                            match Map.tryFind f.Name reqByName with
-                                            | Some rf -> $"{f.RecordName} = {convReq rf.Name rf.FSharpType}"
-                                            | None -> $"{f.RecordName} = {defaultFor f.FSharpType}"
-                                        | Bundle(bName, items, _, _) ->
-                                            let pats = items |> List.mapi (fun i _ -> $"Some __b{i}") |> String.concat ", "
-                                            let conv =
-                                                items
-                                                |> List.mapi (fun i (f, _) -> convReq $"__b{i}" (stripOption f.FSharpType))
-                                                |> String.concat ", "
-                                            let accessTuple = items |> List.map (fun (f, _) -> f.Name) |> String.concat ", "
-                                            $"{bName} = (match {accessTuple} with | {pats} -> Some({conv}) | _ -> None)")
-                                    |> String.concat "; "
-                                $"Write{rt}.{caseName}({{ {fieldAssigns} }})"
-                            else
-                                let resolve f = resolveFieldType f.FSharpType unionResultTypes singleResultTypes
-                                let bundled = bundleFields writerFields resolve
-                                let args =
-                                    bundled
-                                    |> List.map (fun fb ->
-                                        match fb with
-                                        | Single(f, _) ->
-                                            match Map.tryFind f.Name reqByName with
-                                            | Some rf -> convReq rf.Name rf.FSharpType
-                                            | None -> defaultFor f.FSharpType
-                                        | Bundle(_, items, _, _) ->
-                                            let pats = items |> List.mapi (fun i _ -> $"Some __b{i}") |> String.concat ", "
-                                            let conv =
-                                                items
-                                                |> List.mapi (fun i (f, _) -> convReq $"__b{i}" (stripOption f.FSharpType))
-                                                |> String.concat ", "
-                                            let accessTuple = items |> List.map (fun (f, _) -> f.Name) |> String.concat ", "
-                                            $"(match {accessTuple} with | {pats} -> Some({conv}) | _ -> None)")
-                                    |> String.concat ", "
-                                $"Write{rt}.{caseName}({args})"
-                        $"        | {pat} -> {rhs}")
+                        $"        | {pat} -> {buildRhs c reqByName}")
                     |> String.concat "\n"
-                $"(x: {rt}) : Write{rt} =\n        match x with\n{clauses}"
+                let fallback =
+                    if cs.Length < trueCtorCount then
+                        $"\n        | _ -> failwith \"toWrite{rt}: constructor not covered by [whitelists].writers\""
+                    else
+                        ""
+                $"(x: {rt}) : {returnType} =\n        match x with\n{clauses}{fallback}"
             else
+                // Single true constructor in the whole schema (so `cs.Head`
+                // is the only possibility) — `x` IS that record, read its
+                // fields directly via `x.Field` instead of a `match` bind.
                 let c = cs.Head
-                let name = combinatorPascalName c
                 let reqFields = c.Params |> List.map CodeModelMapping.mapParam |> dataFields
-                let writerFields = c.Params |> List.map CodeModelMapping.mapParam |> applyOverlays c |> dataFields
-                let reqByName = reqFields |> List.map (fun f -> f.Name, f) |> Map.ofList
-                let resolve f = resolveFieldType f.FSharpType unionResultTypes singleResultTypes
-                let bundled = bundleFields writerFields resolve
-                let assigns =
-                    bundled
-                    |> List.map (fun fb ->
-                        match fb with
-                        | Single(f, _) ->
-                            match Map.tryFind f.Name reqByName with
-                            | Some rf ->
-                                let access = "x." + rf.RecordName
-                                $"            {f.RecordName} = {convReq access rf.FSharpType}"
-                            | None -> $"            {f.RecordName} = {defaultFor f.FSharpType}"
-                        | Bundle(bName, items, _, _) ->
-                            let pats = items |> List.mapi (fun i _ -> $"Some __b{i}") |> String.concat ", "
-                            let conv =
-                                items
-                                |> List.mapi (fun i (f, _) -> convReq $"__b{i}" (stripOption f.FSharpType))
-                                |> String.concat ", "
-                            let accessTuple = items |> List.map (fun (f, _) -> $"x.{f.RecordName}") |> String.concat ", "
-                            $"            {bName} = (match {accessTuple} with | {pats} -> Some({conv}) | _ -> None)")
-                    |> String.concat "\n"
-                $"(x: {rt}) : Write{name}Params =\n        {{\n{assigns}\n        }}"
+                let xByName =
+                    reqFields
+                    |> List.map (fun f -> f.Name, { f with Name = "x." + f.RecordName })
+                    |> Map.ofList
+                $"(x: {rt}) : {returnType} =\n        {buildRhs c xByName}"
 
         let convertersText =
             if convertible.IsEmpty then
