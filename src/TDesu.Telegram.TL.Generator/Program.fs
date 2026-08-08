@@ -58,6 +58,15 @@ Optional flags:
                               --split-by-domain is set (comma-separated, e.g.
                               "Account,Auth,Channels"; default lists all known
                               TL domains).
+  --split-by-scc              For `types` target with --split-by-domain: further
+                              split the "Base" domain bucket into
+                              Base.NN.g.fs shards bounded by ~400 types /
+                              ~1 MB each, bin-packed by Tarjan SCC so a
+                              mutually-recursive cluster never straddles two
+                              files (§2.4). Plus a Base.targets sub-manifest,
+                              imported from Requests.targets in place of a
+                              single Base.g.fs entry. Opt-in; requires
+                              --split-by-domain. Default off.
   --no-whitelist              Ignore the type/writer/client-parser whitelists and
                               emit the FULL schema for whichever of the
                               `types`/`writers`/`tests`/`client-parsers` targets
@@ -104,6 +113,7 @@ Sample overrides config: samples/SedBotOverrides/sedbot-overrides.toml
             "--client-namespace", true
             "--split-domains", true
             "--split-by-domain", false
+            "--split-by-scc", false
             "--no-whitelist", false
             "--split-by-class", false
             "--clean", false
@@ -171,6 +181,7 @@ Sample overrides config: samples/SedBotOverrides/sedbot-overrides.toml
               "--tests-namespace", flagGiven "--tests-namespace", Targets [ "tests" ]
               "--client-namespace", flagGiven "--client-namespace", Targets [ "client-cids"; "client-parsers" ]
               "--split-by-domain", switchGiven "--split-by-domain", Targets [ "types" ]
+              "--split-by-scc", switchGiven "--split-by-scc", Targets [ "types" ]
               "--split-domains", flagGiven "--split-domains", Targets [ "types" ]
               "--no-whitelist", switchGiven "--no-whitelist", Targets [ "types"; "writers"; "tests"; "client-parsers" ]
               "--split-by-class", switchGiven "--split-by-class", Targets [ "csharp" ]
@@ -246,6 +257,7 @@ Sample overrides config: samples/SedBotOverrides/sedbot-overrides.toml
         let testsNs = argv |> tryGetArg "--tests-namespace"
         let clientNs = argv |> tryGetArg "--client-namespace"
         let splitByDomain = argv |> Array.exists (fun s -> s = "--split-by-domain")
+        let splitByScc = argv |> Array.exists (fun s -> s = "--split-by-scc")
         let domainsOverride = argv |> tryGetArg "--split-domains"
         let noWhitelist = argv |> Array.exists (fun s -> s = "--no-whitelist")
         let splitByClass = argv |> Array.exists (fun s -> s = "--split-by-class")
@@ -369,7 +381,11 @@ Sample overrides config: samples/SedBotOverrides/sedbot-overrides.toml
                                     |> Array.map (fun s -> s.Trim())
                                     |> Array.toList
                                 | None -> EmitTypes.defaultRequestDomains
-                            Pipeline.generateSerializationTypesSplit ns config apiSchema outputDir domains
+                            let sccSplit = if splitByScc then Some Pipeline.defaultSccSplitConfig else None
+                            Pipeline.generateSerializationTypesSplit ns config apiSchema outputDir domains sccSplit
+                        elif splitByScc then
+                            log.LogError("--split-by-scc requires --split-by-domain (it further splits that mode's Base bucket)")
+                            failed <- true
                         else
                             Pipeline.generateSerializationTypes ns config apiSchema (path "GeneratedTlRequests")
 

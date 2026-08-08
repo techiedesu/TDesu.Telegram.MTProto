@@ -883,7 +883,12 @@ module EmitTypes =
     /// Singleton SCCs are emitted as one-element lists. Multi-node SCCs
     /// represent mutually recursive types and must be emitted in F# as a
     /// single `type A = ... and B = ... and C = ...` block.
-    let private topoSortSCCs (types: GeneratedType list) : GeneratedType list list =
+    ///
+    /// Public: also the primitive `buildSccShardedModule` (§2.4, below)
+    /// reuses to split an oversized domain into several files — the SCC
+    /// pass and the emit-time and-chain grouping must stay the same
+    /// algorithm, not a parallel reimplementation.
+    let topoSortSCCs (types: GeneratedType list) : GeneratedType list list =
         let graph = buildDepGraph types
         let nodeOrder = types |> List.map nameOf
         let typesByName =
@@ -973,24 +978,31 @@ module EmitTypes =
     /// SCC. Single-element SCCs become a one-decl block (which F# renders as
     /// `type X = ...`); multi-element SCCs become a single block of the
     /// component's types (which F# renders as `type X = ... and Y = ...`).
-    let private renderTypeSccs (types: GeneratedType list) : SynModuleDecl list =
-        let toDecl (keyword: SynTypeDefnLeadingKeyword) t =
-            match t with
-            | Record(name, fields, ctorId) -> buildRecordDeclWithKeyword keyword name fields ctorId
-            | Union(name, cases) -> buildUnionDeclWithKeyword keyword name cases
-        topoSortSCCs types
+    let private toTypeDefn (keyword: SynTypeDefnLeadingKeyword) (t: GeneratedType) =
+        match t with
+        | Record(name, fields, ctorId) -> buildRecordDeclWithKeyword keyword name fields ctorId
+        | Union(name, cases) -> buildUnionDeclWithKeyword keyword name cases
+
+    /// Render pre-computed SCCs (see `topoSortSCCs`) into module
+    /// declarations, one `SynModuleDecl.Types` block per SCC. First decl in
+    /// a block uses `type`, subsequent decls in the same SCC use `and` to
+    /// express mutual recursion — single-decl SCCs always use `type`.
+    /// Shared by `renderTypeSccs` (whole-file emission), `buildPerDomainModules`
+    /// (per-domain and-chains) and `buildSccShardedModule` (§2.4 per-shard
+    /// and-chains) so all three follow one SCC → AST rule instead of three
+    /// copies drifting apart.
+    let private renderSccList (sccs: GeneratedType list list) : SynModuleDecl list =
+        sccs
         |> List.map (fun scc ->
-            // First decl uses `type`, subsequent decls in the same SCC use
-            // `and` to express mutual recursion. Single-decl SCCs always use
-            // `type`.
             let decls =
                 scc
                 |> List.mapi (fun i t ->
-                    let keyword =
-                        if i = 0 then SynTypeDefnLeadingKeyword.Type r
-                        else SynTypeDefnLeadingKeyword.And r
-                    toDecl keyword t)
+                    let keyword = if i = 0 then SynTypeDefnLeadingKeyword.Type r else SynTypeDefnLeadingKeyword.And r
+                    toTypeDefn keyword t)
             SynModuleDecl.Types(decls, r))
+
+    let private renderTypeSccs (types: GeneratedType list) : SynModuleDecl list =
+        topoSortSCCs types |> renderSccList
 
     let buildModuleWithOpens
         (ns: string)
@@ -1038,6 +1050,15 @@ module EmitTypes =
         Domain: string
         Filename: string
         Code: string
+        /// The domain's types (post Base-promotion, pre-render), SCC-order
+        /// flattened — the same order `Code`'s and-chains use. Lets a
+        /// caller further split an oversized domain (e.g. `Base`, via
+        /// `buildSccShardedModule`) without re-deriving domain assignment.
+        Types: GeneratedType list
+        /// The domain's functions (post Base-promotion) — passed straight
+        /// through to `buildSccShardedModule` alongside `Types` so a
+        /// shard-split domain's request functions aren't silently dropped.
+        Functions: GeneratedFunction list
     }
 
     /// Default TL request domains. Detected via leading PascalCase prefix
@@ -1183,19 +1204,7 @@ module EmitTypes =
                 let typeSccs = typeSccsByDomain |> Map.tryFind dom |> Option.defaultValue []
                 let domFuncs = funcsByDomain |> Map.tryFind dom |> Option.defaultValue []
                 if not (List.isEmpty typeSccs && List.isEmpty domFuncs) then
-                    let typeBlocks =
-                        typeSccs
-                        |> List.map (fun scc ->
-                            let decls =
-                                scc
-                                |> List.mapi (fun i t ->
-                                    let keyword =
-                                        if i = 0 then SynTypeDefnLeadingKeyword.Type r
-                                        else SynTypeDefnLeadingKeyword.And r
-                                    match t with
-                                    | Record(name, fields, ctorId) -> buildRecordDeclWithKeyword keyword name fields ctorId
-                                    | Union(name, cases) -> buildUnionDeclWithKeyword keyword name cases)
-                            SynModuleDecl.Types(decls, r))
+                    let typeBlocks = renderSccList typeSccs
                     let funcBlocks =
                         domFuncs
                         |> List.map (fun f -> SynModuleDecl.Types([ buildFunctionDecl f ], r))
@@ -1210,5 +1219,188 @@ module EmitTypes =
                         Domain = dom
                         Filename = dom + Managed.Ext
                         Code = header + formatted
+                        Types = typeSccs |> List.collect id
+                        Functions = domFuncs
                     }
         ]
+
+    // --- SCC-based shard split for oversized single-domain files (§2.4) ---
+    //
+    // `buildPerDomainModules` above already SCC-groups each domain's types
+    // into and-chains, but still renders a whole domain as ONE file. TL's
+    // `Base` bucket (everything with no recognized domain prefix, plus
+    // whatever the cross-domain-cycle promotion pulls in) is multiple
+    // megabytes for a realistic whitelist — IDEs tokenise it whole and
+    // stall on incremental type checks. This section further splits ONE
+    // domain's (already-computed) type list into several files, bin-packed
+    // by size, still respecting the same ordering rule as everywhere else
+    // in this file: an SCC is one indivisible unit, and a later shard may
+    // reference an earlier one but never the reverse (`namespace rec` does
+    // NOT relax that across separate files — see
+    // docs/design/td-tl-gen-improvements.md §2.4, SedBot repo, for the
+    // full writeup and the empirical check that ruled it out).
+
+    /// One shard `buildSccShardedModule` emits. `Index` is its 0-based
+    /// position in topological compile order — embedded in `Filename` so
+    /// the emitted `<Compile Include>` order (see `Pipeline.fs`) is
+    /// visually obvious from the file names alone.
+    type ShardOutput = {
+        Index: int
+        Filename: string
+        Code: string
+    }
+
+    /// Cheap proxy for a type's Fantomas-formatted byte size — no
+    /// formatting pass, so it stays fast across thousands of types.
+    /// Weighted per field (record field decl + Serialize write +
+    /// Deserialize read + record-construction site, roughly 4 lines) and
+    /// per union case (case decl + a Serialize match arm + a Deserialize
+    /// match arm, on top of its own fields) — that is what actually
+    /// dominates a domain's emitted size for a real TL schema: a handful
+    /// of huge unions (`MessageMedia`, `InputMedia`, `Update` and friends)
+    /// can outweigh hundreds of small records, so a plain type-COUNT
+    /// estimate alone never trips the byte budget on real data. Not exact
+    /// — Fantomas' line-wrapping and layout choices are not reproduced
+    /// here — but the relative ordering (bigger union ⇒ bigger estimate)
+    /// is what bin-packing needs, and the constants below are calibrated
+    /// (not guessed): measured against SedBot's real whitelist closure
+    /// over tdlib's api.tl, this formula's TOTAL for the `Base` bucket
+    /// (241 types) came out within 0.6% of the actual rendered
+    /// `Base.g.fs` byte count (3,327,170 estimated vs 3,306,380 actual).
+    let private estimateTypeBytes (t: GeneratedType) : int =
+        let fieldWeight (f: GeneratedField) = 560 + 10 * (f.Name.Length + f.FSharpType.Length)
+        match t with
+        | Record(name, fields, _) -> 1280 + 10 * name.Length + (fields |> List.sumBy fieldWeight)
+        | Union(name, cases) ->
+            1280
+            + 10 * name.Length
+            + (cases |> List.sumBy (fun c -> 480 + 10 * c.Name.Length + (c.Fields |> List.sumBy fieldWeight)))
+
+    /// Default shard-size targets (§2.4): ~400 types or ~1 MB per shard,
+    /// whichever binds first — tuned against SedBot's real post-closure
+    /// `Base` bucket (~3.3 MB across ~240 top-level declarations, dominated
+    /// by a few huge unions), where the byte budget is what actually
+    /// splits the file; the type-count budget alone would not (see the
+    /// design doc for the measurement this is based on).
+    let defaultMaxTypesPerShard = 400
+    let defaultMaxBytesPerShard = 1_000_000
+
+    /// Sequentially chunk topologically-ordered SCCs (see `topoSortSCCs`)
+    /// into shards bounded by `maxTypesPerShard` / `maxBytesPerShard`,
+    /// WITHOUT reordering — order is a correctness requirement here, not a
+    /// packing convenience (a later shard may reference an earlier one but
+    /// never the reverse), so this is greedy run-length chunking, not a
+    /// reordering bin-packer. An SCC is never split across two shards: one
+    /// that alone exceeds either budget still becomes its own, oversized
+    /// shard — correctness (one SCC, one file) beats shard-size
+    /// uniformity.
+    let binPackSccs
+        (maxTypesPerShard: int)
+        (maxBytesPerShard: int)
+        (sccs: GeneratedType list list)
+        : GeneratedType list list list =
+
+        let shards = ResizeArray<ResizeArray<GeneratedType list>>()
+        let mutable current = ResizeArray<GeneratedType list>()
+        let mutable currentTypes = 0
+        let mutable currentBytes = 0
+
+        let flush () =
+            if current.Count > 0 then
+                shards.Add current
+                current <- ResizeArray<GeneratedType list>()
+                currentTypes <- 0
+                currentBytes <- 0
+
+        for scc in sccs do
+            let tCount = List.length scc
+            let bCount = scc |> List.sumBy estimateTypeBytes
+            // Only ever flush a shard that already has something in it — an
+            // oversized SCC must never be held back waiting for room; it
+            // becomes its own shard instead of blocking forever.
+            if current.Count > 0 && (currentTypes + tCount > maxTypesPerShard || currentBytes + bCount > maxBytesPerShard) then
+                flush ()
+            current.Add scc
+            currentTypes <- currentTypes + tCount
+            currentBytes <- currentBytes + bCount
+        flush ()
+
+        shards |> Seq.map List.ofSeq |> List.ofSeq
+
+    /// Render one shard (a topologically-ordered sub-list of SCCs) into F#
+    /// source text — same namespace/opens/banner shape as a single
+    /// per-domain module, just scoped to this shard's types.
+    let private buildShardCode
+        (ns: string)
+        (additionalOpens: string list)
+        (regenHint: string)
+        (sccs: GeneratedType list list)
+        (functions: GeneratedFunction list)
+        : string =
+        let typeBlocks = renderSccList sccs
+        let funcBlocks =
+            functions
+            |> List.map (fun f -> SynModuleDecl.Types([ buildFunctionDecl f ], r))
+        let openDecls = ("TDesu.Serialization" :: additionalOpens) |> List.map mkOpenDecl
+        let moduleDecls = openDecls @ typeBlocks @ funcBlocks
+        let nsNode = mkNamespace ns moduleDecls
+        let parsed = mkParsedInput [ nsNode ]
+        let formatted = runFormat parsed
+        Managed.banner regenHint + formatted
+
+    /// Split `types` (already scoped to one oversized domain, typically the
+    /// `Base` bucket `buildPerDomainModules` returns) into SCC-respecting,
+    /// size-bounded shards (§2.4). Reuses the same Tarjan pass
+    /// (`topoSortSCCs`) that groups mutually recursive types into
+    /// and-chains for a single file — the correction §2.4 documents is that
+    /// `namespace rec` does NOT let separate FILES forward-reference each
+    /// other, so cross-file safety requires shards to be emitted in the SCC
+    /// condensation's topological order, which `topoSortSCCs` already
+    /// produces, and an SCC must never straddle two shards, which
+    /// `binPackSccs` guarantees.
+    ///
+    /// `basename` names the shard files (`<basename>.00.g.fs`,
+    /// `<basename>.01.g.fs`, …) — zero-padded to at least 2 digits, wider
+    /// if there are 100+ shards. Shards are returned in topological
+    /// (compile) order; the caller (`Pipeline.fs`) is responsible for
+    /// writing them out and for the `<basename>.targets` manifest listing
+    /// them in that same order (same shape as `Requests.targets`).
+    ///
+    /// Calls `declareBareReferences types functions` itself — safe even
+    /// though `buildPerDomainModules` already called it with the FULL
+    /// cross-domain surface before computing `types`/`functions`: any name
+    /// they bare-reference is, by the Base-promotion invariant in
+    /// `buildPerDomainModules`, already a member of `types` itself, so
+    /// re-scoping to just this domain's surface here neither drops nor
+    /// changes any registration this shard's rendering actually needs.
+    ///
+    /// `functions` never participates in SCC/shard ordering — a TL request
+    /// function is a leaf (nothing ever references a function's own name
+    /// as a field type), so every function is appended to the LAST shard,
+    /// where every type it could reference is already guaranteed in scope.
+    /// An all-functions, no-types domain still gets exactly one shard.
+    let buildSccShardedModule
+        (ns: string)
+        (additionalOpens: string list)
+        (basename: string)
+        (maxTypesPerShard: int)
+        (maxBytesPerShard: int)
+        (types: GeneratedType list)
+        (functions: GeneratedFunction list)
+        : ShardOutput list =
+
+        declareBareReferences types functions
+
+        let sccs = topoSortSCCs types
+        let shards = binPackSccs maxTypesPerShard maxBytesPerShard sccs
+        let sccGroups = if shards.IsEmpty && not functions.IsEmpty then [ [] ] else shards
+        let shardCount = List.length sccGroups
+        let width = max 2 (string (max 0 (shardCount - 1))).Length
+        let regenHint = "dotnet fsi tools/regen-tl.fsx (or td-tl-gen --target types --split-by-scc)"
+
+        sccGroups
+        |> List.mapi (fun i sccGroup ->
+            let shardFunctions = if i = shardCount - 1 then functions else []
+            { Index = i
+              Filename = $"{basename}.{(string i).PadLeft(width, '0')}{Managed.Ext}"
+              Code = buildShardCode ns additionalOpens regenHint sccGroup shardFunctions })

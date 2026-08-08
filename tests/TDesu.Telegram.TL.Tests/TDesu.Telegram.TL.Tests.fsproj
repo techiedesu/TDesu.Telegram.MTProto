@@ -21,6 +21,7 @@
         <Compile Include="ClosureTests.fs" />
         <Compile Include="CSharpMergeTests.fs" />
         <Compile Include="EmitCSharpTests.fs" />
+        <Compile Include="SccSplitTests.fs" />
     </ItemGroup>
 
     <ItemGroup>
