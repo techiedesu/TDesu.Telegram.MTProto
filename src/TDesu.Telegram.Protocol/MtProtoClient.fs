@@ -147,10 +147,33 @@ type MtProtoClient(dc: DataCenter, ?logger: ILogger, ?transportFactory: DataCent
             | _ -> return Error(MtProtoError.InvalidResponse "not connected")
         }
 
+    /// Constructor id of `rpc_error#2144ca19`.
+    [<Literal>]
+    let RpcErrorCid = 0x2144ca19u
+
     let processRpcResult (body: byte[]) (offset: int) (reqMsgId: int64) =
         let resultData = ungzip body[offset..]
 
-        if not (dispatcher.CompleteRequest(reqMsgId, resultData)) then
+        // An rpc_error arrives in the same slot as a successful result, so handing the
+        // bytes straight to the caller reports failure as success. Every consumer then
+        // fails deserializing an "unknown constructor id" instead of reading the error
+        // the server actually sent, and no `Error(RpcError …)` match anywhere can fire —
+        // which quietly disables flood-wait handling and 2FA detection alike.
+        let isRpcError =
+            resultData.Length >= 8 && BitConverter.ToUInt32(resultData, 0) = RpcErrorCid
+
+        let completed =
+            if isRpcError then
+                use reader = new TlReadBuffer(resultData)
+                %reader.ReadConstructorId()
+                let code = reader.ReadInt32()
+                let message = reader.ReadString()
+                log.LogDebug("rpc_error {Code} {Message} for msg_id {MsgId}", code, message, reqMsgId)
+                dispatcher.FailRequest(reqMsgId, MtProtoError.RpcError(code, message))
+            else
+                dispatcher.CompleteRequest(reqMsgId, resultData)
+
+        if not completed then
             log.LogWarning("No pending request for msg_id {MsgId}", reqMsgId)
 
     /// Re-send a still-pending request under a fresh msg_id (e.g. after bad_server_salt corrected
