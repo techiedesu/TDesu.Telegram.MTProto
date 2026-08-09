@@ -379,61 +379,79 @@ type MtProtoClient(dc: DataCenter, ?logger: ILogger, ?transportFactory: DataCent
             | ex -> log.LogDebug(ex, "ping loop ended")
         }
 
-    let rec receiveLoop (ct: CancellationToken) =
+    /// One read, then a tail call for the next.
+    ///
+    /// Deliberately recursive rather than a `while` loop inside the handler in
+    /// `receiveLoop`. An awaiting loop wrapped in `try/with` stops F# generating a
+    /// resumable state machine, and the fallback it silently lands on blocks the
+    /// calling thread on each await. That is merely wasteful on a thread pool and
+    /// fatal in a browser, whose single thread cannot wait at all: `Monitor` raises
+    /// "Cannot wait on monitors on this runtime" and the reader dies one message
+    /// after the session is established.
+    let rec receiveStep (ct: CancellationToken) : Task<unit> =
+        task {
+            if ct.IsCancellationRequested || not transport.IsConnected then
+                return ()
+            else
+                match! transport.ReceiveAsync(ct) with
+                | Error TransportError.ConnectionClosed ->
+                    // A loop whose CT was already cancelled has been superseded by a newer
+                    // generation; failing requests now would kill the ones belonging to the
+                    // connection that replaced it.
+                    if not ct.IsCancellationRequested then
+                        log.LogWarning("Connection closed by server; reconnecting")
+                        dispatcher.FailAll(MtProtoError.TransportError TransportError.ConnectionClosed)
+                        do! reconnectInternal ct
+
+                    return ()
+                | Error TransportError.Timeout ->
+                    // ReceiveAsync only yields Timeout when our own receive CT is cancelled
+                    // (Disconnect / reconnect tearing this loop down). The guard at the top
+                    // exits on the next step — nothing to recover.
+                    return! receiveStep ct
+                | Error e ->
+                    // A desynced byte stream (InvalidFrame) or broken socket (ReadError /
+                    // ConnectionFailed) leaves the read position unrecoverable: looping would
+                    // spin on garbage until every in-flight RPC times out. Treat it like a
+                    // dropped connection — fail pending requests and reconnect.
+                    if not ct.IsCancellationRequested then
+                        log.LogWarning("Receive error ({Error}); stream unrecoverable, reconnecting", e)
+                        dispatcher.FailAll(MtProtoError.TransportError e)
+                        do! reconnectInternal ct
+
+                    return ()
+                | Ok data ->
+                    match authKey with
+                    | Some key ->
+                        match MessageFraming.decrypt key data with
+                        | Ok(msgId, sessionId, seqNo, body) ->
+                            match session with
+                            | Some s when s.SessionId <> sessionId ->
+                                log.LogWarning("Dropping message for foreign session_id {SessionId}", sessionId)
+                            | _ ->
+                                if markSeen msgId then
+                                    // One unparseable message must cost that message, not the
+                                    // connection: the handler in `receiveLoop` fails every
+                                    // in-flight RPC and reconnects.
+                                    try
+                                        processInnerMessage body msgId seqNo
+                                    with ex ->
+                                        log.LogError(ex, "Failed to process msg_id {MsgId}", msgId)
+                                else
+                                    log.LogWarning("Dropping replayed msg_id {MsgId}", msgId)
+                        | Error e -> log.LogError("Failed to decrypt message: {Error}", e)
+                    | None ->
+                        match UnencryptedMessage.deserialize data with
+                        | Ok(msgId, body) -> %dispatcher.CompleteRequest(msgId, body)
+                        | Error e -> log.LogError("Failed to parse unencrypted message: {Error}", e)
+
+                    return! receiveStep ct
+        }
+
+    and receiveLoop (ct: CancellationToken) =
         task {
             try
-                while not ct.IsCancellationRequested && transport.IsConnected do
-                    match! transport.ReceiveAsync(ct) with
-                    | Error TransportError.ConnectionClosed ->
-                        // A loop whose CT was already cancelled has been superseded by a newer
-                        // generation; failing requests now would kill the ones belonging to the
-                        // connection that replaced it.
-                        if not ct.IsCancellationRequested then
-                            log.LogWarning("Connection closed by server; reconnecting")
-                            dispatcher.FailAll(MtProtoError.TransportError TransportError.ConnectionClosed)
-                            do! reconnectInternal ct
-
-                        return ()
-                    | Error TransportError.Timeout ->
-                        // ReceiveAsync only yields Timeout when our own receive CT is cancelled
-                        // (Disconnect / reconnect tearing this loop down). The while-guard exits on
-                        // the next check — nothing to recover.
-                        ()
-                    | Error e ->
-                        // A desynced byte stream (InvalidFrame) or broken socket (ReadError /
-                        // ConnectionFailed) leaves the read position unrecoverable: looping would
-                        // spin on garbage until every in-flight RPC times out. Treat it like a
-                        // dropped connection — fail pending requests and reconnect.
-                        if not ct.IsCancellationRequested then
-                            log.LogWarning("Receive error ({Error}); stream unrecoverable, reconnecting", e)
-                            dispatcher.FailAll(MtProtoError.TransportError e)
-                            do! reconnectInternal ct
-
-                        return ()
-                    | Ok data ->
-                        match authKey with
-                        | Some key ->
-                            match MessageFraming.decrypt key data with
-                            | Ok(msgId, sessionId, seqNo, body) ->
-                                match session with
-                                | Some s when s.SessionId <> sessionId ->
-                                    log.LogWarning("Dropping message for foreign session_id {SessionId}", sessionId)
-                                | _ ->
-                                    if markSeen msgId then
-                                        // One unparseable message must cost that message, not the
-                                        // connection: the loop-level handler below fails every
-                                        // in-flight RPC and reconnects.
-                                        try
-                                            processInnerMessage body msgId seqNo
-                                        with ex ->
-                                            log.LogError(ex, "Failed to process msg_id {MsgId}", msgId)
-                                    else
-                                        log.LogWarning("Dropping replayed msg_id {MsgId}", msgId)
-                            | Error e -> log.LogError("Failed to decrypt message: {Error}", e)
-                        | None ->
-                            match UnencryptedMessage.deserialize data with
-                            | Ok(msgId, body) -> %dispatcher.CompleteRequest(msgId, body)
-                            | Error e -> log.LogError("Failed to parse unencrypted message: {Error}", e)
+                do! receiveStep ct
             with
             | :? OperationCanceledException -> ()
             | ex ->
