@@ -31,6 +31,7 @@
     <ItemGroup>
         <PackageReference Include="TDesu.FSharp" />
         <PackageReference Include="TDesu.Telegram.Serialization" />
+        <PackageReference Include="TDesu.Telegram.Crypto" />
     </ItemGroup>
 
     <ItemGroup>

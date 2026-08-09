@@ -2,6 +2,7 @@ namespace TDesu.Transport
 
 open System
 open System.Security.Cryptography
+open TDesu.Crypto
 open TDesu.FSharp
 open TDesu.FSharp.Operators
 
@@ -11,14 +12,7 @@ open TDesu.FSharp.Operators
 /// + partial keystream) is retained across calls so a connection's byte stream is
 /// one continuous keystream.
 type Aes256Ctr(key: byte[], iv: byte[]) =
-    let aes =
-        let a = Aes.Create()
-        a.Key <- key
-        a.Mode <- CipherMode.ECB
-        a.Padding <- PaddingMode.None
-        a
-
-    let ecb = aes.CreateEncryptor()
+    let ecb = AesEcb.createEncryptor key
     let counter = Array.copy iv
     let keystream = Array.zeroCreate<byte> 16
     let mutable ksPos = 16 // force a refill on first byte
@@ -48,9 +42,7 @@ type Aes256Ctr(key: byte[], iv: byte[]) =
         out
 
     interface IDisposable with
-        member _.Dispose() =
-            ecb.Dispose()
-            aes.Dispose()
+        member _.Dispose() = ecb.Dispose()
 
 /// MTProto transport obfuscation ("obfuscation2"): a 64-byte init packet whose
 /// derived key material seeds a per-direction AES-256-CTR stream. After the init

@@ -4,6 +4,7 @@ open System
 open System.IO
 open System.Net.WebSockets
 open System.Threading
+open System.Threading.Tasks
 open TDesu.FSharp
 open TDesu.FSharp.Operators
 
@@ -123,60 +124,87 @@ type WsTransport(dc: DataCenter, endpoint: Uri option) =
                 | _ -> return Error(TransportError.WriteError ex.Message)
     }
 
-    member _.ReceiveAsync(ct: CancellationToken) = task {
-        match getWs (), decryptor with
-        | Error e, _ -> return Error e
-        | _, None -> return Error TransportError.ConnectionClosed
-        | Ok client, Some dec ->
-            /// One frame out of `pending`, or None while it still holds less than a whole frame.
-            let takeFrame () =
-                if pending.Length < 4 then
+    /// One frame out of `pending`, or None while it still holds less than a whole frame.
+    member private _.TakeFrame() =
+        if pending.Length < 4 then
+            Ok None
+        else
+            match FrameCodec.decodeFrameLength pending with
+            | Error e -> Error e
+            | Ok length ->
+                if pending.Length < 4 + length then
                     Ok None
                 else
-                    match FrameCodec.decodeFrameLength pending with
-                    | Error e -> Error e
-                    | Ok length ->
-                        if pending.Length < 4 + length then
-                            Ok None
-                        else
-                            let frame = pending[4 .. 4 + length - 1]
-                            pending <- pending[4 + length ..]
-                            Ok(Some frame)
+                    let frame = pending[4 .. 4 + length - 1]
+                    pending <- pending[4 + length ..]
+                    Ok(Some frame)
 
-            try
-                let chunk = Array.zeroCreate<byte> (16 * 1024)
-                let mutable outcome = Option.None
-
-                while outcome.IsNone do
-                    match takeFrame () with
-                    | Error e ->
-                        // A length we cannot make sense of means the stream is off its rails.
-                        invalidate ()
-                        outcome <- Some(Error e)
-                    | Ok(Some frame) -> outcome <- Some(Ok frame)
-                    | Ok None ->
-                        let! received = client.ReceiveAsync(ArraySegment chunk, ct)
-
-                        if received.MessageType = WebSocketMessageType.Close then
-                            invalidate ()
-                            outcome <- Some(Error TransportError.ConnectionClosed)
-                        elif received.Count > 0 then
-                            // CTR is a stream cipher, so decrypting arrival-ordered chunks is the
-                            // same as decrypting the whole message: message boundaries carry no
-                            // meaning and are deliberately ignored.
-                            let decrypted = dec.Process(chunk[0 .. received.Count - 1])
-                            pending <- Array.append pending decrypted
-
-                return outcome.Value
-            with ex ->
-                // Bytes were consumed from the socket and the keystream moved with them; resuming
-                // on this connection would decrypt the next read at the wrong offset.
+    /// Reads until `pending` holds a whole frame, then yields it.
+    ///
+    /// Recursive rather than a `while` loop with a `let mutable` result. A mutable
+    /// local carried across an `await` inside a loop stops F# generating a resumable
+    /// state machine, and the fallback it silently lands on blocks the calling thread
+    /// waiting on the awaited task. Blocking is merely wasteful on a desktop runtime
+    /// and fatal in a browser, whose single thread cannot wait at all: `Monitor` raises
+    /// "Cannot wait on monitors on this runtime" and the handshake dies mid-flight.
+    ///
+    /// The recursion does not grow the stack — each step returns into an awaited
+    /// continuation rather than nesting a call.
+    member private this.PumpAsync
+        (client: ClientWebSocket, dec: Aes256Ctr, ct: CancellationToken)
+        : Task<Result<byte[], TransportError>> =
+        task {
+            match this.TakeFrame() with
+            | Error e ->
+                // A length we cannot make sense of means the stream is off its rails.
                 invalidate ()
+                return Error e
+            | Ok(Some frame) -> return Ok frame
+            | Ok None ->
+                let chunk = Array.zeroCreate<byte> (16 * 1024)
+                let! received = client.ReceiveAsync(Memory chunk, ct)
 
-                match ex with
-                | :? OperationCanceledException -> return Error TransportError.Timeout
-                | _ -> return Error(TransportError.ReadError ex.Message)
-    }
+                if received.MessageType = WebSocketMessageType.Close then
+                    invalidate ()
+                    return Error TransportError.ConnectionClosed
+                else
+                    if received.Count > 0 then
+                        // CTR is a stream cipher, so decrypting arrival-ordered chunks is the
+                        // same as decrypting the whole message: message boundaries carry no
+                        // meaning and are deliberately ignored.
+                        pending <- Array.append pending (dec.Process(chunk[0 .. received.Count - 1]))
+                    else
+                        // A read that delivered nothing and did not close is not progress. On a
+                        // thread-pool runtime the next await would hand the thread back anyway;
+                        // on a cooperative single-threaded one it would not, and recursing
+                        // straight back into a synchronously-completing receive pegs the only
+                        // thread there is — the socket then never gets a chance to deliver, so
+                        // the loop spins until the connection times out.
+                        do! Task.Yield()
+
+                    return! this.PumpAsync(client, dec, ct)
+        }
+
+    member this.ReceiveAsync(ct: CancellationToken) =
+        task {
+            match getWs (), decryptor with
+            | Error e, _ -> return Error e
+            | _, None -> return Error TransportError.ConnectionClosed
+            | Ok client, Some dec ->
+                try
+                    return! this.PumpAsync(client, dec, ct)
+                with ex ->
+                    // Bytes were consumed from the socket and the keystream moved with them;
+                    // resuming on this connection would decrypt the next read at the wrong offset.
+                    invalidate ()
+
+                    match ex with
+                    | :? OperationCanceledException -> return Error TransportError.Timeout
+                    // The type name is carried too: a bare `Message` reads
+                    // "Cannot wait on monitors on this runtime" with no clue that it is a
+                    // platform limitation rather than a peer or protocol fault.
+                    | _ -> return Error(TransportError.ReadError $"{ex.GetType().Name}: {ex.Message}")
+        }
 
     member _.Disconnect() =
         connected <- false
