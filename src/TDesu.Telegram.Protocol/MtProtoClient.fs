@@ -67,16 +67,6 @@ type MtProtoClient(dc: DataCenter, ?logger: ILogger, ?transportFactory: DataCent
                     seenMsgIds.Remove(seenMsgIdOrder.Dequeue()) |> ignore
                 true)
 
-    let ensureSession () =
-        match session with
-        | Some s -> s
-        | None -> failwith "Session not initialized"
-
-    let ensureAuthKey () =
-        match authKey with
-        | Some k -> k
-        | None -> failwith "Auth key not established"
-
     /// Telegram wraps large results in gzip_packed#3072cfa1 packed_data:bytes — a gzip
     /// stream carrying the real TL object. Unwrap it so callers see the plain object.
     let ungzip (data: byte[]) : byte[] =
@@ -682,9 +672,11 @@ type MtProtoClient(dc: DataCenter, ?logger: ILogger, ?transportFactory: DataCent
                 with _ -> ()
                 reconnectedEvent.Publish.RemoveHandler(handler)
 
-            // Documented contract: failures arrive as Error Results. `ensureSession` throws, which
-            // would fault the task for any caller that raced a Disconnect or issued an RPC before
-            // the first connect — exactly the callers least likely to have a try around it.
+            // Documented contract: failures arrive as Error Results. Reading the session and the
+            // auth key through a helper that throws when either is missing would fault the task for
+            // any caller that raced a Disconnect or issued an RPC before the first connect —
+            // exactly the callers least likely to have a try around it. Two such helpers used to sit
+            // at the top of this type for that job; this match is why they were never called.
             match session, authKey with
             | Option.None, _
             | _, Option.None -> return Error(MtProtoError.InvalidResponse "not connected")
