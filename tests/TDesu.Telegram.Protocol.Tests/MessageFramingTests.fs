@@ -21,8 +21,10 @@ module MessageFramingTests =
 
     /// Server-side (x=8) encryption — the inverse of MessageFraming.decrypt, which is what the
     /// real server does. MessageFraming.encrypt is client->server (x=0), so we replicate the
-    /// server direction here to exercise (and round-trip against) the decrypt path.
-    let private serverEncrypt (key: AuthKey) (sess: SessionState) (msgId: int64) (seqNo: int) (body: byte[]) : byte[] =
+    /// server direction here to exercise (and round-trip against) the decrypt path. Not private:
+    /// `RpcResultTests`'s loopback transport reuses it to build fake server replies rather than
+    /// duplicating a second copy of the same x=8 framing.
+    let serverEncrypt (key: AuthKey) (sess: SessionState) (msgId: int64) (seqNo: int) (body: byte[]) : byte[] =
         use w = new TlWriteBuffer()
         w.WriteInt64 sess.Salt
         w.WriteInt64 sess.SessionId

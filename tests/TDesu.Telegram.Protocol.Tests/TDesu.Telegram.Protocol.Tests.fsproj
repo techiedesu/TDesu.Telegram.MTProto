@@ -13,6 +13,7 @@
         <Compile Include="TransportFramingTests.fs" />
         <Compile Include="TransportSelectionTests.fs" />
         <Compile Include="ClientLifecycleTests.fs" />
+        <Compile Include="RpcResultTests.fs" />
     </ItemGroup>
 
     <ItemGroup>
