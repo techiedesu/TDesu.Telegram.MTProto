@@ -1,5 +1,111 @@
 # Release notes
 
+## 0.12.0
+
+**`rpc_error` now fails the request instead of completing it.** The dispatcher wrote every
+reply — success or `rpc_error#2144ca19` — into the same completion slot and handed the raw
+bytes straight to the caller as a successful result. Every consumer therefore saw `Ok` for a
+server-side error and then failed deserializing an unrecognised constructor id, and no
+`Error(MtProtoError.RpcError(code, message))` match anywhere in application code could ever
+fire — silently disabling flood-wait handling and `SESSION_PASSWORD_NEEDED` detection in every
+client built on this library. Found from a client that had to hex-dump a
+`USERNAME_NOT_OCCUPIED` response to work out why it was arriving as success.
+
+`RpcAsync` now completes an `rpc_error` reply as
+`Error(MtProtoError.RpcError(errorCode, errorMessage))`, finally honouring the method's own
+doc comment ("failures arrive as Error Results, never thrown") for the one case that never
+actually kept that promise.
+
+**Breaking, and it will not show up as a compile error.** `RpcAsync` already returned
+`Result<byte[], MtProtoError>` and `RpcError` already existed as a case, so every call site
+still type-checks — only the runtime routing changed. Audit every place that pattern-matches
+on an `RpcAsync` result: it needs its own arm for
+`Error(MtProtoError.RpcError(code, message))`, in particular flood-wait (`message` shaped like
+`FLOOD_WAIT_<seconds>`) and `SESSION_PASSWORD_NEEDED`. **A call helper that maps every
+`Error _` to "no answer" — logs it, retries on a fixed interval, or otherwise treats it as a
+generic transport hiccup — will keep compiling and keep failing to back off on flood-wait**,
+just for a different reason than before: it used to never see the error at all, and now it
+sees the error but throws away the one field (`errorMessage`) that says how long to wait.
+Either way the bot gets rate-limited harder the more it retries.
+
+### Transport
+
+**The WebSocket carrier and its AES-CTR keystream now run under WebAssembly.** Two independent
+faults blocked a browser client: `Aes256Ctr` built its keystream with `Aes.Create()`, which
+raises `PlatformNotSupported` on browser-wasm (`TDesu.Crypto.AesEcb` now supplies the cipher,
+falling back to a managed implementation where the platform has none); and `WsTransport`'s
+receive path carried a mutable result across an `await` inside a `while` loop, which stops F#
+from generating a resumable state machine — the synchronous fallback it silently lands on
+blocks the calling thread on every read, and a browser's single thread cannot wait at all
+(`Monitor` raised "Cannot wait on monitors on this runtime" mid-handshake). The read path is
+recursive now (`PumpAsync`), and a read that completes synchronously with zero bytes yields
+once instead of spinning the only available thread until the connection times out.
+
+### Protocol
+
+**The encrypted receive loop is WASM-safe too**, for the same reason and in the same shape as
+the transport fix above: the `while`/`try`/`await` loop is now a tail-recursive step
+(`receiveStep`), so a session no longer comes up and immediately tears itself down one message
+after `new_session_created` on a single-threaded runtime.
+
+### Generator
+
+**New `ergonomics` target.** `td-tl-gen --target ergonomics` emits `static member Create` on
+records with optional/flag fields (required params positional, `flags.N?T` and presence-bools
+as `?arg`), a `Create<CaseSuffix>` factory per non-empty union case, and `[<return: Struct>]`
+active patterns for zero-allocation field extraction across union cases that share a field
+name and type. Smoke-tested against api.tl: 160 `Create` members on records, 943 per-case DU
+factories, 48 field-extractor active patterns.
+
+**Transitive whitelist closure removes the practical need for `--no-whitelist`.** The `types`
+target's seed set now also closes over every constructor named in `[whitelists].writers` /
+`writer_layer_types`, so `writers`'s generated converters can reference only names `types`
+actually emits, without falling back to emitting the full schema. Widening the closure
+surfaced two latent `EmitWriters` bugs that `--no-whitelist` had always masked (a full schema
+made the writer-whitelisted subset trivially equal to the true one): a converter's
+record-vs-union shape decision was keyed off the writer-whitelisted count instead of the
+schema's true count, and a field outside the writer whitelist was passed through unconverted
+into a slot `EmitWriters` had already resolved to raw bytes. Both are fixed; an unsupported
+request-side case now fails loudly at generation time instead of emitting a type mismatch.
+Regenerating against a real whitelist-scoped config changes output shape where either bug
+previously fired; a full-schema (`--no-whitelist`) regen is byte-for-byte unaffected.
+
+**`--split-by-scc` shards an oversized `Base` domain file.** Combined with
+`--split-by-domain`, a domain bucket over roughly 400 types / 1 MB is bin-packed into
+`Base.NN.g.fs` shards along the same Tarjan-SCC order the single-file emitter already used for
+`and`-chains, so a mutually recursive cluster never straddles two files. Opt-in; off by
+default, and rejected with an error if passed without `--split-by-domain`.
+
+**Managed-file hygiene.** Every emitted file now carries a stable `<auto-generated>` banner and
+a `//# td-tl-gen-managed` marker, so the regeneration sweep deletes only files the tool itself
+wrote — a hand-added `.fs` alongside the generated ones survives. (An alpha in this line
+briefly renamed the extension to `.Generated.fs`; it is back to `.g.fs`, so a consumer coming
+from 0.9.0 sees no extension change at all.)
+
+**Breaking for direct library callers of the generator (not `td-tl-gen` CLI users).**
+`Pipeline.generateSerializationTypesSplit` gained a required trailing `SccSplitConfig option`
+parameter — pass `None` for the previous one-file-per-domain behaviour.
+`EmitTypes.PerDomainOutput` gained `Types` and `Functions` fields, which only breaks a literal
+record construction (`{ Domain = ...; Filename = ...; Code = ... }`); reading the existing
+fields by pattern or by name is unaffected.
+
+Also: field names that collide with F# keywords no longer emit a backtick-prefixed active
+pattern the compiler rejects; active-pattern names are prefixed with their union's name so two
+unions sharing a field no longer collide; the ergonomics emitter no longer `open`s
+`TDesu.Serialization`, which was shadowing generated types of the same name; and generation
+skips fields with ambiguous types across union cases and the unreachable `ValueNone` arm on
+exhaustive DUs instead of emitting code that doesn't compile.
+
+### Dependencies
+
+- `TDesu.Telegram.Crypto` → 0.3.1 (adds the `AesEcb` fallback the WASM transport fix depends
+  on, plus a safe-prime pin).
+
+0.10.0 and 0.11.0 were never published as stable — both stayed on alpha prereleases while work
+continued underneath them. This release is tagged 0.12.0, matching the prerelease line already
+on this commit (`0.12.0-alpha.1` through `.4`), so nothing already pinned to one of those
+prereleases sees a numerically lower "stable" release.
+
 ## 0.8.0
 
 ### Generator — C# backend
