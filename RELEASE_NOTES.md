@@ -1,5 +1,24 @@
 # Release notes
 
+## 0.12.1
+
+**`msg_detailed_info` is transport bookkeeping, and it was being published as an update.**
+`msg_detailed_info#276d3ec6` and `msg_new_detailed_info#809db6df` come from `mtproto.tl`, not the
+API schema, and neither appeared in the service-message dispatch — so both fell through to the
+branch that treats an unrecognised constructor as a server push. Every one of them reached update
+subscribers, which then failed deserializing an `Updates` and logged a genuine error for a message
+that never carried an update. Measured on a live account: 28 such errors in one hour, which is also
+how they buried real parse failures.
+
+They arrived 28 times rather than once for a second reason. Both constructors name an *answer* the
+server is holding, and the protocol expects that answer's `msg_id` to be acknowledged — not the
+notification's own. Unacknowledged, the server simply keeps re-announcing it. Both now ack
+`answer_msg_id` through the existing ack queue, which is what stops the repetition.
+
+Pinned by two tests that put the service message in a container beside the `rpc_result` the call is
+waiting for: when the call returns, the service message has already been processed, so counting what
+the subscriber saw cannot race the receive loop. Both fail against the unfixed client.
+
 ## 0.12.0
 
 **`rpc_error` now fails the request instead of completing it.** The dispatcher wrote every
