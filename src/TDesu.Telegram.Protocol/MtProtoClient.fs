@@ -322,6 +322,28 @@ type MtProtoClient(dc: DataCenter, ?logger: ILogger, ?transportFactory: DataCent
                 | 0x62d6b459u ->
                     // server-side msgs_ack — acknowledges our sends, nothing to do.
                     ()
+                | 0x276d3ec6u ->
+                    // msg_detailed_info#276d3ec6 msg_id:long answer_msg_id:long bytes:int status:int
+                    //
+                    // Both of these name an *answer* the server is holding for us, and both must be
+                    // acked by that answer's id — not by their own. Until they are, the server keeps
+                    // re-announcing the same answer: measured against a live account, 28 of these
+                    // arrived in one hour, over and over for the same ids.
+                    //
+                    // Falling through to the `_` branch is worse than noise. These are transport
+                    // bookkeeping, not API objects, so every one of them was handed to update
+                    // subscribers, which then failed deserializing an `Updates` and logged a real
+                    // error for a message that never carried an update — hiding actual parse
+                    // failures among them.
+                    %reader.ReadInt64()
+                    let answerMsgId = reader.ReadInt64()
+                    enqueueAck answerMsgId
+                    log.LogTrace("msg_detailed_info: acking answer_msg_id {AnswerMsgId}", answerMsgId)
+                | 0x809db6dfu ->
+                    // msg_new_detailed_info#809db6df answer_msg_id:long bytes:int status:int
+                    let answerMsgId = reader.ReadInt64()
+                    enqueueAck answerMsgId
+                    log.LogTrace("msg_new_detailed_info: acking answer_msg_id {AnswerMsgId}", answerMsgId)
                 | _ ->
                     // Server push update (not RPC result, not a known service message).
                     log.LogDebug("Push update 0x{Constructor:x8}, msg_id={MsgId}", constructor, msgId)
