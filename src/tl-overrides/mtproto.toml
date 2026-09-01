@@ -1,0 +1,25 @@
+# The mtproto.tl service layer, as generated types rather than hand-written byte pokes.
+#
+# Whitelisted rather than --no-whitelist for one concrete reason: mtproto.tl names a function
+# rpc_drop_answer whose return type is also RpcDropAnswer, and the emitter gives both the same F#
+# name, so the full schema does not compile. Nothing here calls rpc_drop_answer, so naming what the
+# client actually reads and writes is both smaller and buildable.
+
+[whitelists]
+types = [
+    # Read off the wire by the receive loop.
+    "MsgsAck",
+    "RpcError",
+    "MsgsStateReq",
+    "MsgsStateInfo",
+    "MsgsAllInfo",
+    "MsgResendReq",
+    "MsgDetailedInfo",
+    "NewSession",
+    "BadMsgNotification",
+    "Pong",
+    "FutureSalts",
+    "DestroySessionRes",
+    # Written by the keepalive and ack paths.
+    "PingDelayDisconnect",
+]

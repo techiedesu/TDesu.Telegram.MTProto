@@ -10,6 +10,9 @@
         <PackageProjectUrl>https://github.com/techiedesu/TDesu.Telegram.MTProto</PackageProjectUrl>
         <PackageLicenseExpression>MIT</PackageLicenseExpression>
         <PackageReadmeFile>README.md</PackageReadmeFile>
+        <!-- td-tl-gen still emits the legacy arr.[idx] spelling; the files are generated, so the
+             fix belongs in the emitter, not in an edit that the next regen overwrites. -->
+        <NoWarn>$(NoWarn);FS3366</NoWarn>
     </PropertyGroup>
 
     <ItemGroup>
@@ -17,6 +20,8 @@
     </ItemGroup>
 
     <ItemGroup>
+        <Compile Include="Generated\GeneratedCid.g.fs" />
+        <Compile Include="Generated\GeneratedTlRequests.g.fs" />
         <Compile Include="Types.fs" />
         <Compile Include="Persistence.fs" />
         <Compile Include="UnencryptedMessage.fs" />
