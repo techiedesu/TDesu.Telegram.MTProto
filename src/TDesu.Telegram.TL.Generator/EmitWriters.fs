@@ -1224,6 +1224,6 @@ module EmitWriters =
                 + "\n"
 
         let header =
-            Managed.banner "dotnet fsi tools/regen-tl.fsx (or td-tl-gen --writers)"
+            Managed.banner "td-tl-gen --target writers"
 
         header + formatted + convertersText

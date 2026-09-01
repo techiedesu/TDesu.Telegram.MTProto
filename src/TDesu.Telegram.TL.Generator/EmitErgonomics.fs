@@ -313,7 +313,7 @@ module EmitErgonomics =
 
         let sb = StringBuilder()
 
-        sb.Append(Managed.banner "dotnet fsi tools/regen-tl.fsx (or td-tl-gen --target ergonomics)")
+        sb.Append(Managed.banner "td-tl-gen --target ergonomics")
         |> ignore
 
         sb.Append($"namespace {ns}\n\n") |> ignore

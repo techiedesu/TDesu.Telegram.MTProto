@@ -50,7 +50,7 @@ module EmitTemplates =
         let ln (s: string) = sb.Append(s).Append('\n') |> ignore
         let ln0 () = sb.Append('\n') |> ignore
 
-        sb.Append(Managed.banner "dotnet fsi tools/regen-tl.fsx (or td-tl-gen --target cid)") |> ignore
+        sb.Append(Managed.banner "td-tl-gen --target cid") |> ignore
         ln $"namespace {ns}"
         ln0 ()
 
@@ -219,7 +219,7 @@ module EmitTemplates =
         let sb = System.Text.StringBuilder()
         let ln (s: string) = sb.Append(s).Append('\n') |> ignore
 
-        sb.Append(Managed.banner "dotnet fsi tools/regen-tl.fsx (or td-tl-gen --target tests)") |> ignore
+        sb.Append(Managed.banner "td-tl-gen --target tests") |> ignore
         ln $"module {ns}"
         ln ""
         ln "open NUnit.Framework"
@@ -363,7 +363,7 @@ module EmitTemplates =
         let ln (s: string) = sb.Append(s).Append('\n') |> ignore
         let ln0 () = sb.Append('\n') |> ignore
 
-        sb.Append(Managed.banner "dotnet fsi tools/regen-tl.fsx (or td-tl-gen --target layer-aliases)") |> ignore
+        sb.Append(Managed.banner "td-tl-gen --target layer-aliases") |> ignore
         ln $"namespace {ns}"
         ln0 ()
         ln "/// L223→L216 function CID aliases for dual-layer compatibility."
@@ -458,7 +458,7 @@ module EmitTemplates =
         let ln (s: string) = sb.Append(s).Append('\n') |> ignore
         let ln0 () = sb.Append('\n') |> ignore
 
-        sb.Append(Managed.banner "dotnet fsi tools/regen-tl.fsx (or td-tl-gen --target coverage)") |> ignore
+        sb.Append(Managed.banner "td-tl-gen --target coverage") |> ignore
         ln $"namespace {ns}"
         ln0 ()
         ln "/// Validates handler coverage: which TL functions have registered handlers."
@@ -534,7 +534,7 @@ module EmitTemplates =
         let ln (s: string) = sb.Append(s).Append('\n') |> ignore
         let ln0 () = sb.Append('\n') |> ignore
 
-        sb.Append(Managed.banner "dotnet fsi tools/regen-tl.fsx (or td-tl-gen --target return-types)") |> ignore
+        sb.Append(Managed.banner "td-tl-gen --target return-types") |> ignore
         ln $"namespace {ns}"
         ln0 ()
         ln "/// Maps each RPC function CID to its expected TL return type name."
@@ -602,7 +602,7 @@ module EmitTemplates =
         let ln (s: string) = sb.Append(s).Append('\n') |> ignore
         let ln0 () = sb.Append('\n') |> ignore
 
-        sb.Append(Managed.banner "dotnet fsi tools/regen-tl.fsx (or td-tl-gen --target client-cids)") |> ignore
+        sb.Append(Managed.banner "td-tl-gen --target client-cids") |> ignore
         ln $"// Source: {apiSchema.Functions.Length} functions, {apiSchema.Constructors.Length} constructors"
         ln0 ()
         ln $"namespace {ns}"

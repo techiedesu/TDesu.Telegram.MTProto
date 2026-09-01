@@ -332,7 +332,7 @@ module Pipeline =
                 clientNs "ResponseParsers" [ "TDesu.Serialization.Requests" ]
                 types functions
         let header =
-            Managed.banner "dotnet fsi tools/regen-tl.fsx (or td-tl-gen --target client-parsers)"
+            Managed.banner "td-tl-gen --target client-parsers"
             + $"// Source: {types.Length} types, {functions.Length} functions\n\n"
 
         let dir = System.IO.Path.GetDirectoryName(outputPath)

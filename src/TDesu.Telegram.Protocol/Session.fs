@@ -15,19 +15,39 @@ module Session =
     /// divisible by 4 (low two bits = 00); the server rejects anything else with
     /// bad_msg_notification code 18. The high 32 bits hold the unix time, the low 32 the
     /// sub-second fraction.
+    ///
+    /// Locks on `session`: this is a read-modify-write of `LastMsgId`, and `resetClock`
+    /// below writes the same field from the receive loop's thread, outside any lock a
+    /// caller here might hold (MtProtoClient's sendLock only serializes senders against
+    /// each other, never against the receive loop). Without a lock shared with
+    /// `resetClock`, its write can land between this function's read of the stale
+    /// `LastMsgId` and its write-back, and the write-back then silently overwrites the
+    /// reset with a value still clamped off the pre-correction clock.
     let generateMsgId (session: SessionState) : int64 =
-        let now = DateTimeOffset.UtcNow
-        let unixTime = now.ToUnixTimeSeconds() + int64 session.TimeOffset
-        let fractional = int64 now.Millisecond * 0x100000000L / 1000L // < 2^32
-        let raw = (unixTime <<< 32) ||| fractional
-        // Clear the low two bits → divisible by 4.
-        let aligned = raw &&& ~~~3L
-        // Ensure strictly monotonically increasing while preserving divisibility by 4.
-        let newMsgId =
-            if aligned <= session.LastMsgId then session.LastMsgId + 4L
-            else aligned
-        session.LastMsgId <- newMsgId
-        newMsgId
+        lock session (fun () ->
+            let now = DateTimeOffset.UtcNow
+            let unixTime = now.ToUnixTimeSeconds() + int64 session.TimeOffset
+            let fractional = int64 now.Millisecond * 0x100000000L / 1000L // < 2^32
+            let raw = (unixTime <<< 32) ||| fractional
+            // Clear the low two bits → divisible by 4.
+            let aligned = raw &&& ~~~3L
+            // Ensure strictly monotonically increasing while preserving divisibility by 4.
+            let newMsgId =
+                if aligned <= session.LastMsgId then session.LastMsgId + 4L
+                else aligned
+            session.LastMsgId <- newMsgId
+            newMsgId)
+
+    /// Correct the client/server clock disagreement a bad_msg_notification 16/17 reports.
+    /// Drops the monotonic floor along with the offset, so the next `generateMsgId` call
+    /// computes fresh from the corrected clock instead of clamping off a `LastMsgId` the
+    /// old, wrong clock produced. Takes the same `session` lock as `generateMsgId` — see
+    /// there — so this write can never land between that function's read and write-back
+    /// of `LastMsgId` and be lost to it.
+    let resetClock (session: SessionState) (newTimeOffset: int32) : unit =
+        lock session (fun () ->
+            session.TimeOffset <- newTimeOffset
+            session.LastMsgId <- 0L)
 
     /// Generate next sequence number.
     /// Content-related messages: seqNo = seqNo*2 + 1

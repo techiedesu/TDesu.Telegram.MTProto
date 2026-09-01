@@ -339,7 +339,16 @@ type MtProtoClient(dc: DataCenter, ?logger: ILogger, ?transportFactory: DataCent
                         if markSeen innerMsgId then
                             processInnerMessage innerBody innerMsgId innerSeqNo
                         else
-                            log.LogDebug("Dropping replayed inner msg_id {MsgId}", innerMsgId)
+                            // A duplicate content-related message means the server never saw our
+                            // ack for it and is retransmitting; dropping it silently here left that
+                            // retransmission with nothing to ever stop it. Re-ack without recursing
+                            // into processInnerMessage — the dedupe above already keeps it from
+                            // being applied twice, and the ack itself is idempotent.
+                            if innerSeqNo &&& 1 = 1 then
+                                enqueueAck innerMsgId
+                                log.LogDebug("Re-acking replayed inner msg_id {MsgId}", innerMsgId)
+                            else
+                                log.LogDebug("Dropping replayed inner msg_id {MsgId}", innerMsgId)
             | _ ->
                 // Content-related messages carry an odd seqno and MUST be acked.
                 if seqNo &&& 1 = 1 then
@@ -401,12 +410,12 @@ type MtProtoClient(dc: DataCenter, ?logger: ILogger, ?transportFactory: DataCent
                         let serverSeconds = int32 (msgId >>> 32)
                         let localSeconds = int32 (DateTimeOffset.UtcNow.ToUnixTimeSeconds())
 
+                        // Session.resetClock takes session's own lock, shared with
+                        // generateMsgId, so this write can't land inside that function's
+                        // read-modify-write of LastMsgId and be silently overwritten by
+                        // the stale value it was about to write back.
                         session
-                        |> Option.iter (fun s ->
-                            s.TimeOffset <- serverSeconds - localSeconds
-                            // The monotonic clamp would otherwise keep emitting ids from the old,
-                            // wrong clock long after the offset is fixed.
-                            s.LastMsgId <- 0L)
+                        |> Option.iter (fun s -> Session.resetClock s (serverSeconds - localSeconds))
 
                         log.LogWarning(
                             "bad_msg_notification {ErrCode} for msg_id {MsgId}; time offset corrected to {Offset}s, re-sending",
@@ -732,7 +741,17 @@ type MtProtoClient(dc: DataCenter, ?logger: ILogger, ?transportFactory: DataCent
                                     with ex ->
                                         log.LogError(ex, "Failed to process msg_id {MsgId}", msgId)
                                 else
-                                    log.LogWarning("Dropping replayed msg_id {MsgId}", msgId)
+                                    // Our own ack for this msg_id may have been lost, which is
+                                    // exactly why the server retransmitted it — dropping the retry
+                                    // silently leaves nothing to ever stop the retransmission loop.
+                                    // Re-ack without calling processInnerMessage: the replay guard
+                                    // above still keeps it from being applied a second time, and the
+                                    // ack itself is idempotent and cheap.
+                                    if seqNo &&& 1 = 1 then
+                                        enqueueAck msgId
+                                        log.LogDebug("Re-acking replayed msg_id {MsgId}", msgId)
+                                    else
+                                        log.LogWarning("Dropping replayed msg_id {MsgId}", msgId)
                         | Error e -> log.LogError("Failed to decrypt message: {Error}", e)
                     | None ->
                         match UnencryptedMessage.deserialize data with

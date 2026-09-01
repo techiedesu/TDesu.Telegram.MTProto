@@ -1029,7 +1029,7 @@ module EmitTypes =
         let formatted = runFormat parsed
 
         let header =
-            Managed.banner "dotnet fsi tools/regen-tl.fsx (or td-tl-gen --target types)"
+            Managed.banner "td-tl-gen --target types"
 
         header + formatted
 
@@ -1197,7 +1197,7 @@ module EmitTypes =
                 remaining <- Set.remove x remaining
 
         let header =
-            Managed.banner "dotnet fsi tools/regen-tl.fsx (or td-tl-gen --target types)"
+            Managed.banner "td-tl-gen --target types"
 
         [
             for dom in ordered do
@@ -1396,7 +1396,7 @@ module EmitTypes =
         let sccGroups = if shards.IsEmpty && not functions.IsEmpty then [ [] ] else shards
         let shardCount = List.length sccGroups
         let width = max 2 (string (max 0 (shardCount - 1))).Length
-        let regenHint = "dotnet fsi tools/regen-tl.fsx (or td-tl-gen --target types --split-by-scc)"
+        let regenHint = "td-tl-gen --target types --split-by-scc"
 
         sccGroups
         |> List.mapi (fun i sccGroup ->
