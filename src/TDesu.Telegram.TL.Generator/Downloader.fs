@@ -1,4 +1,4 @@
-﻿namespace TDesu.Telegram.TL.Generator
+namespace TDesu.Telegram.TL.Generator
 
 open System.IO
 open System.Net.Http
@@ -8,6 +8,7 @@ open TDesu.FSharp
 open TDesu.FSharp.Operators
 open TDesu.FSharp.IO
 open TDesu.FSharp.Utilities
+open TDesu.Telegram.TL
 
 module Downloader =
 
@@ -46,27 +47,11 @@ module Downloader =
     }
 
     /// Preprocess TL schema: comment out lines the parser can't handle.
-    let preprocess (text: string) =
-        text.Split('\n')
-        |> Array.map (fun line ->
-            let trimmed = line.TrimStart()
-            // vector#... {t:Type} # [ t ] = Vector t; — special syntax not in FParsec grammar
-            if trimmed.StartsWith("vector#") && trimmed.Contains("[ t ]") then
-                "//" + line
-            // Bare type "vector {t:Type} # [ t ] = Vector t;" (no CID)
-            elif trimmed.StartsWith("vector ") && trimmed.Contains("[ t ]") then
-                "//" + line
-            // Primitive type definitions: "int ? = Int;", "long ? = Long;", etc.
-            elif trimmed.Contains(" ? = ") then
-                "//" + line
-            // Array-style definitions: "int128 4*[ int ] = Int128;", etc.
-            elif trimmed.Contains("*[ ") then
-                "//" + line
-            // Bare type sigil: vector<%Message> — not handled by parser
-            elif trimmed.Contains("<%") then
-                "//" + line
-            else line)
-        |> String.concat "\n"
+    ///
+    /// Delegated to `TlParser.Preprocess`. It used to live here, which meant `AstFactory.parse` was
+    /// unusable against an unmodified api.tl for anyone outside this project — and a second consumer
+    /// would have copied these five rules and then drifted from them.
+    let preprocess (text: string) = TlParser.Preprocess text
 
     let getMtprotoSchema () =
         File.ReadAllText("cached/mtproto.tl") |> preprocess

@@ -8,11 +8,44 @@ open TDesu.Telegram.TL.AST
 [<AbstractClass; Sealed>]
 type TlParser =
 
-    /// Parse a TL schema string. Throws FormatException on parse error.
+    /// Comment out the declarations in a real Telegram schema that the grammar does not accept.
+    ///
+    /// They are all TL describing its own primitives rather than Telegram describing its API: the
+    /// `vector` container with a type parameter and `[ t ]` multiplicity, `int ? = Int;`, the
+    /// `4*[ int ]` fixed-width forms, and the `vector<%Message>` bare sigil. None of them carries a
+    /// constructor anyone deserializes, and every one of them appears in the first twenty lines of
+    /// `api.tl`.
+    ///
+    /// Here rather than in a caller because `AstFactory.parse` on an unmodified `api.tl` fails on
+    /// line 6, which makes the documented entry point useless against the only schema anyone has.
+    /// The generator carried this privately for exactly that reason; a second consumer would have
+    /// copied it and then drifted.
+    static member Preprocess(text: string) : string =
+        text.Split('\n')
+        |> Array.map (fun line ->
+            let trimmed = line.TrimStart()
+
+            let unparseable =
+                (trimmed.StartsWith "vector#" && trimmed.Contains "[ t ]")
+                || (trimmed.StartsWith "vector " && trimmed.Contains "[ t ]")
+                || trimmed.Contains " ? = "
+                || trimmed.Contains "*[ "
+                || trimmed.Contains "<%"
+
+            if unparseable then "//" + line else line)
+        |> String.concat "\n"
+
+    /// Parse a TL schema string as given. Throws FormatException on parse error.
+    ///
+    /// For a schema downloaded from Telegram use `ParseSchema`, which preprocesses first.
     static member Parse(input: string) : TlSchema =
         match AstFactory.parse input with
         | Ok schema -> schema
         | Error msg -> raise (FormatException($"TL schema parse error: %s{msg}"))
+
+    /// Parse a real Telegram schema: preprocess, then parse.
+    static member ParseSchema(input: string) : TlSchema =
+        TlParser.Parse(TlParser.Preprocess input)
 
     /// Try to parse a TL schema string. Returns true on success.
     static member TryParse(input: string, [<Runtime.InteropServices.Out>] schema: TlSchema byref) : bool =
