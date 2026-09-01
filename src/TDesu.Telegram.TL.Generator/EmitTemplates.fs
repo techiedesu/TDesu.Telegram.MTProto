@@ -153,10 +153,18 @@ module EmitTemplates =
         ln "module GeneratedMethodNames ="
         ln0 ()
 
-        // Only functions (not constructors) -- these are the RPC methods
+        // Only functions (not constructors) -- these are the RPC methods.
+        //
+        // Deduplicated by cid, and not merely for tidiness: the two schemas are separate inputs that
+        // may name the same function, and when a caller legitimately points --schema and
+        // --mtproto-schema at one file (generating the service layer, where mtproto.tl *is* the
+        // schema) every function landed in this table twice. The Literal sections above already
+        // dedupe through a `seen` set; this one did not, so the duplication was baked into a
+        // committed, reproducibly-regenerated file. mtproto first, so it wins on a genuine clash.
         let allFunctions =
             [| yield! mtprotoSchema.Functions |> List.map (fun f -> getCombinatorId f, f)
                yield! apiSchema.Functions |> List.map (fun f -> getCombinatorId f, f) |]
+            |> Array.distinctBy fst
 
         ln "    /// Lookup table: CID → TL method name."
         ln $"    let private entries = [|"

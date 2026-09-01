@@ -76,13 +76,31 @@ type RpcDispatcher() =
     member _.PendingIds : int64 list = pending.Keys |> List.ofSeq
 
     /// Move a pending request onto a new msg_id (after re-sending with a corrected salt).
+    ///
+    /// Resolves the redirect chain first, exactly as `TryGetBody` does. Without that the two
+    /// disagreed: a request already re-keyed once had its body found under the resolved id and then
+    /// failed to move, because this looked for the *original* id in `pending` where it no longer was.
+    /// The re-send was silently abandoned and the caller waited out its full timeout — and every
+    /// service message that re-sends reaches this, so a chat that earned two bad_server_salts in a
+    /// row lost the request rather than retrying it.
     member _.Rekey(oldMsgId: int64, newMsgId: int64) : bool =
-        match pending.TryRemove(oldMsgId) with
+        let current = resolve oldMsgId 8
+
+        match pending.TryRemove(current) with
         | true, entry ->
             if pending.TryAdd(newMsgId, entry) then
+                // Chained from the id the caller named, so a caller still waiting on the original
+                // resolves all the way forward however many times the request has moved.
                 redirects[oldMsgId] <- newMsgId
+
+                if current <> oldMsgId then
+                    redirects[current] <- newMsgId
+
                 true
             else
+                // Put it back rather than dropping it on the floor: a failed add means the new id is
+                // somehow taken, and the request is still legitimately pending under `current`.
+                pending[current] <- entry
                 false
         | false, _ -> false
 

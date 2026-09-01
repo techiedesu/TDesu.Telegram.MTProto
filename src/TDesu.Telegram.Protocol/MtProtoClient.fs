@@ -42,18 +42,33 @@ type MtProtoClient(dc: DataCenter, ?logger: ILogger, ?transportFactory: DataCent
     // triggers — which is nearly all of them.
     let mutable lifetimeCts = new CancellationTokenSource()
 
+    /// Ceiling on a server-supplied service vector. The spec caps `msgs_ack` at 8192 ids and the
+    /// same number is the only plausible bound for the two service messages that hand us a
+    /// `Vector<long>`; nothing in the reader bounds a count off the wire, so a 16 MiB frame can
+    /// otherwise name millions.
+    [<Literal>]
+    let MaxServiceVectorLength = 8192
+
     /// Stop the current receive loop and its keepalives, and forget them.
+    ///
+    /// Under `reconnectLock` because this is a read-modify-write reached from at least three
+    /// threads — the application's on Disconnect and on a connect, and the receive loop's or an
+    /// RpcAsync caller's on a reconnect. Unsynchronised, a Disconnect could read `None` while a
+    /// reconnect was writing `Some`, cancel nothing, and leave a generation running that nothing
+    /// owned. The flag it sits beside has always been locked; this field was not, and centralising
+    /// its mutation here is what made that visible.
     ///
     /// Cancelled but deliberately not disposed: the loops being torn down still hold this token and
     /// hand it to the transport, and disposing it under them turns a clean cancellation into an
     /// ObjectDisposedException from inside someone's registration. A source with no timer and no
     /// live registrations is cheap to simply let go of.
     let stopReceiveLoops () =
-        match receiveLoopCts with
-        | Some old ->
-            receiveLoopCts <- None
-            old.Cancel()
-        | None -> ()
+        lock reconnectLock (fun () ->
+            match receiveLoopCts with
+            | Some old ->
+                receiveLoopCts <- None
+                old.Cancel()
+            | None -> ())
 
     let log =
         defaultArg
@@ -215,9 +230,14 @@ type MtProtoClient(dc: DataCenter, ?logger: ILogger, ?transportFactory: DataCent
         // fails deserializing an "unknown constructor id" instead of reading the error
         // the server actually sent, and no `Error(RpcError …)` match anywhere can fire —
         // which quietly disables flood-wait handling and 2FA detection alike.
+        // Read with a reader rather than poked out of the buffer. `rpc_error` is not one of the
+        // three constructors the schema exempts as parsed manually, so byte-poking its id is the
+        // thing the house rule forbids — and a second reader over the same array is free, since
+        // TlReadBuffer holds a position and nothing else.
         let isRpcError =
             resultData.Length >= 8
-            && BitConverter.ToUInt32(resultData, 0) = Requests.RpcError.ConstructorId
+            && (use peek = new TlReadBuffer(resultData)
+                peek.ReadConstructorId() = Requests.RpcError.ConstructorId)
 
         let completed =
             if isRpcError then
@@ -241,7 +261,11 @@ type MtProtoClient(dc: DataCenter, ?logger: ILogger, ?transportFactory: DataCent
     /// Re-send a still-pending request under a fresh msg_id (e.g. after bad_server_salt corrected
     /// the salt). The response to the re-send completes the original caller's task via Rekey.
     /// Runs under the send lock so its write can't interleave with another sender's.
-    let resendRequest (oldMsgId: int64) =
+    ///
+    /// Answers whether the request went back out. `msg_resend_req` needs to know: the spec requires
+    /// that ids we cannot serve be answered with a `msgs_state_info` naming their state, and without
+    /// that the server keeps asking — the same runaway the detailed-info branch exists to end.
+    let resendRequest (oldMsgId: int64) : Task<bool> =
         task {
             match dispatcher.TryGetBody(oldMsgId), authKey, session with
             | Some body, Some key, Some sess ->
@@ -257,16 +281,20 @@ type MtProtoClient(dc: DataCenter, ?logger: ILogger, ?transportFactory: DataCent
                     // hole as a lost message and stops accepting the session; nothing recovers it
                     // short of a new one. A skipped msg_id costs nothing by comparison: they only
                     // have to increase.
-                    if dispatcher.Rekey(oldMsgId, newMsgId) then
+                    if not (dispatcher.Rekey(oldMsgId, newMsgId)) then
+                        return false
+                    else
                         let seqNo = Session.nextSeqNo sess true
                         let encrypted = MessageFraming.encrypt key sess newMsgId seqNo body
 
                         match! transport.SendAsync(encrypted, CancellationToken.None) with
-                        | Ok() -> ()
-                        | Error e -> %dispatcher.FailRequest(newMsgId, MtProtoError.TransportError e)
+                        | Ok() -> return true
+                        | Error e ->
+                            %dispatcher.FailRequest(newMsgId, MtProtoError.TransportError e)
+                            return false
                 finally
                     %sendLock.Release()
-            | _ -> ()
+            | _ -> return false
         }
 
     /// Process one decrypted message (or a message nested in a container), acking content-related
@@ -329,7 +357,7 @@ type MtProtoClient(dc: DataCenter, ?logger: ILogger, ?transportFactory: DataCent
                     | BadMsgNotification.BadServerSalt(badMsgId, _, _, newSalt) ->
                         session |> Option.iter (fun s -> s.Salt <- newSalt)
                         log.LogWarning("bad_server_salt for msg_id {MsgId}; updated salt and re-sending", badMsgId)
-                        %Task.Run(Func<Task>(fun () -> resendRequest badMsgId))
+                        %Task.Run(Func<Task>(fun () -> task { let! _ = resendRequest badMsgId in () }))
                     | other -> log.LogWarning("bad_server_salt id decoded as {Other}", other)
                 | GeneratedCid.NewSessionCreated ->
                     // The server threw the old session away. Everything we sent before first_msg_id
@@ -351,7 +379,7 @@ type MtProtoClient(dc: DataCenter, ?logger: ILogger, ?transportFactory: DataCent
                     )
 
                     for abandonedId in abandoned do
-                        %Task.Run(Func<Task>(fun () -> resendRequest abandonedId))
+                        %Task.Run(Func<Task>(fun () -> task { let! _ = resendRequest abandonedId in () }))
 
                     // Same signal the reconnect path raises: whatever listens for "your view of the
                     // update stream may be incomplete" has to run now.
@@ -387,7 +415,7 @@ type MtProtoClient(dc: DataCenter, ?logger: ILogger, ?transportFactory: DataCent
                             serverSeconds - localSeconds
                         )
 
-                        %Task.Run(Func<Task>(fun () -> resendRequest badMsgId))
+                        %Task.Run(Func<Task>(fun () -> task { let! _ = resendRequest badMsgId in () }))
                     | _ ->
                         log.LogWarning("bad_msg_notification {ErrCode} for msg_id {MsgId}", errCode, badMsgId)
 
@@ -403,10 +431,10 @@ type MtProtoClient(dc: DataCenter, ?logger: ILogger, ?transportFactory: DataCent
                     ()
                 | GeneratedCid.MsgDetailedInfo
                 | GeneratedCid.MsgNewDetailedInfo ->
-                    // Both variants name an *answer* the server is holding for us, and both must be
-                    // acked by that answer's id — not by their own. Until they are, the server keeps
-                    // re-announcing the same answer: measured against a live account, 28 of these
-                    // arrived in one hour, over and over for the same ids.
+                    // Both variants name an *answer* the server is holding for us, and neither may be
+                    // acked by its own id. Until the answer is acked the server keeps re-announcing
+                    // it: measured against a live account, 28 of these arrived in one hour, over and
+                    // over for the same ids.
                     //
                     // Falling through to the `_` branch is worse than noise. These are transport
                     // bookkeeping, not API objects, so every one of them was handed to update
@@ -420,8 +448,33 @@ type MtProtoClient(dc: DataCenter, ?logger: ILogger, ?transportFactory: DataCent
                         | MsgDetailedInfo.MsgDetailedInfo(_, answerMsgId, _, _) -> answerMsgId
                         | MsgDetailedInfo.MsgNewDetailedInfo(answerMsgId, _, _) -> answerMsgId
 
-                    enqueueAck answerMsgId
-                    log.LogTrace("msg_detailed_info: acking answer_msg_id {AnswerMsgId}", answerMsgId)
+                    // Acked only if we actually have it. An ack is the server's cue to discard, so
+                    // acking an answer that never arrived throws it away with no trace — and
+                    // `msg_new_detailed_info` names a *server-initiated* message, which for this
+                    // client means an update. Asking for it instead is the spec's own remedy and it
+                    // still ends the re-announcement, by getting the message rather than by
+                    // pretending we have it.
+                    if wasSeen answerMsgId then
+                        enqueueAck answerMsgId
+                        log.LogTrace("msg_detailed_info: acking answer_msg_id {AnswerMsgId}", answerMsgId)
+                    else
+                        log.LogWarning(
+                            "msg_detailed_info names answer_msg_id {AnswerMsgId} we never received; requesting it",
+                            answerMsgId
+                        )
+
+                        %Task.Run(
+                            Func<Task>(fun () ->
+                                task {
+                                    let body =
+                                        serializeService (fun w ->
+                                            MsgResendReq.Serialize(w, { MsgIds = [| answerMsgId |] }))
+
+                                    match! sendServiceMessage body false CancellationToken.None with
+                                    | Ok _ -> ()
+                                    | Error e -> log.LogDebug("msg_resend_req send failed: {Error}", e)
+                                })
+                        )
                 // The rest of mtproto.tl. None of these is an API object, and until they were named
                 // here every one of them fell through to `_` and was handed to update subscribers,
                 // which then failed deserializing an `Updates` — a real logged error for a message
@@ -436,15 +489,29 @@ type MtProtoClient(dc: DataCenter, ?logger: ILogger, ?transportFactory: DataCent
                     use r = new TlReadBuffer(body)
                     let req = MsgsStateReq.Deserialize r
 
+                    // Truncated to the spec's ceiling on an ack batch. Nothing bounds a vector count
+                    // off the wire, so a single 16 MiB frame can name ~2M ids — and this branch runs
+                    // on the receive thread, taking the replay lock once per id and materialising a
+                    // string that long before any other inbound message can be processed. The
+                    // `msg_container` branch above rejects an implausible count for the same reason.
+                    let asked = req.MsgIds |> Array.truncate MaxServiceVectorLength
+
+                    if asked.Length < req.MsgIds.Length then
+                        log.LogWarning(
+                            "msgs_state_req named {Count} ids; answering the first {Kept}",
+                            req.MsgIds.Length,
+                            asked.Length
+                        )
+
                     // One status byte per requested id, in the order asked: 4 is "received", which
                     // doubles as an acknowledgement, and 1 is "nothing known" — the honest answer
                     // for anything that has aged out of the replay window.
                     let info =
-                        req.MsgIds
+                        asked
                         |> Array.map (fun id -> if wasSeen id then '\004' else '\001')
                         |> System.String
 
-                    log.LogDebug("msgs_state_req for {Count} id(s); answering", req.MsgIds.Length)
+                    log.LogDebug("msgs_state_req for {Count} id(s); answering", asked.Length)
 
                     %Task.Run(
                         Func<Task>(fun () ->
@@ -467,10 +534,51 @@ type MtProtoClient(dc: DataCenter, ?logger: ILogger, ?transportFactory: DataCent
                     // the dispatcher still holds the body of anything still pending.
                     use r = new TlReadBuffer(body)
                     let req = MsgResendReq.Deserialize r
-                    log.LogWarning("msg_resend_req for {Count} message(s); re-sending", req.MsgIds.Length)
 
-                    for id in req.MsgIds do
-                        %Task.Run(Func<Task>(fun () -> resendRequest id))
+                    // Same ceiling, and here it bounds scheduled work rather than one string: this
+                    // used to queue one Task per id, so an implausible count became millions of
+                    // state machines all contending for the send lock.
+                    let ids = req.MsgIds |> Array.truncate MaxServiceVectorLength
+
+                    log.LogWarning("msg_resend_req for {Count} message(s); re-sending", ids.Length)
+
+                    // Sequential, in one task, because the reply depends on all the answers. The
+                    // spec requires that if any requested id does not exist or has been forgotten,
+                    // the whole request is answered with a `msgs_state_info` as though it had also
+                    // been a `msgs_state_req`; drop them silently and the server keeps asking, which
+                    // is the runaway the detailed-info branch exists to end.
+                    %Task.Run(
+                        Func<Task>(fun () ->
+                            task {
+                                let unservable = ResizeArray<int64>()
+
+                                for id in ids do
+                                    let! sent = resendRequest id
+
+                                    if not sent then
+                                        unservable.Add id
+
+                                if unservable.Count > 0 then
+                                    log.LogWarning(
+                                        "msg_resend_req: {Count} of {Total} id(s) could not be re-sent; reporting their state",
+                                        unservable.Count,
+                                        ids.Length
+                                    )
+
+                                    let info =
+                                        ids
+                                        |> Array.map (fun id -> if wasSeen id then '\004' else '\001')
+                                        |> System.String
+
+                                    let reply =
+                                        serializeService (fun w ->
+                                            MsgsStateInfo.Serialize(w, { ReqMsgId = msgId; Info = info }))
+
+                                    match! sendServiceMessage reply false CancellationToken.None with
+                                    | Ok _ -> ()
+                                    | Error e -> log.LogDebug("msgs_state_info send failed: {Error}", e)
+                            })
+                    )
                 | GeneratedCid.RpcAnswerUnknown
                 | GeneratedCid.RpcAnswerDroppedRunning
                 | GeneratedCid.RpcAnswerDropped ->
@@ -651,6 +759,14 @@ type MtProtoClient(dc: DataCenter, ?logger: ILogger, ?transportFactory: DataCent
 
     and reconnectInternal () =
         task {
+            // The generation this attempt belongs to, captured before the flag is taken so the
+            // `finally` can see it. A Disconnect followed by a connect replaces `lifetimeCts`, and
+            // the attempt parked in a transport call at that moment no longer owns anything: it must
+            // not clear `isReconnecting` on the way out, or it releases a flag the revived client's
+            // own reconnect is holding. Without this, a stale attempt against a black-holed peer left
+            // every RPC on the revived client waiting out two 15s windows while nothing repaired it.
+            let generation = lifetimeCts
+
             let shouldReconnect =
                 lock reconnectLock (fun () ->
                     if isReconnecting || closed then
@@ -678,7 +794,7 @@ type MtProtoClient(dc: DataCenter, ?logger: ILogger, ?transportFactory: DataCent
                     // reader never saw.
                     stopReceiveLoops ()
 
-                    let ct = lifetimeCts.Token
+                    let ct = generation.Token
                     let backoffs = [| 1000; 2000; 4000 |]
                     let mutable reconnected = false
 
@@ -703,10 +819,19 @@ type MtProtoClient(dc: DataCenter, ?logger: ILogger, ?transportFactory: DataCent
                                     | Some _ ->
                                         // The auth key is permanent per DC — reuse it instead of re-running
                                         // DH so a restored/persisted session keeps working.
-                                        spawnReceiveAndKeepalive ()
-                                        reconnected <- true
-                                        log.LogInformation("Reconnected (reused auth key)")
-                                        reconnectedEvent.Trigger()
+                                        //
+                                        // `spawnReceiveAndKeepalive` answers whether it actually
+                                        // started anything: a Disconnect that landed while the
+                                        // connect was in flight makes it refuse, and then this
+                                        // attempt owns a live socket nobody is reading. Hand it back
+                                        // rather than announcing a reconnect that is not one.
+                                        if spawnReceiveAndKeepalive () then
+                                            reconnected <- true
+                                            log.LogInformation("Reconnected (reused auth key)")
+                                            reconnectedEvent.Trigger()
+                                        else
+                                            log.LogInformation("Reconnect abandoned: the client was closed while connecting")
+                                            transport.Disconnect()
                                     | None ->
                                         match! AuthKeyExchange.performExchange transport dc.Id ct with
                                         | Error e ->
@@ -721,10 +846,17 @@ type MtProtoClient(dc: DataCenter, ?logger: ILogger, ?transportFactory: DataCent
                                             sess.Salt <- salt
                                             sess.TimeOffset <- timeOffset
                                             session <- Some sess
-                                            spawnReceiveAndKeepalive ()
-                                            reconnected <- true
-                                            log.LogInformation("Reconnected successfully")
-                                            reconnectedEvent.Trigger()
+
+                                            if spawnReceiveAndKeepalive () then
+                                                reconnected <- true
+                                                log.LogInformation("Reconnected successfully")
+                                                reconnectedEvent.Trigger()
+                                            else
+                                                log.LogInformation(
+                                                    "Reconnect abandoned: the client was closed during the key exchange"
+                                                )
+
+                                                transport.Disconnect()
                             with
                             | :? OperationCanceledException -> ()
                             | ex -> log.LogWarning(ex, "Reconnect attempt {Attempt} error", attempt + 1)
@@ -732,31 +864,60 @@ type MtProtoClient(dc: DataCenter, ?logger: ILogger, ?transportFactory: DataCent
                     if not reconnected then
                         log.LogError("All reconnect attempts failed")
                 finally
-                    lock reconnectLock (fun () -> isReconnecting <- false)
+                    // Only the attempt that still owns the current generation releases the flag. A
+                    // superseded one clearing it would hand a revived client's in-flight reconnect
+                    // away to a second concurrent attempt, and both would swap `transport`.
+                    lock reconnectLock (fun () ->
+                        if obj.ReferenceEquals(lifetimeCts, generation) then
+                            isReconnecting <- false)
         }
 
     /// Start a fresh receive loop plus the ack/ping keepalive loops on a new CT. Stops the previous
     /// generation first so a reconnect doesn't leave the old keepalive loops running (they'd pile up
     /// across reconnects, all writing to the now-shared transport).
-    and spawnReceiveAndKeepalive () =
+    ///
+    /// Refuses to start anything on a closed client, and decides that under the same lock that
+    /// publishes the generation. A reconnect can be parked in `ConnectAsync` — or, on the fresh-key
+    /// path, in a whole DH exchange — when `Disconnect` runs: the connect then completes anyway and
+    /// used to install three loops nothing could ever cancel, because a closed client refuses every
+    /// later reconnect and `RpcAsync` returns before it reaches one. The symptom was a torn-down
+    /// client that kept pinging and flushing acks for the life of the process.
+    and spawnReceiveAndKeepalive () : bool =
         stopReceiveLoops ()
 
         let cts = new CancellationTokenSource()
-        receiveLoopCts <- Some cts
-        %Task.Run(Func<Task>(fun () -> receiveLoop cts.Token))
-        %Task.Run(Func<Task>(fun () -> ackLoop cts.Token))
-        %Task.Run(Func<Task>(fun () -> pingLoop cts.Token))
+
+        let started =
+            lock reconnectLock (fun () ->
+                if closed || lifetimeCts.IsCancellationRequested then
+                    false
+                else
+                    receiveLoopCts <- Some cts
+                    true)
+
+        if started then
+            %Task.Run(Func<Task>(fun () -> receiveLoop cts.Token))
+            %Task.Run(Func<Task>(fun () -> ackLoop cts.Token))
+            %Task.Run(Func<Task>(fun () -> pingLoop cts.Token))
+
+        started
 
     /// Set the auth key + a fresh session (carrying the given salt/time offset) and start the
     /// receive + keepalive loops. Shared by the fresh-DH connect and persisted-session restore,
     /// and the one place that revives a client an earlier Disconnect had closed.
     let startSession (key: AuthKey) (salt: int64) (timeOffset: int32) =
-        closed <- false
+        // Replacing the lifetime generation and disowning any attempt still parked in a transport
+        // call, both under the lock that publishes them. Without the replacement every reconnect on
+        // the revived client aborts before its first backoff; without clearing the flag, a stale
+        // attempt against an unreachable peer keeps it set for as long as its connect takes, and
+        // every RPC in the meantime waits out two 15s reconnect windows for a repair that the
+        // stale attempt will never perform and a fresh one is refused from starting.
+        lock reconnectLock (fun () ->
+            closed <- false
 
-        // A previous Disconnect cancelled the old one for good; without a replacement every
-        // reconnect on the revived client would abort before its first backoff.
-        if lifetimeCts.IsCancellationRequested then
-            lifetimeCts <- new CancellationTokenSource()
+            if lifetimeCts.IsCancellationRequested then
+                lifetimeCts <- new CancellationTokenSource()
+                isReconnecting <- false)
 
         authKey <- Some key
         let sess = Session.createSession ()
@@ -772,7 +933,11 @@ type MtProtoClient(dc: DataCenter, ?logger: ILogger, ?transportFactory: DataCent
             seenMsgIds.Clear()
             seenMsgIdOrder.Clear())
 
-        spawnReceiveAndKeepalive ()
+        // A fresh session is not a reconnect: nothing else is racing the spawn here, and a
+
+        // caller that just set `closed <- false` under the lock cannot be refused.
+
+        spawnReceiveAndKeepalive () |> ignore
 
     /// Connect to the DC and perform auth key exchange
     member _.ConnectAsync(ct: CancellationToken) : Task<Result<unit, MtProtoError>> =

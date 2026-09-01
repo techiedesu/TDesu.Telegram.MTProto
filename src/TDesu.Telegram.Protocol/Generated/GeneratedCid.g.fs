@@ -175,16 +175,6 @@ module GeneratedMethodNames =
         0x7ABE77ECu, "ping"
         0xF3427B8Cu, "ping_delay_disconnect"
         0xE7512126u, "destroy_session"
-        0x60469778u, "req_pq"
-        0xBE7E8EF1u, "req_pq_multi"
-        0xD712E4BEu, "req_DH_params"
-        0xF5045F1Fu, "set_client_DH_params"
-        0xD1435160u, "destroy_auth_key"
-        0x58E4A740u, "rpc_drop_answer"
-        0xB921BD04u, "get_future_salts"
-        0x7ABE77ECu, "ping"
-        0xF3427B8Cu, "ping_delay_disconnect"
-        0xE7512126u, "destroy_session"
     |]
 
     let private lookup = System.Collections.Generic.Dictionary<uint32, string>(entries.Length)
