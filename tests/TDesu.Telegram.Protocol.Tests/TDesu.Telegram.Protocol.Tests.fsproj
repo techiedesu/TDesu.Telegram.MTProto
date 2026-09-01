@@ -17,6 +17,7 @@
         <Compile Include="ServiceMessageTests.fs" />
         <Compile Include="ReceivePathTests.fs" />
         <Compile Include="SeqNoContinuityTests.fs" />
+        <Compile Include="AckRequeueTests.fs" />
     </ItemGroup>
 
     <ItemGroup>
