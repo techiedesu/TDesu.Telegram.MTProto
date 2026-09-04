@@ -82,7 +82,7 @@ Optional flags:
                               before writing. Recommended with --split-by-class
                               to remove files for types deleted from the schema.
 
-Sample overrides config: samples/SedBotOverrides/sedbot-overrides.toml
+Sample overrides config: samples/ServerOverrides/server-overrides.toml
 """
 
     let private tryGetArg (name: string) (argv: string[]) =

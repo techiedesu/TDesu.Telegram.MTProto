@@ -166,7 +166,7 @@ module EmitWriters =
             // back to `"byte[]"` which routed through `WriteBytes` (length-prefixed
             // TL `bytes` primitive) and corrupted every wire encoding — clients
             // would read the 4-zero-byte length envelope as the next constructor
-            // id. SedBot's `documentAttributeSticker.stickerset:InputStickerSet`
+            // id. A downstream server's `documentAttributeSticker.stickerset:InputStickerSet`
             // hit this; the symptom was Telethon
             // `TypeNotFoundError(constructor=0x00000000)` in messages.getAvailableReactions.
             else IrType.RawBytes

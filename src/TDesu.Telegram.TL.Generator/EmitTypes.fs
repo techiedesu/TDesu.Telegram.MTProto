@@ -1237,7 +1237,7 @@ module EmitTypes =
     // in this file: an SCC is one indivisible unit, and a later shard may
     // reference an earlier one but never the reverse (`namespace rec` does
     // NOT relax that across separate files — see
-    // docs/design/td-tl-gen-improvements.md §2.4, SedBot repo, for the
+    // docs/design/td-tl-gen-improvements.md §2.4 for the
     // full writeup and the empirical check that ruled it out).
 
     /// One shard `buildSccShardedModule` emits. `Index` is its 0-based
@@ -1263,7 +1263,7 @@ module EmitTypes =
     /// — Fantomas' line-wrapping and layout choices are not reproduced
     /// here — but the relative ordering (bigger union ⇒ bigger estimate)
     /// is what bin-packing needs, and the constants below are calibrated
-    /// (not guessed): measured against SedBot's real whitelist closure
+    /// (not guessed): measured against a real downstream whitelist closure
     /// over tdlib's api.tl, this formula's TOTAL for the `Base` bucket
     /// (241 types) came out within 0.6% of the actual rendered
     /// `Base.g.fs` byte count (3,327,170 estimated vs 3,306,380 actual).
@@ -1277,7 +1277,7 @@ module EmitTypes =
             + (cases |> List.sumBy (fun c -> 480 + 10 * c.Name.Length + (c.Fields |> List.sumBy fieldWeight)))
 
     /// Default shard-size targets (§2.4): ~400 types or ~1 MB per shard,
-    /// whichever binds first — tuned against SedBot's real post-closure
+    /// whichever binds first — tuned against a real downstream post-closure
     /// `Base` bucket (~3.3 MB across ~240 top-level declarations, dominated
     /// by a few huge unions), where the byte budget is what actually
     /// splits the file; the type-count budget alone would not (see the

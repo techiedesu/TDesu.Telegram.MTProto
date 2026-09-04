@@ -292,7 +292,7 @@ module SchemaMapper =
     /// fields) reference by name from `TDesu.Serialization.Requests`,
     /// leaving an undefined-name compile error in `GeneratedTlWriters`.
     ///
-    /// See docs/design/td-tl-gen-improvements.md §1 (SedBot repo) for the
+    /// See docs/design/td-tl-gen-improvements.md §1 for the
     /// full algorithm this implements.
     let deriveTypeSeeds
         (schema: TlSchema)

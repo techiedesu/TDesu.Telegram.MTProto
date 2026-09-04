@@ -34,7 +34,7 @@ module WriterGeneratorTests =
     /// `byte[]` semantics — but on the wire it must be written raw
     /// (caller pre-serializes), not wrapped in TL `bytes` (length prefix).
     /// Pre-2026-04-17 the generator emitted `WriteBytes`, which corrupted
-    /// every such field. SedBot saw this as
+    /// every such field. A downstream server saw this as
     /// `documentAttributeSticker.stickerset:InputStickerSet` writing
     /// 4 zero bytes that clients then misread as
     /// `TypeNotFoundError(constructor=0x00000000)`.

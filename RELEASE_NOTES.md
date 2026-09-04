@@ -614,7 +614,7 @@ the bytes to be emitted *raw* (caller pre-serializes constructor id + payload),
 not wrapped in a bytes envelope.
 
 Symptom: clients reading such a field saw the 4-byte length envelope as the
-next constructor id and crashed. SedBot caught it as
+next constructor id and crashed. A downstream server caught it as
 `TypeNotFoundError(constructor=0x00000000)` from Telethon parsing the
 `documentAttributeSticker.stickerset:InputStickerSet` field that
 `messages.getAvailableReactions` writes.
@@ -664,7 +664,7 @@ DU cases with the now-merged fields. Migration is mechanical: replace
 `{ ...; field1 = a; field2 = b; ... }` with
 `{ ...; field1Andfield2 = Some (aValue, bValue); ... }`.
 
-10 bundled fields appear across the SedBot whitelist after this change.
+10 bundled fields appear across a real downstream whitelist after this change.
 Affected upstream constructors (when whitelisted): `message` (views/forwards),
 `channelFull` (kickedCount/bannedCount, requestsPending/recentRequesters,
 migratedFromChatId/migratedFromMaxId), `pollResults` (solution/solutionEntities),
@@ -688,7 +688,7 @@ inside composites.
 
 Consumers can drop the `: rawBytes option` → `: byte[] option` /
 `: rawBytes array` → `: byte[] array` post-processing they may have added
-as a workaround (SedBot had this in `tools/regen-tl.fsx#patchRawBytes`).
+as a workaround (one consumer had this as a `patchRawBytes` step in its regen script).
 
 Snapshot tests updated accordingly: arrays in record fields now render as
 `T[]` (the SynType.Array AST node) instead of being passed through as raw
@@ -732,7 +732,7 @@ Read side stays on `ReadBytes` for opaque refs — without schema knowledge
 the reader can't structurally parse a boxed type ref. Callers that need
 to deserialize must whitelist the opaque type's constructors.
 
-In practice: SedBot always passes `None` / `[||]` for opaque-typed
+In practice: the original consumer always passes `None` / `[||]` for opaque-typed
 fields, so this bug never fired at runtime. Future consumers that
 actually populate these fields now get correct wire output.
 
@@ -792,7 +792,7 @@ type-check at the consumer. Now emits `writer.WriteVector(v, lambda)`.
 
 This bug only surfaces when the generated `*.Serialize` member contains a
 `Vector<T>` field, so it didn't trip the generator's snapshot tests.
-Caught downstream when the SedBot regen produced ~100 build errors.
+Caught downstream when a consumer's regen produced ~100 build errors.
 
 ## 0.1.4
 
@@ -841,7 +841,7 @@ release on NuGet).
 
 ## 0.1.0
 
-First proper release. The 0.0.0-alpha.0 generator was a private SedBot helper that
+First proper release. The 0.0.0-alpha.0 generator was one project's private helper that
 happened to be packaged as a NuGet tool — its hardcoded paths, namespaces and
 embedded "default" overrides made it unusable for anyone outside the original
 project. 0.1.0 reshapes it into a generic dotnet tool.
@@ -900,7 +900,7 @@ Optional flags:
 ### Removed — embedded `DefaultOverrides.toml`
 
 0.0.0-alpha.0 shipped a 484-line `DefaultOverrides.toml` as an embedded resource
-inside the generator binary. It was the SedBot project's whitelist verbatim and was
+inside the generator binary. It was the original project's whitelist verbatim and was
 implicitly applied to every invocation, regardless of who ran the generator. There
 was no way to opt out.
 
@@ -909,7 +909,7 @@ was no way to opt out.
 - `Config.load(path)` and `Config.loadMerged(paths)` replace them
 - `--overrides <toml>` is **required** on every invocation
 - The previous embedded TOML is preserved verbatim under
-  `samples/SedBotOverrides/sedbot-overrides.toml` as a worked example
+  `samples/ServerOverrides/server-overrides.toml` as a worked example
 
 ### Removed — hardcoded `["Message"; "User"; "Chat"]` whitelist
 

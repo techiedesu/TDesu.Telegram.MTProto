@@ -1,4 +1,4 @@
-# SedBot example overrides for TDesu.Telegram.TL.Generator (`td-tl-gen`).
+# Worked-example overrides for TDesu.Telegram.TL.Generator (`td-tl-gen`): a Telegram server.
 #
 # Up to td-tl-gen 0.0.0-alpha.0 this exact file shipped as embedded
 # `Overrides/DefaultOverrides.toml` and was implicitly applied to every
@@ -9,7 +9,7 @@
 # (dual-layer support, undocumented RPCs, custom whitelists).
 #
 # Use it as:
-#   td-tl-gen --schema cached/api.tl --overrides samples/SedBotOverrides/sedbot-overrides.toml \
+#   td-tl-gen --schema cached/api.tl --overrides samples/ServerOverrides/server-overrides.toml \
 #             --output ./Generated --namespace MyApp.Serialization \
 #             --target cid types writers
 #

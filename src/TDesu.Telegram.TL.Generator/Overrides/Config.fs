@@ -4,7 +4,7 @@ namespace TDesu.Telegram.TL.Generator.Overrides
 ///
 /// As of 0.1.0 the generator no longer ships with embedded defaults — every
 /// invocation supplies its own TOML overrides via `--overrides`. The
-/// `samples/sedbot-overrides.toml` file documents the schema and is the
+/// `samples/ServerOverrides/server-overrides.toml` file documents the schema and is the
 /// previous embedded default verbatim if you need a starting point.
 module Config =
     /// Load an OverrideConfig from a TOML file.

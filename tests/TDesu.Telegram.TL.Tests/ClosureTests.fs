@@ -5,7 +5,7 @@ open TDesu.Telegram.TL
 open TDesu.Telegram.TL.AST
 open TDesu.Telegram.TL.Generator
 
-/// §1 of docs/design/td-tl-gen-improvements.md (SedBot repo): transitive
+/// §1 of docs/design/td-tl-gen-improvements.md: transitive
 /// whitelist closure. A whitelist-scoped `types` target must emit not just
 /// the whitelisted names but every type transitively reachable from them,
 /// so `writers` (whitelisted independently, on raw TL constructor names)

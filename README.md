@@ -16,7 +16,7 @@ F# library and CLI tool for parsing Telegram [TL (Type Language)](https://core.t
 | **TDesu.Telegram.Transport** | MTProto transports: TCP, obfuscated TCP, WebSocket, HTTP, MTProxy fake-TLS | net10.0 |
 | **TDesu.Telegram.Protocol** | MTProto 2.0 core: auth key exchange, message framing, session, RPC, client | net10.0 |
 
-> **0.1.0 (breaking)** reshapes `td-tl-gen` from a SedBot-internal helper into a
+> **0.1.0 (breaking)** reshapes `td-tl-gen` from one project's internal helper into a
 > generic dotnet tool. New required flags (`--schema`, `--output`, `--namespace`,
 > `--overrides`, `--target`), no embedded "default" overrides, no hardcoded paths.
 > See [`RELEASE_NOTES.md`](RELEASE_NOTES.md) for the migration list.
@@ -140,7 +140,7 @@ Schemas are not downloaded automatically — fetch them manually from
 ### Override TOML
 
 The TOML file controls which TL types/functions get generated and how layer-dependent
-CIDs are resolved at runtime. See [`samples/SedBotOverrides/sedbot-overrides.toml`](samples/SedBotOverrides/sedbot-overrides.toml)
+CIDs are resolved at runtime. See [`samples/ServerOverrides/server-overrides.toml`](samples/ServerOverrides/server-overrides.toml)
 for a fully worked example. Sections:
 
 - `[[layer_variants]]` — CIDs that vary by negotiated protocol layer
@@ -168,7 +168,7 @@ TL schema text
 | [CSharpParser](samples/CSharpParser) | C# API: `TlParser.Parse()`, extension methods |
 | [FSharpParser](samples/FSharpParser) | F# API: `AstFactory.parse`, pattern matching on AST |
 | [CustomOverrides](samples/CustomOverrides) | F# library API: load TOML overrides and generate from code |
-| [SedBotOverrides](samples/SedBotOverrides) | Real-world overrides TOML used by the SedBot MTProto server |
+| [ServerOverrides](samples/ServerOverrides) | Real-world overrides TOML from a Telegram MTProto server (dual-layer support, undocumented RPCs, custom whitelists) |
 | [PingPongBot](samples/PingPongBot) | End-to-end: TL parsing -> serialization -> real MTProto handshake with Telegram DC |
 
 ## Building

@@ -61,7 +61,7 @@ module Pipeline =
 
     /// Which per-domain bucket `generateSerializationTypesSplit` should
     /// further split into Tarjan-SCC-bounded shards (§2.4 of
-    /// docs/design/td-tl-gen-improvements.md, SedBot repo), and the size
+    /// docs/design/td-tl-gen-improvements.md), and the size
     /// targets to bin-pack by. Passing `None` (the default — `--split-by-scc`
     /// not given) leaves every domain, including an oversized `Base`, as
     /// one file: unchanged from pre-§2.4 behaviour.

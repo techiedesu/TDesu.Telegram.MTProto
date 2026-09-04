@@ -8,7 +8,7 @@ open TDesu.Telegram.TL.AST
 open TDesu.Telegram.TL.Generator
 open TDesu.Telegram.TL.Generator.Overrides
 
-/// §2.4 of docs/design/td-tl-gen-improvements.md (SedBot repo): SCC-based
+/// §2.4 of docs/design/td-tl-gen-improvements.md: SCC-based
 /// file split for the `Base` monolith. `EmitTypes.topoSortSCCs` (Tarjan)
 /// predates this section — it already grouped mutually recursive types
 /// into `and`-chains for a SINGLE file (0.2.7). What's new here is
@@ -399,7 +399,7 @@ type TlReadBuffer(data: byte array) =
     /// `Requests.targets`'s `<Compile Include>` paths are written
     /// `Generated\Requests\<file>`, which the F# compile task resolves
     /// relative to the IMPORTING project's directory (this repo's
-    /// consumers, e.g. SedBot's `MTProto.Schema.fsproj`, rely on the same
+    /// consumers' schema projects rely on the same
     /// convention). Its `<Import Project="<Domain>.targets">` for a
     /// shard-split domain is a bare filename instead — MSBuild resolves
     /// `<Import>` relative to the file that WRITES it, not the entry
