@@ -185,14 +185,18 @@ module AuthKeyExchange =
         let tmpAesIv = Bytes.concat3 hash2[12..19] hash3 newNonce[0..3]
         (tmpAesKey, tmpAesIv)
 
+    /// p and q travel as minimal unsigned big-endian byte strings — exactly what the framework's
+    /// own conversion produces, including the single zero byte for 0.
     let private uint64ToBeBytes (v: uint64) =
-        let bytes = BitConverter.GetBytes(v)
-        if BitConverter.IsLittleEndian then Array.rev bytes else bytes
-        |> Array.skipWhile (fun b -> b = 0uy)
-        |> fun a -> if a.Length = 0 then [| 0uy |] else a
+        BigInteger(v).ToByteArray(isUnsigned = true, isBigEndian = true)
 
-    /// Perform the full auth key exchange
-    let performExchange (transport: ITransport) (dcId: int) (ct: System.Threading.CancellationToken) : System.Threading.Tasks.Task<Result<AuthKey * int64 * int32, MtProtoError>> = task {
+    /// Perform the full auth key exchange.
+    ///
+    /// `rsaKeys` is the set the server's fingerprints are matched against — `Rsa.publicKeys` in
+    /// production. Until 0.13 the set was process-global mutable state in the crypto package
+    /// (`Rsa.addKey`), which a test server could only satisfy by mutating it for every client in
+    /// the process; a parameter scopes the choice to the one client that made it.
+    let performExchange (rsaKeys: Rsa.RsaPublicKey list) (transport: ITransport) (dcId: int) (ct: System.Threading.CancellationToken) : System.Threading.Tasks.Task<Result<AuthKey * int64 * int32, MtProtoError>> = task {
         // Everything below parses unauthenticated server bytes with readers that throw on
         // malformed input. Without this wrapper a hostile or truncated response faults the task
         // instead of returning Error, escaping every `match! ... with Ok/Error` caller.
@@ -217,7 +221,7 @@ module AuthKeyExchange =
             | Error e -> return Error e
             | Ok (_resMsgId, resBody) ->
 
-            use resReader = new TlReadBuffer(resBody)
+            let resReader = TlReadBuffer(resBody)
             let constructorId = resReader.ReadConstructorId()
             if constructorId <> ResPQ then
                 return Error (MtProtoError.AuthKeyExchangeFailed $"Expected resPQ, got 0x%08x{constructorId}")
@@ -267,7 +271,7 @@ module AuthKeyExchange =
             // server prefers (the RSA_PAD key), so honour that instead of our local key order.
             let rsaKey =
                 fingerprints
-                |> Array.tryPick (fun f -> Rsa.allKeys () |> List.tryFind (fun k -> k.Fingerprint = f))
+                |> Array.tryPick (fun f -> rsaKeys |> List.tryFind (fun k -> k.Fingerprint = f))
             match rsaKey with
             | None -> return Error (MtProtoError.AuthKeyExchangeFailed "No matching RSA key found")
             | Some key ->
@@ -279,10 +283,8 @@ module AuthKeyExchange =
 
             let pqInner = serializePQInnerDataDc pqBytes pBytes qBytes nonce serverNonce newNonce dcId
 
-            // Encrypt p_q_inner_data with RSA_PAD (MTProto's current, hardened scheme). Rsa.encrypt
-            // is only the bare RSA primitive that encryptPad finishes with — no hash, no padding —
-            // so it is not a drop-in for the classic sha1(data)+data scheme and current servers
-            // reject that scheme anyway.
+            // Encrypt p_q_inner_data with RSA_PAD, the only scheme current servers accept; the
+            // classic sha1(data)+data envelope was removed from the crypto package with its keys.
             let encryptedData = Rsa.encryptPad pqInner key
 
             // Step 4: req_DH_params
@@ -302,7 +304,7 @@ module AuthKeyExchange =
             | Error e -> return Error e
             | Ok (_resMsgId2, resBody2) ->
 
-            use resReader2 = new TlReadBuffer(resBody2)
+            let resReader2 = TlReadBuffer(resBody2)
             let constructorId2 = resReader2.ReadConstructorId()
             if constructorId2 = ServerDHParamsFail then
                 // server_DH_params_fail#79cb045d nonce server_nonce new_nonce_hash:int128. The
@@ -344,7 +346,7 @@ module AuthKeyExchange =
             let (tmpAesKey, tmpAesIv) = deriveTmpAes serverNonce newNonce
             let answerDecrypted = AesIge.decrypt encryptedAnswer tmpAesKey tmpAesIv
 
-            use innerReader = new TlReadBuffer(answerDecrypted[20..])
+            let innerReader = TlReadBuffer(answerDecrypted[20..])
             let innerConstructor = innerReader.ReadConstructorId()
             if innerConstructor <> ServerDHInnerData then
                 return Error (MtProtoError.AuthKeyExchangeFailed "Invalid server_DH_inner_data")
@@ -442,7 +444,7 @@ module AuthKeyExchange =
                     | Error e -> return Loop.Stop(Error e)
                     | Ok (_resMsgId3, resBody3) ->
 
-                    use resReader3 = new TlReadBuffer(resBody3)
+                    let resReader3 = TlReadBuffer(resBody3)
                     let constructorId3 = resReader3.ReadConstructorId()
                     let genNonce = resReader3.ReadRawBytes(16)
                     let genServerNonce = resReader3.ReadRawBytes(16)

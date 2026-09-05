@@ -31,14 +31,14 @@ type internal SeqNoRecordingTransport(authKey: AuthKey, buildReply: int * int64 
             Task.FromResult(Ok())
 
         member _.SendAsync(payload, _) =
-            use reader = new TlReadBuffer(payload)
+            let reader = TlReadBuffer(payload)
             reader.ReadInt64() |> ignore // auth_key_id
             let msgKey = reader.ReadRawBytes(16)
             let encrypted = reader.ReadRawBytes(payload.Length - 24)
             let aes = KeyDerivation.deriveAesKeyIv authKey.Data msgKey 0
             let plain = AesIge.decrypt encrypted aes.Key aes.Iv
 
-            use inner = new TlReadBuffer(plain)
+            let inner = TlReadBuffer(plain)
             inner.ReadInt64() |> ignore // salt
             let sessionId = inner.ReadInt64()
             let msgId = inner.ReadInt64()

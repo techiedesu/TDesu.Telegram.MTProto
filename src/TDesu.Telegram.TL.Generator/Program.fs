@@ -399,7 +399,17 @@ Sample overrides config: samples/ServerOverrides/server-overrides.toml
 
                     // Parsed at most once, and only if `cid` or `csharp` asks
                     // for it — an unused --mtproto-schema must stay silent.
-                    let mtprotoSchema = lazy (mtprotoSchemaPath |> Option.bind (parseSchema log "MTProto"))
+                    //
+                    // When both flags name the same file the run is generating the service layer,
+                    // where `mtproto.tl` *is* the schema: the parsed object is shared rather than
+                    // parsed twice, and that identity is what lets `generateCidModule` accept the
+                    // one schema that legitimately has no `// LAYER` directive.
+                    let mtprotoSchema =
+                        lazy
+                            (match mtprotoSchemaPath with
+                             | Some p when Path.GetFullPath p = Path.GetFullPath schemaPath -> Some apiSchema
+                             | Some p -> parseSchema log "MTProto" p
+                             | None -> None)
 
                     if targets.Contains "cid" then
                         match mtprotoSchemaPath with

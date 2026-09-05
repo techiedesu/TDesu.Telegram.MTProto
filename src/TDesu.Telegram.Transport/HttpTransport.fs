@@ -7,6 +7,7 @@ open System.Threading
 open System.Threading.Channels
 open TDesu.FSharp
 open TDesu.FSharp.Operators
+open TDesu.FSharp.Resilience
 
 /// MTProto transport over HTTP/1.1 (legacy carrier, still accepted by DCs on the
 /// standard port). Framing is handled by HTTP itself, not by MTProto: each request
@@ -30,6 +31,9 @@ type HttpTransport(dc: DataCenter) =
     let mutable inbound = Channel.CreateUnbounded<byte[]>()
     // HTTP/1.1 is strictly one exchange at a time on a connection.
     let exchangeLock = new SemaphoreSlim(1, 1)
+
+    /// How long one POST may wait for its response before the exchange is given up.
+    let ResponseDeadline = TimeSpan.FromSeconds 60.0
 
     let getStream () =
         match stream with
@@ -154,11 +158,10 @@ type HttpTransport(dc: DataCenter) =
                     do! s.FlushAsync(ct)
 
                     // A server that takes the POST and never answers would otherwise hold the
-                    // exchange lock forever and stop every other sender on this connection.
-                    use responseCts = CancellationTokenSource.CreateLinkedTokenSource(ct)
-                    responseCts.CancelAfter(TimeSpan.FromSeconds(60.0))
-
-                    match! readResponse s responseCts.Token with
+                    // exchange lock forever and stop every other sender on this connection. The
+                    // deadline is reported as `Timeout`, not as the `Cancelled` a hand-linked token
+                    // used to make of it — a server that never answered is not a caller that gave up.
+                    match! Timeout.afterLinked ResponseDeadline ct (fun token -> readResponse s token) with
                     | Error e ->
                         connected <- false
                         return Error e
@@ -173,6 +176,7 @@ type HttpTransport(dc: DataCenter) =
                     connected <- false
 
                     match ex with
+                    | :? TimeoutException -> return Error TransportError.Timeout
                     | :? OperationCanceledException -> return Error TransportError.Cancelled
                     | _ -> return Error(TransportError.WriteError ex.Message)
             finally

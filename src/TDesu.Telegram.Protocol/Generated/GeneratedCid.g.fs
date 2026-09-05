@@ -151,10 +151,6 @@ module GeneratedCid =
 [<RequireQualifiedAccess>]
 module GeneratedLayerCid =
 
-    /// Default layer when client hasn't sent invokeWithLayer yet.
-    [<Literal>]
-    let DefaultLayer = 223
-
     /// Minimum supported layer.
     [<Literal>]
     let MinSupportedLayer = 190

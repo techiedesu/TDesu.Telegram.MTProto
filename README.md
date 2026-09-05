@@ -91,6 +91,11 @@ use selfHosted =
 
 // A `transportFactory` still overrides everything, for carriers this library has no kind for:
 use custom = new MtProtoClient(dc, transportFactory = fun d -> new MyTransport(d) :> ITransport)
+
+// A self-hosted data centre also has its own RSA key; `rsaKeys` is the set the handshake
+// matches the server's fingerprints against (default: Telegram's production key). The response
+// deadline is `responseTimeout` (default 30 s; `TimeSpan.Zero` leaves only the caller's token).
+use local = new MtProtoClient(dc, rsaKeys = [ myServerKey ], responseTimeout = TimeSpan.FromMinutes 2.0)
 ```
 
 | `TransportKind` | Transport | Carrier | Obfuscation | Notes |
@@ -138,6 +143,9 @@ Schemas are not downloaded automatically — fetch them manually from
 [core.telegram.org/schema](https://core.telegram.org/schema) or your TL source. The `cid` target
 reads the schema's own `// LAYER N` directive (`GeneratedLayerCid.Layer`/`DefaultLayer`) — a schema
 with no layer directive cannot be advertised to the server, so `cid` fails rather than guessing.
+The one exception is a run whose `--schema` and `--mtproto-schema` are the same `mtproto.tl`
+(generating the service layer, which has no API layer): that emits `GeneratedLayerCid` without
+`Layer`/`DefaultLayer`.
 
 ### Override TOML
 

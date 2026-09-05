@@ -10,10 +10,13 @@ open Microsoft.Extensions.Logging
 open TDesu.FSharp
 open TDesu.FSharp.Operators
 open TDesu.FSharp.Tasks
+open TDesu.FSharp.Concurrency
+open TDesu.FSharp.Resilience
 open TDesu.MTProto.Auth
 open TDesu.MTProto.Service
 open TDesu.MTProto.Service.Requests
 open TDesu.Serialization
+open TDesu.Crypto
 open TDesu.Transport
 
 /// Core MTProto client handling session, encryption, and RPC dispatch.
@@ -21,12 +24,17 @@ open TDesu.Transport
 /// `responseTimeout` bounds how long `RpcAsync` waits for the server's answer once the request is
 /// on the wire (default 30 s); `TimeSpan.Zero` or a negative value means "only the caller's
 /// token". Until 0.13 the 30 s were hard-coded and silently overrode a caller that asked for more.
+///
+/// `rsaKeys` is the key set the handshake matches the server's fingerprints against; the default
+/// is Telegram's production key, and a test server supplies its own here rather than through the
+/// process-global registry the crypto package used to carry.
 type MtProtoClient
     (
         dc: DataCenter,
         ?logger: ILogger,
         ?transportFactory: DataCenter -> ITransport,
-        ?responseTimeout: TimeSpan
+        ?responseTimeout: TimeSpan,
+        ?rsaKeys: Rsa.RsaPublicKey list
     ) =
 
     // The carrier comes from the DataCenter the caller connected with (`dc.Transport`), so it is
@@ -35,6 +43,7 @@ type MtProtoClient
     let createTransport = defaultArg transportFactory Transports.create
 
     let responseTimeout = defaultArg responseTimeout (TimeSpan.FromSeconds 30.0)
+    let rsaKeys = defaultArg rsaKeys Rsa.publicKeys
 
     let mutable transport = createTransport dc
     let dispatcher = RpcDispatcher()
@@ -157,9 +166,10 @@ type MtProtoClient
 
     /// Inflate the `packed_data:bytes` of a gzip_packed, with a ceiling.
     ///
-    /// Split from `ungzip` so a caller holding a reader already positioned on the packed field can
-    /// inflate without first slicing the enclosing frame out of the buffer — that slice is a
-    /// full-size copy, and it is discarded the moment the packed bytes are read.
+    /// Takes the packed bytes rather than the frame so a caller holding a reader already
+    /// positioned on the packed field can inflate without first slicing the enclosing frame out
+    /// of the buffer — that slice is a full-size copy, discarded the moment the packed bytes are
+    /// read.
     let inflate (packed: byte[]) : byte[] =
         use input = new MemoryStream(packed)
         use gz = new GZipStream(input, CompressionMode.Decompress)
@@ -186,16 +196,6 @@ type MtProtoClient
             read <- gz.Read(buffer, 0, buffer.Length)
 
         output.ToArray()
-
-    /// Telegram wraps large results in gzip_packed#3072cfa1 packed_data:bytes — a gzip
-    /// stream carrying the real TL object. Unwrap it so callers see the plain object.
-    let ungzip (data: byte[]) : byte[] =
-        if data.Length >= 4 && BitConverter.ToUInt32(data, 0) = GzipPackedCid then
-            use reader = new TlReadBuffer(data)
-            %reader.ReadConstructorId()
-            inflate (reader.ReadBytes())
-        else
-            data
 
     /// Serialize a generated service type into a message body.
     ///
@@ -244,42 +244,31 @@ type MtProtoClient
         }
 
 
-    /// Complete (or fail) the caller waiting on `reqMsgId` with the result that follows `offset`.
+    /// Complete (or fail) the caller waiting on `reqMsgId` with the result `reader` is positioned on.
     ///
-    /// `reader` is the caller's, already positioned at `offset` — on the gzip path the packed field
-    /// is read straight from it. Slicing the tail out first is a full-size copy of the whole frame,
-    /// thrown away as soon as the packed bytes are read, and packed is precisely what the large
-    /// results arrive as. That copy is one of five the receive path already makes per message, on
-    /// buffers big enough to land on the large object heap.
-    let processRpcResult (reader: TlReadBuffer) (body: byte[]) (offset: int) (reqMsgId: int64) =
-        let isPacked =
-            body.Length - offset >= 4 && BitConverter.ToUInt32(body, offset) = GzipPackedCid
-
+    /// The one copy here is the caller's: an awaiting `RpcAsync` owns the bytes it is handed, and
+    /// the frame they are read out of is reused by the next message. A packed result is inflated
+    /// straight from the reader — 0.12 sliced the tail of the frame into a fresh array first, a
+    /// full-size copy thrown away as soon as the packed bytes were read, and packed is precisely
+    /// what the large results arrive as.
+    let processRpcResult (reader: TlReadBuffer) (reqMsgId: int64) =
         let resultData =
-            if isPacked then
+            match reader.TryPeekConstructorId() with
+            | ValueSome GzipPackedCid ->
                 %reader.ReadConstructorId()
                 inflate (reader.ReadBytes())
-            else
-                body[offset..]
+            | _ -> reader.ReadRawBytes(reader.Remaining)
 
         // An rpc_error arrives in the same slot as a successful result, so handing the
         // bytes straight to the caller reports failure as success. Every consumer then
         // fails deserializing an "unknown constructor id" instead of reading the error
         // the server actually sent, and no `Error(RpcError …)` match anywhere can fire —
         // which quietly disables flood-wait handling and 2FA detection alike.
-        // Read with a reader rather than poked out of the buffer. `rpc_error` is not one of the
-        // three constructors the schema exempts as parsed manually, so byte-poking its id is the
-        // thing the house rule forbids — and a second reader over the same array is free, since
-        // TlReadBuffer holds a position and nothing else.
-        let isRpcError =
-            resultData.Length >= 8
-            && (use peek = new TlReadBuffer(resultData)
-                peek.ReadConstructorId() = Requests.RpcError.ConstructorId)
+        let result = TlReadBuffer(resultData)
 
         let completed =
-            if isRpcError then
-                use r = new TlReadBuffer(resultData)
-                let err = Requests.RpcError.Deserialize r
+            if result.TryPeekConstructorId() = ValueSome Requests.RpcError.ConstructorId then
+                let err = Requests.RpcError.Deserialize result
 
                 log.LogDebug(
                     "rpc_error {Code} {Message} for msg_id {MsgId}",
@@ -368,19 +357,23 @@ type MtProtoClient
     /// Process one decrypted message (or a message nested in a container), acking content-related
     /// ones and routing service messages (bad_server_salt, new_session_created, bad_msg) the same
     /// way whether they arrive bare or wrapped in a msg_container.
-    let rec processInnerMessage (body: byte[]) (msgId: int64) (seqNo: int32) =
-        if body.Length >= 4 then
-            use reader = new TlReadBuffer(body)
-            let constructor = reader.ReadConstructorId()
+    ///
+    /// `body` is a view over the decrypted frame, positioned at the message's constructor id: a
+    /// container's inner messages are `Slice`s of it rather than copies, and only the two things
+    /// that leave this function — an RPC result for its caller, an update for the subscribers —
+    /// are copied out, because their owners outlive the frame.
+    let rec processInnerMessage (body: TlReadBuffer) (msgId: int64) (seqNo: int32) =
+        if body.Remaining >= 4 then
+            let constructor = body.ReadConstructorId()
 
             match constructor with
             | GzipPackedCid ->
                 // gzip_packed wrapping the whole message — decompress and re-dispatch (ack at leaf).
-                processInnerMessage (ungzip body) msgId seqNo
+                processInnerMessage (TlReadBuffer(inflate (body.ReadBytes()))) msgId seqNo
             | MsgContainerCid ->
                 // msg_container — a non-content wrapper; don't ack it, recurse into each inner
                 // message so their service constructors are handled and content ones get acked.
-                let count = reader.ReadInt32()
+                let count = body.ReadInt32()
 
                 // The spec caps a container at 1024 messages. Beyond that the count is garbage and
                 // the reads below would walk off the buffer.
@@ -388,17 +381,17 @@ type MtProtoClient
                     log.LogWarning("Dropping msg_container with implausible count {Count}", count)
                 else
                     for _ in 1..count do
-                        let innerMsgId = reader.ReadInt64()
-                        let innerSeqNo = reader.ReadInt32()
-                        let innerLength = reader.ReadInt32()
+                        let innerMsgId = body.ReadInt64()
+                        let innerSeqNo = body.ReadInt32()
+                        let innerLength = body.ReadInt32()
 
-                        // The inner length is the container's own claim about itself; a bad one
-                        // either allocates what it asks for or rewinds the cursor and re-reads the
-                        // same bytes forever.
-                        if innerLength < 0 || innerLength > body.Length then
-                            failwith $"msg_container inner length {innerLength} does not fit the frame"
+                        // The inner length is the container's own claim about itself; `Slice`
+                        // refuses one that overruns the frame, and a negative one would otherwise
+                        // rewind the cursor and re-read the same bytes forever.
+                        if innerLength < 0 then
+                            failwith $"msg_container inner length {innerLength} is negative"
 
-                        let innerBody = reader.ReadRawBytes(innerLength)
+                        let innerBody = body.Slice(innerLength)
 
                         // The dedupe guard has to sit here, not only on the outer id: Telegram
                         // re-sends anything it has not seen acked, and a retransmission keeps its
@@ -425,12 +418,12 @@ type MtProtoClient
                 match constructor with
                 | RpcResultCid ->
                     // rpc_result: req_msg_id + result
-                    let reqMsgId = reader.ReadInt64()
-                    processRpcResult reader body 12 reqMsgId
+                    let reqMsgId = body.ReadInt64()
+                    processRpcResult body reqMsgId
                 | GeneratedCid.BadServerSalt ->
-                    use r = new TlReadBuffer(body)
+                    body.Position <- 0
 
-                    match BadMsgNotification.Deserialize r with
+                    match BadMsgNotification.Deserialize body with
                     | BadMsgNotification.BadServerSalt(badMsgId, _, _, newSalt) ->
                         session |> Option.iter (fun s -> s.Salt <- newSalt)
                         log.LogWarning("bad_server_salt for msg_id {MsgId}; updated salt and re-sending", badMsgId)
@@ -442,8 +435,8 @@ type MtProtoClient
                     // a hole only the application can fill — so re-send the abandoned requests and
                     // tell listeners the stream has a gap. Treating this as "new salt" alone loses
                     // both, silently.
-                    use r = new TlReadBuffer(body)
-                    let created = NewSession.Deserialize r
+                    body.Position <- 0
+                    let created = NewSession.Deserialize body
                     let firstMsgId = created.FirstMsgId
                     session |> Option.iter (fun s -> s.Salt <- created.ServerSalt)
 
@@ -462,10 +455,10 @@ type MtProtoClient
                     // update stream may be incomplete" has to run now.
                     reconnectedEvent.Trigger()
                 | GeneratedCid.BadMsgNotification ->
-                    use r = new TlReadBuffer(body)
+                    body.Position <- 0
 
                     let badMsgId, errCode =
-                        match BadMsgNotification.Deserialize r with
+                        match BadMsgNotification.Deserialize body with
                         | BadMsgNotification.BadMsgNotification(badMsgId, _, errorCode) -> badMsgId, errorCode
                         | BadMsgNotification.BadServerSalt(badMsgId, _, errorCode, _) -> badMsgId, errorCode
 
@@ -555,10 +548,10 @@ type MtProtoClient
                     // subscribers, which then failed deserializing an `Updates` and logged a real
                     // error for a message that never carried an update — hiding actual parse
                     // failures among them.
-                    use r = new TlReadBuffer(body)
+                    body.Position <- 0
 
                     let answerMsgId =
-                        match MsgDetailedInfo.Deserialize r with
+                        match MsgDetailedInfo.Deserialize body with
                         | MsgDetailedInfo.MsgDetailedInfo(_, answerMsgId, _, _) -> answerMsgId
                         | MsgDetailedInfo.MsgNewDetailedInfo(answerMsgId, _, _) -> answerMsgId
 
@@ -600,8 +593,8 @@ type MtProtoClient
                 | GeneratedCid.MsgsStateReq ->
                     // The server is asking what became of messages it sent. Answering costs one
                     // service message and stops it re-announcing them.
-                    use r = new TlReadBuffer(body)
-                    let req = MsgsStateReq.Deserialize r
+                    body.Position <- 0
+                    let req = MsgsStateReq.Deserialize body
 
                     // Truncated to the spec's ceiling on an ack batch. Nothing bounds a vector count
                     // off the wire, so a single 16 MiB frame can name ~2M ids — and this branch runs
@@ -646,8 +639,8 @@ type MtProtoClient
                 | GeneratedCid.MsgResendReq ->
                     // The server never got these. Re-sending is the whole point of the message, and
                     // the dispatcher still holds the body of anything still pending.
-                    use r = new TlReadBuffer(body)
-                    let req = MsgResendReq.Deserialize r
+                    body.Position <- 0
+                    let req = MsgResendReq.Deserialize body
 
                     // Same ceiling, and here it bounds scheduled work rather than one string: this
                     // used to queue one Task per id, so an implausible count became millions of
@@ -715,25 +708,30 @@ type MtProtoClient
                     // Subscribers run on the receive loop, so a throwing handler would otherwise
                     // reach the loop's catch-all, fail every in-flight RPC and force a reconnect.
                     try
-                        updateEvent.Trigger(body)
+                        body.Position <- 0
+                        updateEvent.Trigger(body.ReadRawBytes(body.Remaining))
                     with ex ->
                         log.LogError(ex, "Update subscriber threw for msg_id {MsgId}", msgId)
 
     /// Periodically flush accumulated msgs_ack. Shares the receive loop's CT so it dies with a
     /// disconnect/reconnect and is restarted alongside the new receive loop.
+    ///
+    /// A `PeriodicTimer` rather than a hand-written while/try loop: a tick that throws is logged
+    /// and the next tick still runs, where the loop this replaced ended for good on the first
+    /// unexpected exception and acks silently stopped until the next reconnect.
     let ackLoop (ct: CancellationToken) =
-        task {
-            try
-                while not ct.IsCancellationRequested do
-                    // Once a second, not every ten: the server re-announces anything unacknowledged
-                    // (`msg_detailed_info`, 28 an hour measured in 0.12.1, partly this), and a
-                    // second of latency on an ack costs nothing.
-                    do! Tasks.Task.Delay(1000, ct)
+        // Once a second, not every ten: the server re-announces anything unacknowledged
+        // (`msg_detailed_info`, 28 an hour measured in 0.12.1, partly this), and a second of
+        // latency on an ack costs nothing.
+        PeriodicTimer.start
+            (TimeSpan.FromSeconds 1.0)
+            (fun () ->
+                task {
                     let ids = ResizeArray<int64>()
                     let mutable id = 0L
 
                     // The spec caps msgs_ack at 8192 ids; a catch-up burst can exceed that inside
-                    // one 10s window, so take at most a batch and leave the rest queued.
+                    // one window, so take at most a batch and leave the rest queued.
                     while ids.Count < 8192 && pendingAcks.TryDequeue(&id) do
                         ids.Add id
 
@@ -741,10 +739,10 @@ type MtProtoClient
                         // Requeued on *any* failure to send, cancellation included. The ids are
                         // already out of the queue by this point, so a reconnect or a Disconnect
                         // landing mid-flush silently dropped a whole batch: the `Error` arm below
-                        // covered a refused send, but a cancelled one throws straight past it to the
-                        // handler at the bottom of the loop. Telegram retransmits anything it has
-                        // not seen acked and eventually drops a session it judges unacked, so the
-                        // batch has to survive the teardown that interrupted it.
+                        // covered a refused send, but a cancelled one throws straight past it.
+                        // Telegram retransmits anything it has not seen acked and eventually drops
+                        // a session it judges unacked, so the batch has to survive the teardown
+                        // that interrupted it.
                         let mutable delivered = false
 
                         try
@@ -756,10 +754,9 @@ type MtProtoClient
                             if not delivered then
                                 for unsent in ids do
                                     enqueueAck unsent
-            with
-            | :? OperationCanceledException -> ()
-            | ex -> log.LogDebug(ex, "ack loop ended")
-        }
+                })
+            ct
+            (fun ex -> log.LogDebug(ex, "msgs_ack flush failed"))
 
     /// How long the carrier tolerates silence. Telegram's WebSocket gateway closes a connection
     /// roughly 30s after the last frame — measured in production as a drop every 31-36s, each one
@@ -775,14 +772,13 @@ type MtProtoClient
     /// connection. `disconnect_delay` tells the server to drop us if we go quiet for that long.
     /// Shares the receive loop's CT.
     let pingLoop (ct: CancellationToken) =
-        task {
-            try
-                lastPingSentAt <- 0L
-                lastPongAt <- Environment.TickCount64
+        lastPingSentAt <- 0L
+        lastPongAt <- Environment.TickCount64
 
-                while not ct.IsCancellationRequested do
-                    do! Tasks.Task.Delay(pingIntervalMs, ct)
-
+        PeriodicTimer.start
+            (TimeSpan.FromMilliseconds(int64 pingIntervalMs))
+            (fun () ->
+                task {
                     // Two intervals without a pong means the server has stopped serving this socket
                     // while keeping it open — the state a blocked reader and a 30 s RPC timeout can
                     // never tell apart from a slow network. Dropping the transport is what turns it
@@ -797,10 +793,9 @@ type MtProtoClient
                         match! sendServiceMessage (buildPing pingId disconnectDelay) false ct with
                         | Ok _ -> lastPingSentAt <- Environment.TickCount64
                         | Error e -> log.LogDebug("ping send failed: {Error}", e)
-            with
-            | :? OperationCanceledException -> ()
-            | ex -> log.LogDebug(ex, "ping loop ended")
-        }
+                })
+            ct
+            (fun ex -> log.LogDebug(ex, "ping failed"))
 
     /// The default reconnect schedule: three attempts a second, two and four seconds apart.
     let reconnectBackoffs = [| 1000; 2000; 4000 |]
@@ -1099,7 +1094,7 @@ type MtProtoClient
                                             log.LogInformation("Reconnect abandoned: the client was closed while connecting")
                                             transport.Disconnect()
                                     | None ->
-                                        match! AuthKeyExchange.performExchange transport dc.Id ct with
+                                        match! AuthKeyExchange.performExchange rsaKeys transport dc.Id ct with
                                         | Error e ->
                                             log.LogWarning(
                                                 "Auth key exchange failed on reconnect attempt {Attempt}: {Error}",
@@ -1235,7 +1230,7 @@ type MtProtoClient
 
                 log.LogInformation("Connected, performing auth key exchange")
 
-                match! AuthKeyExchange.performExchange transport dc.Id ct with
+                match! AuthKeyExchange.performExchange rsaKeys transport dc.Id ct with
                 | Error e -> return Error e
                 | Ok(key, salt, timeOffset) ->
 
@@ -1358,15 +1353,16 @@ type MtProtoClient
 
                 try
                     if responseTimeout > TimeSpan.Zero then
-                        use cts = CancellationTokenSource.CreateLinkedTokenSource(ct)
-                        cts.CancelAfter(responseTimeout)
-                        return! responseTask.WaitAsync(cts.Token)
+                        return! Timeout.afterLinked responseTimeout ct (fun token -> responseTask.WaitAsync(token))
                     else
                         return! responseTask.WaitAsync(ct)
-                with :? OperationCanceledException ->
-                    let reason = if ct.IsCancellationRequested then MtProtoError.Cancelled else MtProtoError.Timeout
-                    %dispatcher.FailRequest(msgId, reason)
-                    return Error reason
+                with
+                | :? TimeoutException ->
+                    %dispatcher.FailRequest(msgId, MtProtoError.Timeout)
+                    return Error MtProtoError.Timeout
+                | :? OperationCanceledException ->
+                    %dispatcher.FailRequest(msgId, MtProtoError.Cancelled)
+                    return Error MtProtoError.Cancelled
         }
 
     /// Push updates from the server (raw bytes of the update message)

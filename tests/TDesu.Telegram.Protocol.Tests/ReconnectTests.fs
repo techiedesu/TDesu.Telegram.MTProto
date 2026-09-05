@@ -23,13 +23,13 @@ type internal ScriptedTransport(authKey: AuthKey) =
     let mutable sessionId = 0L
 
     let clientDecrypt (data: byte[]) =
-        use reader = new TlReadBuffer(data)
+        let reader = TlReadBuffer(data)
         reader.ReadInt64() |> ignore
         let msgKey = reader.ReadRawBytes(16)
         let encrypted = reader.ReadRawBytes(data.Length - 24)
         let aes = KeyDerivation.deriveAesKeyIv authKey.Data msgKey 0
         let plain = AesIge.decrypt encrypted aes.Key aes.Iv
-        use inner = new TlReadBuffer(plain)
+        let inner = TlReadBuffer(plain)
         inner.ReadInt64() |> ignore
         let sid = inner.ReadInt64()
         let msgId = inner.ReadInt64()

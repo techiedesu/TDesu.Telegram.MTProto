@@ -53,7 +53,10 @@ module MessageFramingTests =
             Assert.That(msgId, Is.EqualTo 0x5555555500000000L)
             Assert.That(sessionId, Is.EqualTo sess.SessionId)
             Assert.That(seqNo, Is.EqualTo 3)
-            CollectionAssert.AreEqual(body, decoded)
+            // The body is a view over the plaintext: exactly the body's bytes, nothing of the
+            // header or padding around them.
+            Assert.That(decoded.Remaining, Is.EqualTo body.Length)
+            CollectionAssert.AreEqual(body, decoded.ReadRawBytes(decoded.Remaining))
         | Error e -> Assert.Fail($"expected Ok, got %A{e}")
 
     [<Test>]

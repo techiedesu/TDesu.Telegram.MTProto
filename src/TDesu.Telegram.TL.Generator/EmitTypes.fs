@@ -755,9 +755,11 @@ module EmitTypes =
                 (Some(mkSynType func.Name))
                 deserializeFieldsBody
 
-        // Deserialize(body: byte[]) member
+        // Deserialize(body: byte[]) member. A `let`, not a `use`: TlReadBuffer stopped being
+        // IDisposable in Serialization 0.4.0 (its Dispose was empty), and `use` on a type that
+        // is not disposable does not compile.
         let deserializeBody =
-            mkUse
+            mkLet
                 "reader"
                 (mkNew (mkSynType "TlReadBuffer") (mkParen (mkIdent "body")))
                 (mkLet

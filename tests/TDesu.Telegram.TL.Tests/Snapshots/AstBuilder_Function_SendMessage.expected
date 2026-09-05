@@ -17,6 +17,6 @@ type MessagesSendMessage = {
         { Peer = peer; Message = message }
 
     static member Deserialize(body: byte[]) : MessagesSendMessage =
-        use reader = new TlReadBuffer(body)
+        let reader = new TlReadBuffer(body)
         let _cid = reader.ReadConstructorId()
         MessagesSendMessage.DeserializeFields(reader)

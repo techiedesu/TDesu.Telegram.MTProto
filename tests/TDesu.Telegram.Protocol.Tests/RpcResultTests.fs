@@ -24,13 +24,13 @@ type internal LoopbackTransport(authKey: AuthKey, buildReplyBody: int64 -> byte[
     // the server->client (x=8) half as `decrypt`, so reading what the client just sent needs the
     // other half — the same gap `serverEncrypt` fills on the other side of `decrypt`.
     let clientDecrypt (data: byte[]) : int64 * int64 =
-        use reader = new TlReadBuffer(data)
+        let reader = TlReadBuffer(data)
         reader.ReadInt64() |> ignore // auth_key_id
         let msgKey = reader.ReadRawBytes(16)
         let encryptedData = reader.ReadRawBytes(data.Length - 24)
         let aes = KeyDerivation.deriveAesKeyIv authKey.Data msgKey 0
         let decrypted = AesIge.decrypt encryptedData aes.Key aes.Iv
-        use inner = new TlReadBuffer(decrypted)
+        let inner = TlReadBuffer(decrypted)
         inner.ReadInt64() |> ignore // salt
         let sessionId = inner.ReadInt64()
         let msgId = inner.ReadInt64()

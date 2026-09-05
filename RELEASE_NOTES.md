@@ -15,6 +15,18 @@ target outright instead of guessing. `MinSupportedLayer` (190) is unchanged. Pin
 `CurrentLayer` to `GeneratedLayerCid.Layer` to turn the drift into a compile-time
 equality.
 
+The one run allowed to have no layer is the service-layer regen, where `--schema` and
+`--mtproto-schema` name the same `mtproto.tl`: `Program.fs` shares the parsed schema
+between the two roles instead of parsing the file twice, and `generateCidModule` reads
+that identity as "no API layer here" and emits `GeneratedLayerCid` without `Layer` or
+`DefaultLayer`. The Protocol package's own `GeneratedCid.g.fs` had carried the 223 for
+exactly that reason.
+
+**Emitted `Deserialize(body: byte[])` binds its reader with `let`.** `TlReadBuffer`
+stopped being `IDisposable` in Serialization 0.4.0 (its `Dispose` was empty), and `use`
+on a type that is not disposable does not compile. Consumers regenerate; nothing else in
+the emitted surface changed, and the snapshots pin it.
+
 **Removed dead surface named in the audit: `[layer_type_info]` overrides and the
 `client-parsers` target.** `[layer_type_info]` was parsed by `Toml.fs` and read by
 no target — confirmed against the generator's own `ignoredInputs` table, which
@@ -115,7 +127,42 @@ that would correct the offset is how a client locks itself out.
 **Handshake.** `dh_gen_retry` is retried with `retry_id = auth_key_aux_hash`, up to five times,
 each answer's `new_nonce_hash` verified — a retry used to fail the whole exchange and cost a
 reconnect. `server_DH_params_fail` is recognised, its nonces and `new_nonce_hash` checked, and
-reported for what it is instead of "expected server_DH_params_ok, got 0x79cb045d".
+reported for what it is instead of "expected server_DH_params_ok, got 0x79cb045d". The RSA key
+set the server's fingerprints are matched against is a constructor option now
+(`MtProtoClient(..., ?rsaKeys)`, default `Rsa.publicKeys`; `AuthKeyExchange.performExchange`
+takes it first): Crypto 0.4.0 removed the process-global `Rsa.addKey`/`allKeys` registry a test
+server had to mutate for every client in the process, along with the legacy keys and the
+classic `sha1(data)+data` envelope current servers reject anyway.
+
+**Two copies per received frame instead of six, one per sent frame instead of three.** The
+audit counted the receive path at `ReadRawBytes(data.Length − 24)` → `AesIge.decrypt` →
+msg_key concat → `ReadRawBytes bodyLength` → container `ReadRawBytes innerLength` →
+`body[offset..]` — on a 512 KiB file part, that many LOH arrays before the result was even
+dispatched. With Serialization 0.4.0 and Crypto 0.4.0: `MessageFraming.decrypt` decrypts
+straight out of the frame (`AesIge.decryptTo` into the one plaintext array) and hands back the
+body as a `TlReadBuffer` view rather than a copy; a container's inner messages are `Slice`s of
+that view; an rpc_result's payload is copied exactly once, into the array the awaiting caller
+owns, and a packed one is inflated from the reader in place. `MessageFraming.decrypt` therefore
+returns `TlReadBuffer` where it returned `byte[]`. On the send side `AesIge.encryptTo` writes
+the ciphertext behind the header directly, removing the cipher's own output array and the
+second writer that copied it. `msg_key` itself no longer concatenates (Crypto 0.4.0 hashes
+incrementally).
+
+**Serialization 0.4.0.** Every reader is a `let` (`TlReadBuffer` is no longer disposable); the
+two `BitConverter` peeks in `processRpcResult` and `ungzip` — the byte-poking the library's own
+rule forbids — are `TryPeekConstructorId`; malformed input is one `TlFormatException`, which
+`UnencryptedMessage.deserialize` now catches by name rather than as any exception. `ungzip` is
+gone: its one caller already held a reader past the constructor id.
+
+**TDesu.FSharp where it replaces hand-written code.** The ack and ping loops are
+`PeriodicTimer.start`: a tick that throws is logged and the next one still runs, where the
+while/try loops they replace ended for good on the first unexpected exception and acks silently
+stopped until the next reconnect. The RPC response deadline is `Timeout.afterLinked`, which
+also does the deadline-vs-caller distinction the linked token was hand-rolled for. The
+reconnect schedule was left alone on purpose: `Retry.withBackoff` retries thrown exceptions and
+delays only between attempts, while the reconnect waits before its first attempt, works on
+`Result`s and names each attempt in the log — bending it to fit would have been use for its own
+sake.
 
 ### Transport
 
@@ -131,6 +178,17 @@ reported for what it is instead of "expected server_DH_params_ok, got 0x79cb045d
   sits on every obfuscated carrier's hot path.
 - `TcpTransport` retires the connection on a failed write, as the obfuscated carrier already
   did, instead of letting the next frame land after a half-written one.
+- `HttpTransport` reports a POST whose response never arrives as `Timeout`. The 60 s deadline
+  was a hand-linked token, so its firing was indistinguishable from the caller's and came back
+  as `Cancelled`; it is `Timeout.afterLinked` now, which tells the two apart.
+
+### Dependencies
+
+TDesu.FSharp 2.0.0 (`Task.loop`, `PeriodicTimer`, `Timeout`), TDesu.Telegram.Serialization
+0.4.0, TDesu.Telegram.Crypto 0.4.0. Consumers move together: a Protocol 0.13.0 with
+Serialization 0.3.2 does not compile (`TlReadBuffer` lost `IDisposable` and gained the view
+constructor this release reads frames through), and Crypto 0.3.x still carries the key
+registry the handshake no longer consults.
 
 ## 0.12.4
 

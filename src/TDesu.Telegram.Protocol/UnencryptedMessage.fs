@@ -25,7 +25,7 @@ module UnencryptedMessage =
         else
 
         try
-            use reader = new TlReadBuffer(data)
+            let reader = TlReadBuffer(data)
             let authKeyId = reader.ReadInt64()
             if authKeyId <> 0L then
                 Error (MtProtoError.InvalidResponse "Expected auth_key_id = 0 for unencrypted message")
@@ -36,10 +36,10 @@ module UnencryptedMessage =
                 // First length ever read off a new connection, before any key or nonce exists to
                 // authenticate it. A negative value walks the read cursor backwards and returns an
                 // empty body as success; an absurd one allocates whatever it asks for.
-                if bodyLength < 0 || bodyLength > data.Length - 20 then
+                if bodyLength < 0 || bodyLength > reader.Remaining then
                     Error(MtProtoError.InvalidResponse $"Unencrypted body length {bodyLength} does not fit the message")
                 else
                     let body = reader.ReadRawBytes(bodyLength)
                     Ok(msgId, body)
-        with ex ->
+        with :? TlFormatException as ex ->
             Error (MtProtoError.SerializationError ex.Message)

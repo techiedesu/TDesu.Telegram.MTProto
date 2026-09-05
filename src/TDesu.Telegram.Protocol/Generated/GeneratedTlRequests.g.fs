@@ -438,6 +438,6 @@ type PingDelayDisconnect = {
         }
 
     static member Deserialize(body: byte[]) : PingDelayDisconnect =
-        use reader = new TlReadBuffer(body)
+        let reader = new TlReadBuffer(body)
         let _cid = reader.ReadConstructorId()
         PingDelayDisconnect.DeserializeFields(reader)

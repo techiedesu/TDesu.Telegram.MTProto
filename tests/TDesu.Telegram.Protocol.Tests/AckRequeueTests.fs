@@ -61,14 +61,14 @@ type internal AckStallingTransport(authKey: AuthKey, stall: SemaphoreSlim) =
 
         member _.SendAsync(payload, ct) =
             task {
-                use reader = new TlReadBuffer(payload)
+                let reader = TlReadBuffer(payload)
                 reader.ReadInt64() |> ignore // auth_key_id
                 let msgKey = reader.ReadRawBytes(16)
                 let encrypted = reader.ReadRawBytes(payload.Length - 24)
                 let aes = KeyDerivation.deriveAesKeyIv authKey.Data msgKey 0
                 let plain = AesIge.decrypt encrypted aes.Key aes.Iv
 
-                use inner = new TlReadBuffer(plain)
+                let inner = TlReadBuffer(plain)
                 inner.ReadInt64() |> ignore // salt
                 let sessionId = inner.ReadInt64()
                 let msgId = inner.ReadInt64()
@@ -90,7 +90,7 @@ type internal AckStallingTransport(authKey: AuthKey, stall: SemaphoreSlim) =
                     if n = 1 && dropped then
                         return Error TransportError.ConnectionClosed
                     else
-                        use r = new TlReadBuffer(body)
+                        let r = TlReadBuffer(body)
 
                         for id in (Requests.MsgsAck.Deserialize r).MsgIds do
                             ackedIds.Enqueue id

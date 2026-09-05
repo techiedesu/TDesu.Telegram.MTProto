@@ -49,10 +49,18 @@ module EmitTemplates =
     /// directive and nothing read it. A schema with no layer directive cannot be
     /// advertised at all, so pinning something to it here would only reintroduce the
     /// same silent drift one step later.
+    ///
+    /// The exception is a run whose API schema *is* `mtproto.tl` — the service layer, which has
+    /// no layer directive because it is not an API layer at all. That run gets a
+    /// `GeneratedLayerCid` without `Layer`/`DefaultLayer`, and nothing there could have pinned to
+    /// them. Everything else without a directive is refused.
     let generateCidModule (ns: string) (config: OverrideConfig) (mtprotoSchema: TlSchema) (apiSchema: TlSchema) : string =
+        let isServiceLayerOnly = obj.ReferenceEquals(apiSchema, mtprotoSchema)
+
         let layer =
             match apiSchema.Layer with
-            | Some n -> n
+            | Some n -> Some n
+            | None when isServiceLayerOnly -> None
             | None ->
                 failwith
                     "generateCidModule: the API schema has no `// LAYER N` directive — \
@@ -119,18 +127,22 @@ module EmitTemplates =
         ln "[<RequireQualifiedAccess>]"
         ln "module GeneratedLayerCid ="
         ln0 ()
-        ln "    /// The schema's own layer, parsed from its `// LAYER N` directive."
-        ln "    /// Consumers pin `CurrentLayer` (or equivalent) to this instead of a"
-        ln "    /// hand-copied literal, turning the drift the audit measured into a"
-        ln "    /// compile-time equality."
-        ln "    [<Literal>]"
-        ln $"    let Layer = %d{layer}"
-        ln0 ()
-        ln "    /// Default layer when client hasn't sent invokeWithLayer yet. Always"
-        ln "    /// equal to `Layer` — a schema advertises exactly one layer."
-        ln "    [<Literal>]"
-        ln $"    let DefaultLayer = %d{layer}"
-        ln0 ()
+        match layer with
+        | Some layer ->
+            ln "    /// The schema's own layer, parsed from its `// LAYER N` directive."
+            ln "    /// Consumers pin `CurrentLayer` (or equivalent) to this instead of a"
+            ln "    /// hand-copied literal, turning the drift the audit measured into a"
+            ln "    /// compile-time equality."
+            ln "    [<Literal>]"
+            ln $"    let Layer = %d{layer}"
+            ln0 ()
+            ln "    /// Default layer when client hasn't sent invokeWithLayer yet. Always"
+            ln "    /// equal to `Layer` — a schema advertises exactly one layer."
+            ln "    [<Literal>]"
+            ln $"    let DefaultLayer = %d{layer}"
+            ln0 ()
+        | None -> ()
+
         ln "    /// Minimum supported layer."
         ln "    [<Literal>]"
         ln "    let MinSupportedLayer = 190"
