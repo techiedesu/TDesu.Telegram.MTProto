@@ -178,8 +178,12 @@ type FakeTlsTransport(dc: DataCenter, proxyHost: string, proxyPort: int, secret:
     member _.IsConnected = connected
 
     member _.ConnectAsync(ct: CancellationToken) = task {
+        // Outside the `try` for the same reason as in TcpObfuscatedTransport: a failed connect
+        // must dispose what it created instead of leaving the socket to the finalizer.
+        let tcp = new TcpClient()
+        let mutable obf: Obfuscation.State option = None
+
         try
-            let tcp = new TcpClient()
             tcp.NoDelay <- true
             do! tcp.ConnectAsync(proxyHost, proxyPort, ct)
             let ns = tcp.GetStream()
@@ -189,22 +193,29 @@ type FakeTlsTransport(dc: DataCenter, proxyHost: string, proxyPort: int, secret:
             do! ns.FlushAsync(ct)
 
             match! readServerHandshake ns ct with
-            | Error e -> return Error e
+            | Error e ->
+                tcp.Dispose()
+                return Error e
             | Ok() ->
                 // Obfuscation init (SECURE tag) inside a ChangeCipherSpec + app-data record.
-                let obf = Obfuscation.createMtproxy Obfuscation.SecureTag dc.Id secret
+                let o = Obfuscation.createMtproxy Obfuscation.SecureTag dc.Id secret
+                obf <- Some o
                 do! ns.WriteAsync(ReadOnlyMemory [| 0x14uy; 0x03uy; 0x03uy; 0x00uy; 0x01uy; 0x01uy |], ct)
-                do! sendAppData ns obf.InitPacket ct
+                do! sendAppData ns o.InitPacket ct
 
                 client <- Some tcp
                 stream <- Some ns
-                send <- Some obf.Send
-                recv <- Some obf.Recv
+                send <- Some o.Send
+                recv <- Some o.Recv
                 connected <- true
                 return Ok()
-        with
-        | :? OperationCanceledException -> return Error TransportError.Timeout
-        | ex -> return Error(TransportError.ConnectionFailed ex.Message)
+        with ex ->
+            obf |> Option.iter (fun o -> (o.Send :> IDisposable).Dispose(); (o.Recv :> IDisposable).Dispose())
+            tcp.Dispose()
+
+            match ex with
+            | :? OperationCanceledException -> return Error TransportError.Cancelled
+            | _ -> return Error(TransportError.ConnectionFailed ex.Message)
     }
 
     member _.SendAsync(payload: byte[], ct: CancellationToken) = task {
@@ -215,7 +226,7 @@ type FakeTlsTransport(dc: DataCenter, proxyHost: string, proxyPort: int, secret:
                 do! sendAppData ns (s.Process frame) ct
                 return Ok()
             with
-            | :? OperationCanceledException -> return Error TransportError.Timeout
+            | :? OperationCanceledException -> return Error TransportError.Cancelled
             | ex -> return Error(TransportError.WriteError ex.Message)
         | _ -> return Error TransportError.ConnectionClosed
     }
@@ -234,7 +245,7 @@ type FakeTlsTransport(dc: DataCenter, proxyHost: string, proxyPort: int, secret:
                         | Error e -> return Error e
                         | Ok payRaw -> return Ok(FrameCodec.RandomizedIntermediate.stripPadding (r.Process payRaw))
             with
-            | :? OperationCanceledException -> return Error TransportError.Timeout
+            | :? OperationCanceledException -> return Error TransportError.Cancelled
             | ex -> return Error(TransportError.ReadError ex.Message)
         | _ -> return Error TransportError.ConnectionClosed
     }

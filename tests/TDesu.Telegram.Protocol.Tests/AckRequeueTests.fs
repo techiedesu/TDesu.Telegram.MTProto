@@ -23,6 +23,7 @@ type internal AckStallingTransport(authKey: AuthKey, stall: SemaphoreSlim) =
     let frames = ConcurrentQueue<byte[]>()
     let ready = new SemaphoreSlim(0)
     let mutable dropNext = false
+    let mutable dropped = false
     let mutable contentMsgId = 0L
 
     /// A body no service branch claims, so the dispatch takes the update arm — and an odd seqno,
@@ -41,10 +42,15 @@ type internal AckStallingTransport(authKey: AuthKey, stall: SemaphoreSlim) =
     /// The id of the content message the client owes an ack for.
     member _.ContentMsgId = Volatile.Read &contentMsgId
 
-    /// Make the reader observe a dead connection, which is what drives `reconnectInternal`.
+    /// Make the reader observe a dead connection, which is what drives `reconnectInternal`, and
+    /// fail the write parked in the first flush the way a disposed socket would: the client writes
+    /// under its lifetime token, so a reconnect no longer cancels the write — the old transport's
+    /// teardown fails it, and the `Error` arm of the flush is what owes the queue its ids.
     member _.DropConnection() =
         dropNext <- true
+        dropped <- true
         ready.Release() |> ignore
+        stall.Release() |> ignore
 
     interface ITransport with
         member _.IsConnected = connected
@@ -81,22 +87,28 @@ type internal AckStallingTransport(authKey: AuthKey, stall: SemaphoreSlim) =
                     if n = 1 then
                         do! stall.WaitAsync(ct)
 
-                    use r = new TlReadBuffer(body)
+                    if n = 1 && dropped then
+                        return Error TransportError.ConnectionClosed
+                    else
+                        use r = new TlReadBuffer(body)
 
-                    for id in (Requests.MsgsAck.Deserialize r).MsgIds do
-                        ackedIds.Enqueue id
+                        for id in (Requests.MsgsAck.Deserialize r).MsgIds do
+                            ackedIds.Enqueue id
+
+                        return Ok()
                 else
                     // The client's session id is only knowable from what it sends, which is why the
                     // content frame is minted here rather than by the test.
                     let sess = Session.createSession ()
                     sess.SessionId <- sessionId
 
+                    // A server msg_id is 1 or 3 mod 4 — the client drops anything else.
                     if Volatile.Read &contentMsgId = 0L then
-                        let contentId = msgId + 2L
+                        let contentId = msgId + 3L
                         Volatile.Write(&contentMsgId, contentId)
                         push (MessageFramingTests.serverEncrypt authKey sess contentId 3 contentBody)
 
-                return Ok()
+                    return Ok()
             }
 
         member _.ReceiveAsync(ct) =
@@ -137,8 +149,8 @@ open TDesu.Transport
 /// own handler and the batch went with it — which is exactly what a reconnect does to a flush in
 /// flight, and a reconnect is the most common event in this client's life.
 ///
-/// Slow by nature: the flush runs on a ten-second timer with nothing to inject, so this waits for
-/// two of them rather than pretending it can hurry the clock.
+/// The flush runs on a one-second timer with nothing to inject, so this waits for two of them
+/// rather than pretending it can hurry the clock.
 [<TestFixture>]
 module AckRequeueTests =
 
@@ -174,7 +186,7 @@ module AckRequeueTests =
 
         let owed = transport.ContentMsgId
 
-        // First flush: the ten-second timer fires and the write stalls inside the transport.
+        // First flush: the timer fires and the write stalls inside the transport.
         Assert.That(
             SpinWait.SpinUntil((fun () -> transport.AckSendCount > 0), 30_000),
             Is.True,

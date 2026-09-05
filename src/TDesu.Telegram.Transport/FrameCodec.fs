@@ -29,16 +29,19 @@ module FrameCodec =
         Buffer.BlockCopy(payload, 0, frame, 4, length)
         frame
 
-    /// Decode frame length from the 4-byte LE length prefix
-    let decodeFrameLength (header: byte[]) : Result<int, TransportError> =
-        if header.Length < 4 then
+    /// Decode frame length from a 4-byte LE length prefix that need not start the array.
+    let decodeFrameLengthAt (buffer: byte[]) (offset: int) : Result<int, TransportError> =
+        if offset < 0 || buffer.Length - offset < 4 then
             Error (TransportError.InvalidFrame "Frame header must be at least 4 bytes")
         else
-            let length = BitConverter.ToInt32(header, 0)
+            let length = BitConverter.ToInt32(buffer, offset)
             if length <= 0 || length > MaxFrameLength then
                 Error (TransportError.InvalidFrame $"Invalid frame length: %d{length}")
             else
                 Ok length
+
+    /// Decode frame length from the 4-byte LE length prefix
+    let decodeFrameLength (header: byte[]) : Result<int, TransportError> = decodeFrameLengthAt header 0
 
     /// Abridged framing: length is the payload length divided by 4, encoded as a
     /// single byte when < 0x7f, otherwise 0x7f followed by a 3-byte LE count.

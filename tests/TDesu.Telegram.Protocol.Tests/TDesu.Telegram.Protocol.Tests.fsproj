@@ -18,6 +18,7 @@
         <Compile Include="ReceivePathTests.fs" />
         <Compile Include="SeqNoContinuityTests.fs" />
         <Compile Include="AckRequeueTests.fs" />
+        <Compile Include="ReconnectTests.fs" />
     </ItemGroup>
 
     <ItemGroup>

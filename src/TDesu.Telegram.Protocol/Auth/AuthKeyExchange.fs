@@ -6,6 +6,7 @@ open System.Numerics
 open TDesu.FSharp
 open TDesu.FSharp.Operators
 open TDesu.FSharp.Buffers
+open TDesu.FSharp.Tasks
 open TDesu.MTProto
 open TDesu.Serialization
 open TDesu.Crypto
@@ -26,6 +27,8 @@ module AuthKeyExchange =
     let private ReqDHParams = 0xd712e4beu
     [<Literal>]
     let private ServerDHParamsOk = 0xd0e8075cu
+    [<Literal>]
+    let private ServerDHParamsFail = 0x79cb045du
     [<Literal>]
     let private ServerDHInnerData = 0xb5890dbau
     [<Literal>]
@@ -301,7 +304,22 @@ module AuthKeyExchange =
 
             use resReader2 = new TlReadBuffer(resBody2)
             let constructorId2 = resReader2.ReadConstructorId()
-            if constructorId2 <> ServerDHParamsOk then
+            if constructorId2 = ServerDHParamsFail then
+                // server_DH_params_fail#79cb045d nonce server_nonce new_nonce_hash:int128. The
+                // server refused p_q_inner_data; its new_nonce_hash is SHA1(new_nonce)[4..19] and
+                // proves the refusal is about this handshake and not a stray reply.
+                let failNonce = resReader2.ReadRawBytes(16)
+                let failServerNonce = resReader2.ReadRawBytes(16)
+                let failHash = resReader2.ReadRawBytes(16)
+                let expectedHash = (AuthKeyId.sha1 newNonce)[4..19]
+
+                if failNonce <> nonce || failServerNonce <> serverNonce then
+                    return Error (MtProtoError.AuthKeyExchangeFailed "server_DH_params_fail for a different handshake")
+                elif failHash <> expectedHash then
+                    return Error (MtProtoError.AuthKeyExchangeFailed "server_DH_params_fail with a wrong new_nonce_hash")
+                else
+                    return Error (MtProtoError.AuthKeyExchangeFailed "server_DH_params_fail: the server rejected p_q_inner_data (wrong RSA key, bad pq factorisation, or a rejected encryption)")
+            elif constructorId2 <> ServerDHParamsOk then
                 return Error (MtProtoError.AuthKeyExchangeFailed $"Expected server_DH_params_ok, got 0x%08x{constructorId2}")
             else
 
@@ -374,89 +392,106 @@ module AuthKeyExchange =
                 return Error (MtProtoError.AuthKeyExchangeFailed "g_a out of range")
             else
 
-            // Step 6: Generate b, compute g_b and auth_key
-            let b = DiffieHellman.generateA ()
-            let gB = DiffieHellman.computeGA g b dhPrime
-
-            // Our own g_b must satisfy the same range constraint before we transmit it.
-            if not (DiffieHellman.validateGARange gB dhPrime) then
-                return Error (MtProtoError.AuthKeyExchangeFailed "computed g_b out of range")
-            else
-
-            let authKeyData = DiffieHellman.computeAuthKey gA b dhPrime
-
             let timeOffset = serverTime - int32 (DateTimeOffset.UtcNow.ToUnixTimeSeconds())
 
-            // Step 7: Build client_DH_inner_data
-            let clientDHInner = serializeClientDHInnerData nonce serverNonce 0L gB
-            let clientDHInnerWithHash = Bytes.concat2 (AuthKeyId.sha1 clientDHInner) clientDHInner
-            // Handshake spec: 0..15 padding (NOT the 12..1024 message-padding rule
-            // — TDLib-strict servers reject > 15 with "Too much pad").
-            let clientDHPadded = Padding.addHandshakePadding clientDHInnerWithHash
-            let clientDHEncrypted = AesIge.encrypt clientDHPadded tmpAesKey tmpAesIv
+            // Steps 6–9, once per attempt. The server answers `dh_gen_retry` when the key both sides
+            // just derived collides with one it already holds; the spec's remedy is a new `b` and a
+            // `retry_id` naming the rejected key's aux hash, not a fresh handshake — which is what
+            // a retry cost until 0.13, a whole reconnect's worth. Five attempts is far past what a
+            // 2048-bit collision can need; the bound only keeps a misbehaving server from looping us.
+            let attempt (retryId: int64, attemptsLeft: int) =
+                task {
+                    // Step 6: Generate b, compute g_b and auth_key
+                    let b = DiffieHellman.generateA ()
+                    let gB = DiffieHellman.computeGA g b dhPrime
 
-            // Step 8: set_client_DH_params
-            let setDH = serializeSetClientDHParams nonce serverNonce clientDHEncrypted
-            let msgId3 = DateTimeOffset.UtcNow.ToUnixTimeSeconds() <<< 32 ||| 8L
-            let unencrypted3 = UnencryptedMessage.serialize msgId3 setDH
-            match! transport.SendAsync(unencrypted3, ct) with
-            | Error e -> return Error (MtProtoError.TransportError e)
-            | Ok () ->
+                    // Our own g_b must satisfy the same range constraint before we transmit it.
+                    if not (DiffieHellman.validateGARange gB dhPrime) then
+                        return Loop.Stop(Error (MtProtoError.AuthKeyExchangeFailed "computed g_b out of range"))
+                    else
 
-            // Step 9: Receive dh_gen_ok
-            match! transport.ReceiveAsync(ct) with
-            | Error e -> return Error (MtProtoError.TransportError e)
-            | Ok responseData3 ->
+                    let authKeyData = DiffieHellman.computeAuthKey gA b dhPrime
+                    let authKeySha1 = AuthKeyId.sha1 authKeyData
+                    let auxHashBytes = authKeySha1[0..7]
+                    // AuthKeyId reads its int64 little-endian and this value is persisted, so packing
+                    // it architecture-endian via BitConverter would disagree on a big-endian host.
+                    let auxHash = BinaryPrimitives.ReadInt64LittleEndian(ReadOnlySpan<byte>(auxHashBytes))
 
-            match UnencryptedMessage.deserialize responseData3 with
-            | Error e -> return Error e
-            | Ok (_resMsgId3, resBody3) ->
+                    // Step 7: Build client_DH_inner_data
+                    let clientDHInner = serializeClientDHInnerData nonce serverNonce retryId gB
+                    let clientDHInnerWithHash = Bytes.concat2 (AuthKeyId.sha1 clientDHInner) clientDHInner
+                    // Handshake spec: 0..15 padding (NOT the 12..1024 message-padding rule
+                    // — TDLib-strict servers reject > 15 with "Too much pad").
+                    let clientDHPadded = Padding.addHandshakePadding clientDHInnerWithHash
+                    let clientDHEncrypted = AesIge.encrypt clientDHPadded tmpAesKey tmpAesIv
 
-            use resReader3 = new TlReadBuffer(resBody3)
-            let constructorId3 = resReader3.ReadConstructorId()
+                    // Step 8: set_client_DH_params
+                    let setDH = serializeSetClientDHParams nonce serverNonce clientDHEncrypted
+                    let msgId3 = DateTimeOffset.UtcNow.ToUnixTimeSeconds() <<< 32 ||| 8L
+                    let unencrypted3 = UnencryptedMessage.serialize msgId3 setDH
+                    match! transport.SendAsync(unencrypted3, ct) with
+                    | Error e -> return Loop.Stop(Error (MtProtoError.TransportError e))
+                    | Ok () ->
 
-            if constructorId3 = DhGenOk then
-                let genNonce = resReader3.ReadRawBytes(16)
-                let genServerNonce = resReader3.ReadRawBytes(16)
-                let newNonceHash1 = resReader3.ReadRawBytes(16)
+                    // Step 9: Receive dh_gen_ok / dh_gen_retry / dh_gen_fail
+                    match! transport.ReceiveAsync(ct) with
+                    | Error e -> return Loop.Stop(Error (MtProtoError.TransportError e))
+                    | Ok responseData3 ->
 
-                let authKeySha1 = AuthKeyId.sha1 authKeyData
-                let authKeyId = AuthKeyId.compute authKeyData
-                let auxHashBytes = authKeySha1[0..7]
-                // AuthKeyId reads its int64 little-endian and this value is persisted, so packing
-                // it architecture-endian via BitConverter would disagree on a big-endian host.
-                let auxHash = BinaryPrimitives.ReadInt64LittleEndian(ReadOnlySpan<byte>(auxHashBytes))
+                    match UnencryptedMessage.deserialize responseData3 with
+                    | Error e -> return Loop.Stop(Error e)
+                    | Ok (_resMsgId3, resBody3) ->
 
-                // new_nonce_hash1 = substr(SHA1(new_nonce + 0x01 + auth_key_aux_hash), 4, 16).
-                // Confirms the server derived the SAME auth key; a mismatch means a corrupted or
-                // tampered exchange, so the key MUST NOT be trusted.
-                let expectedHash = (AuthKeyId.sha1 (Bytes.concat3 newNonce [| 1uy |] auxHashBytes))[4..19]
+                    use resReader3 = new TlReadBuffer(resBody3)
+                    let constructorId3 = resReader3.ReadConstructorId()
+                    let genNonce = resReader3.ReadRawBytes(16)
+                    let genServerNonce = resReader3.ReadRawBytes(16)
+                    let newNonceHash = resReader3.ReadRawBytes(16)
 
-                if genNonce <> nonce then
-                    return Error (MtProtoError.AuthKeyExchangeFailed "Nonce mismatch in dh_gen_ok")
-                elif genServerNonce <> serverNonce then
-                    return Error (MtProtoError.AuthKeyExchangeFailed "server_nonce mismatch in dh_gen_ok")
-                elif newNonceHash1 <> expectedHash then
-                    return Error (MtProtoError.AuthKeyExchangeFailed "new_nonce_hash1 mismatch — server derived a different auth key")
-                else
+                    // new_nonce_hashN = substr(SHA1(new_nonce + N + auth_key_aux_hash), 4, 16), with
+                    // N = 1 for ok, 2 for retry, 3 for fail. Each confirms the server derived the SAME
+                    // auth key; a mismatch means a corrupted or tampered exchange, so neither the
+                    // key nor the verdict may be trusted.
+                    let expectedHash (tag: byte) =
+                        (AuthKeyId.sha1 (Bytes.concat3 newNonce [| tag |] auxHashBytes))[4..19]
 
-                let salt =
-                    [| 0..7 |] |> Array.fold (fun s i ->
-                        let bv = newNonce[i] ^^^ serverNonce[i]
-                        s ||| (int64 bv <<< (i * 8))) 0L
+                    if genNonce <> nonce then
+                        return Loop.Stop(Error (MtProtoError.AuthKeyExchangeFailed "Nonce mismatch in DH result"))
+                    elif genServerNonce <> serverNonce then
+                        return Loop.Stop(Error (MtProtoError.AuthKeyExchangeFailed "server_nonce mismatch in DH result"))
+                    elif constructorId3 = DhGenOk then
+                        if newNonceHash <> expectedHash 1uy then
+                            return Loop.Stop(Error (MtProtoError.AuthKeyExchangeFailed "new_nonce_hash1 mismatch — server derived a different auth key"))
+                        else
 
-                let authKey = {
-                    Data = authKeyData
-                    Id = authKeyId
-                    AuxHash = auxHash
+                        let salt =
+                            [| 0..7 |] |> Array.fold (fun s i ->
+                                let bv = newNonce[i] ^^^ serverNonce[i]
+                                s ||| (int64 bv <<< (i * 8))) 0L
+
+                        let authKey = {
+                            Data = authKeyData
+                            Id = AuthKeyId.compute authKeyData
+                            AuxHash = auxHash
+                        }
+                        return Loop.Stop(Ok (authKey, salt, timeOffset))
+                    elif constructorId3 = DhGenRetry then
+                        if newNonceHash <> expectedHash 2uy then
+                            return Loop.Stop(Error (MtProtoError.AuthKeyExchangeFailed "new_nonce_hash2 mismatch in dh_gen_retry"))
+                        elif attemptsLeft <= 1 then
+                            return Loop.Stop(Error (MtProtoError.AuthKeyExchangeFailed "dh_gen_retry requested five times"))
+                        else
+                            return Loop.Continue(auxHash, attemptsLeft - 1)
+                    elif constructorId3 = DhGenFail then
+                        if newNonceHash <> expectedHash 3uy then
+                            return Loop.Stop(Error (MtProtoError.AuthKeyExchangeFailed "new_nonce_hash3 mismatch in dh_gen_fail"))
+                        else
+                            return Loop.Stop(Error (MtProtoError.AuthKeyExchangeFailed "dh_gen_fail: the server rejected the DH result"))
+                    else
+                        return Loop.Stop(Error (MtProtoError.AuthKeyExchangeFailed $"Unexpected response: 0x%08x{constructorId3}"))
                 }
-                return Ok (authKey, salt, timeOffset)
-            elif constructorId3 = DhGenRetry then
-                return Error (MtProtoError.AuthKeyExchangeFailed "DH gen retry requested")
-            elif constructorId3 = DhGenFail then
-                return Error (MtProtoError.AuthKeyExchangeFailed "DH gen failed")
-            else
-                return Error (MtProtoError.AuthKeyExchangeFailed $"Unexpected response: 0x%08x{constructorId3}")
+
+            return! Task.loop attempt (0L, 5)
         with ex ->
             return Error (MtProtoError.AuthKeyExchangeFailed $"Handshake failed: {ex.Message}")
     }

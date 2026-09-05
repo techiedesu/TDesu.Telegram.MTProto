@@ -119,7 +119,7 @@ type HttpTransport(dc: DataCenter) =
             tcp.Dispose()
 
             match ex with
-            | :? OperationCanceledException -> return Error TransportError.Timeout
+            | :? OperationCanceledException -> return Error TransportError.Cancelled
             | _ -> return Error(TransportError.ConnectionFailed ex.Message)
     }
 
@@ -138,7 +138,7 @@ type HttpTransport(dc: DataCenter) =
                 ()
 
             if not acquired then
-                return Error TransportError.Timeout
+                return Error TransportError.Cancelled
             else
 
             try
@@ -173,7 +173,7 @@ type HttpTransport(dc: DataCenter) =
                     connected <- false
 
                     match ex with
-                    | :? OperationCanceledException -> return Error TransportError.Timeout
+                    | :? OperationCanceledException -> return Error TransportError.Cancelled
                     | _ -> return Error(TransportError.WriteError ex.Message)
             finally
                 %exchangeLock.Release()
@@ -184,7 +184,7 @@ type HttpTransport(dc: DataCenter) =
             let! item = inbound.Reader.ReadAsync(ct)
             return Ok item
         with
-        | :? OperationCanceledException -> return Error TransportError.Timeout
+        | :? OperationCanceledException -> return Error TransportError.Cancelled
         | :? ChannelClosedException -> return Error TransportError.ConnectionClosed
     }
 

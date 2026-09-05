@@ -65,7 +65,7 @@ type TcpTransport(dc: DataCenter) =
             tcp.Dispose()
 
             match ex with
-            | :? OperationCanceledException -> return Error TransportError.Timeout
+            | :? OperationCanceledException -> return Error TransportError.Cancelled
             | _ -> return Error(TransportError.ConnectionFailed ex.Message)
     }
 
@@ -79,8 +79,16 @@ type TcpTransport(dc: DataCenter) =
                 do! ns.FlushAsync(ct)
                 return Ok ()
             with
-            | :? OperationCanceledException -> return Error TransportError.Timeout
-            | ex -> return Error (TransportError.WriteError ex.Message)
+            // A write that did not finish leaves the stream mid-frame, and the next frame lands
+            // after a half-written one: the reader would eventually see InvalidFrame and reconnect,
+            // but only after the next full read. Retire the connection here, as the obfuscated
+            // carrier does, so the client reconnects at once.
+            | :? OperationCanceledException ->
+                connected <- false
+                return Error TransportError.Cancelled
+            | ex ->
+                connected <- false
+                return Error (TransportError.WriteError ex.Message)
     }
 
     member _.ReceiveAsync(ct: CancellationToken) = task {
@@ -104,7 +112,7 @@ type TcpTransport(dc: DataCenter) =
                         else
                             return Ok payload
             with
-            | :? OperationCanceledException -> return Error TransportError.Timeout
+            | :? OperationCanceledException -> return Error TransportError.Cancelled
             | ex -> return Error (TransportError.ReadError ex.Message)
     }
 

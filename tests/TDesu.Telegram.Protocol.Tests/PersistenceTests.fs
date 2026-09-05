@@ -61,7 +61,7 @@ module PersistenceTests =
     let ``dispatcher rekey reroutes completion to the original task`` () =
         let d = RpcDispatcher()
         let body = [| 1uy; 2uy; 3uy |]
-        let pendingTask = d.RegisterRequest(100L, body)
+        let pendingTask = d.RegisterRequest(100L, 1, body)
 
         match d.TryGetBody 100L with
         | Some b -> CollectionAssert.AreEqual(body, b)
@@ -82,7 +82,7 @@ module PersistenceTests =
     [<Test>]
     let ``a timeout on the original msg_id resolves a rekeyed request`` () =
         let d = RpcDispatcher()
-        let pendingTask = d.RegisterRequest(100L, [| 1uy |])
+        let pendingTask = d.RegisterRequest(100L, 1, [| 1uy |])
         Assert.That(d.Rekey(100L, 200L), Is.True)
         Assert.That(d.FailRequest(100L, MtProtoError.Timeout), Is.True)
 

@@ -1,6 +1,7 @@
 namespace TDesu.Transport
 
 open System
+open System.Buffers.Binary
 open System.Security.Cryptography
 open TDesu.Crypto
 open TDesu.FSharp
@@ -26,19 +27,38 @@ type Aes256Ctr(key: byte[], iv: byte[]) =
             carry <- counter[i] = 0uy
             i <- i - 1
 
-    /// XOR data with the continuing keystream, advancing cipher state.
-    member _.Process(data: byte[]) : byte[] =
-        let out = Array.zeroCreate<byte> data.Length
+    /// XOR `data` with the continuing keystream in place, advancing cipher state.
+    ///
+    /// The keystream block is consumed eight bytes at a time where the alignment allows: the
+    /// byte-at-a-time loop this replaces sat on every obfuscated carrier's hot path, which is
+    /// the carrier the archiver runs on, and did one `TransformBlock` interop call per 16 bytes
+    /// besides — that call stays (CTR needs the block cipher), the byte loop does not.
+    member _.ProcessInPlace(data: Span<byte>) : unit =
+        let mutable j = 0
 
-        for j in 0 .. data.Length - 1 do
+        while j < data.Length do
             if ksPos = 16 then
                 %ecb.TransformBlock(counter, 0, 16, keystream, 0)
                 incrementCounter ()
                 ksPos <- 0
 
-            out[j] <- data[j] ^^^ keystream[ksPos]
-            ksPos <- ksPos + 1
+            let run = min (16 - ksPos) (data.Length - j)
 
+            if run >= 8 then
+                let d = BinaryPrimitives.ReadUInt64LittleEndian(Span.op_Implicit(data.Slice(j, 8)))
+                let k = BinaryPrimitives.ReadUInt64LittleEndian(ReadOnlySpan(keystream, ksPos, 8))
+                BinaryPrimitives.WriteUInt64LittleEndian(data.Slice(j, 8), d ^^^ k)
+                j <- j + 8
+                ksPos <- ksPos + 8
+            else
+                data[j] <- data[j] ^^^ keystream[ksPos]
+                j <- j + 1
+                ksPos <- ksPos + 1
+
+    /// XOR data with the continuing keystream into a new array, advancing cipher state.
+    member this.Process(data: byte[]) : byte[] =
+        let out = Array.copy data
+        this.ProcessInPlace(Span out)
         out
 
     interface IDisposable with

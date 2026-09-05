@@ -12,7 +12,11 @@ type TransportError =
     | ReadError of message: string
     | WriteError of message: string
     | InvalidFrame of message: string
+    /// A deadline the carrier itself enforced. Until 0.13 every carrier reported a cancelled
+    /// operation as this, so "timed out" and "the caller gave up" were indistinguishable.
     | Timeout
+    /// The token handed to the operation fired.
+    | Cancelled
 
 /// Transport abstraction shared by TcpTransport and WsTransport. MtProtoClient and the
 /// auth-key exchange talk to whichever concrete transport through this interface, so the

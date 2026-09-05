@@ -79,8 +79,14 @@ type TcpObfuscatedTransport(dc: DataCenter, ?framing: TransportFraming) =
     member _.IsConnected = connected
 
     member _.ConnectAsync(ct: CancellationToken) = task {
+        // Created outside the `try` so a failed connect can dispose it: with the socket inside, both
+        // failure arms returned `Error` and left the TcpClient (and, once created, both CTR
+        // ciphers) to the finalizer. During a DC outage the client reconnects three times per RPC,
+        // in every loop that calls, so that was hundreds of dangling descriptors a minute.
+        let tcp = new TcpClient()
+        let mutable obf: Obfuscation.State option = None
+
         try
-            let tcp = new TcpClient()
             tcp.NoDelay <- true
             tcp.ReceiveBufferSize <- 64 * 1024
             tcp.SendBufferSize <- 64 * 1024
@@ -97,19 +103,24 @@ type TcpObfuscatedTransport(dc: DataCenter, ?framing: TransportFraming) =
 
             // Obfuscation handshake: send the 64-byte init (cleartext apart from its
             // last 8 encrypted bytes); everything after it is CTR-encrypted.
-            let obf = Obfuscation.create tag dc.Id
-            do! ns.WriteAsync(ReadOnlyMemory obf.InitPacket, ct)
+            let o = Obfuscation.create tag dc.Id
+            obf <- Some o
+            do! ns.WriteAsync(ReadOnlyMemory o.InitPacket, ct)
             do! ns.FlushAsync(ct)
 
             client <- Some tcp
             stream <- Some ns
-            send <- Some obf.Send
-            recv <- Some obf.Recv
+            send <- Some o.Send
+            recv <- Some o.Recv
             connected <- true
             return Ok()
-        with
-        | :? OperationCanceledException -> return Error TransportError.Timeout
-        | ex -> return Error(TransportError.ConnectionFailed ex.Message)
+        with ex ->
+            obf |> Option.iter (fun o -> (o.Send :> IDisposable).Dispose(); (o.Recv :> IDisposable).Dispose())
+            tcp.Dispose()
+
+            match ex with
+            | :? OperationCanceledException -> return Error TransportError.Cancelled
+            | _ -> return Error(TransportError.ConnectionFailed ex.Message)
     }
 
     member _.SendAsync(payload: byte[], ct: CancellationToken) = task {
@@ -131,7 +142,7 @@ type TcpObfuscatedTransport(dc: DataCenter, ?framing: TransportFraming) =
                 connected <- false
 
                 match ex with
-                | :? OperationCanceledException -> return Error TransportError.Timeout
+                | :? OperationCanceledException -> return Error TransportError.Cancelled
                 | _ -> return Error(TransportError.WriteError ex.Message)
         | _ -> return Error TransportError.ConnectionClosed
     }
@@ -158,7 +169,7 @@ type TcpObfuscatedTransport(dc: DataCenter, ?framing: TransportFraming) =
                 connected <- false
 
                 match ex with
-                | :? OperationCanceledException -> return Error TransportError.Timeout
+                | :? OperationCanceledException -> return Error TransportError.Cancelled
                 | _ -> return Error(TransportError.ReadError ex.Message)
         | _ -> return Error TransportError.ConnectionClosed
     }

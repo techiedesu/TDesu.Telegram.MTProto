@@ -1,5 +1,7 @@
 namespace TDesu.MTProto
 
+open System
+open System.Buffers.Binary
 open TDesu.Serialization
 
 /// Unencrypted messages used during DH key exchange.
@@ -15,6 +17,13 @@ module UnencryptedMessage =
         writer.ToArray()
 
     let deserialize (data: byte[]) : Result<int64 * byte[], MtProtoError> =
+        // A 4-byte frame is not a message but a transport error code, sent bare before the server
+        // closes the socket: -404 for an auth key or handshake it rejects, -444 for a bad DC. Read
+        // as a message it was "Expected auth_key_id = 0", which said nothing about the cause.
+        if data.Length = 4 then
+            Error(MtProtoError.TransportErrorCode(BinaryPrimitives.ReadInt32LittleEndian(ReadOnlySpan data)))
+        else
+
         try
             use reader = new TlReadBuffer(data)
             let authKeyId = reader.ReadInt64()
