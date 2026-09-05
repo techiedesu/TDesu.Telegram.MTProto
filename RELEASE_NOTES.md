@@ -32,6 +32,14 @@ carries the same code and the same `_WAIT_` marker but is a per-chat limit set b
 not a per-account throttle, so it — and every other 420 message — is left as a plain `RpcError`;
 the parser checks the prefix before the marker, not just the marker, to tell them apart.
 
+Service messages (`msgs_ack`, `ping_delay_disconnect`, `msg_resend_req`, `msgs_state_info`) are
+encoded with Serialization 0.4.1's `Tl.bytesOf`; the private writer helper that did the same is
+gone.
+
+### Dependencies
+
+TDesu.Telegram.Serialization 0.4.1 (`Tl.build`/`Tl.bytesOf`); everything else as in 0.13.0.
+
 ## 0.13.0
 
 ### Generator

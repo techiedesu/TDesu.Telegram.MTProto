@@ -197,26 +197,16 @@ type MtProtoClient
 
         output.ToArray()
 
-    /// Serialize a generated service type into a message body.
-    ///
-    /// These used to be hand-written: a literal constructor id, a literal vector id, a length and a
-    /// loop, per message type. That is the byte-poking the generator exists to make unnecessary, and
-    /// it is how a schema change becomes a silent wire bug instead of a compile error.
-    let serializeService (write: TlWriteBuffer -> unit) : byte[] =
-        use w = new TlWriteBuffer()
-        write w
-        w.ToArray()
-
-    let buildMsgsAck (ids: int64[]) : byte[] =
-        serializeService (fun w -> MsgsAck.Serialize(w, { MsgIds = ids }))
+    // Service messages are the generated records, encoded by `Tl.bytesOf`. They used to be
+    // hand-written: a literal constructor id, a literal vector id, a length and a loop, per message
+    // type. That is the byte-poking the generator exists to make unnecessary, and it is how a schema
+    // change becomes a silent wire bug instead of a compile error.
+    let buildMsgsAck (ids: int64[]) : byte[] = Tl.bytesOf { MsgsAck.MsgIds = ids }
 
     let buildPing (pingId: int64) (disconnectDelay: int) : byte[] =
-        serializeService (fun w ->
-            PingDelayDisconnect.Serialize(
-                w,
-                { PingId = pingId
-                  DisconnectDelay = disconnectDelay }
-            ))
+        Tl.bytesOf
+            { PingDelayDisconnect.PingId = pingId
+              DisconnectDelay = disconnectDelay }
 
     /// Send an already-built TL body as an encrypted message under the send lock; returns its
     /// msg_id. Does NOT register for a response — for fire-and-forget service messages (ack, ping).
@@ -573,9 +563,7 @@ type MtProtoClient
                         %Task.Run(
                             Func<Task>(fun () ->
                                 task {
-                                    let body =
-                                        serializeService (fun w ->
-                                            MsgResendReq.Serialize(w, { MsgIds = [| answerMsgId |] }))
+                                    let body = Tl.bytesOf { MsgResendReq.MsgIds = [| answerMsgId |] }
 
                                     match! sendServiceMessage body false CancellationToken.None with
                                     | Ok _ -> ()
@@ -623,9 +611,7 @@ type MtProtoClient
                     %Task.Run(
                         Func<Task>(fun () ->
                             task {
-                                let body =
-                                    serializeService (fun w ->
-                                        MsgsStateInfo.Serialize(w, { ReqMsgId = msgId; Info = info }))
+                                let body = Tl.bytesOf { MsgsStateInfo.ReqMsgId = msgId; Info = info }
 
                                 match! sendServiceMessage body false CancellationToken.None with
                                 | Ok _ -> ()
@@ -677,9 +663,7 @@ type MtProtoClient
                                         |> Array.map (fun id -> if wasSeen id then '\004' else '\001')
                                         |> System.String
 
-                                    let reply =
-                                        serializeService (fun w ->
-                                            MsgsStateInfo.Serialize(w, { ReqMsgId = msgId; Info = info }))
+                                    let reply = Tl.bytesOf { MsgsStateInfo.ReqMsgId = msgId; Info = info }
 
                                     match! sendServiceMessage reply false CancellationToken.None with
                                     | Ok _ -> ()
