@@ -138,10 +138,11 @@ module EmitTypes =
         | "bool" -> mkApp (mkDotGet reader "ReadBool") mkUnit
         | "string" -> mkApp (mkDotGet reader "ReadString") mkUnit
         | "byte[]" -> mkApp (mkDotGet reader "ReadBytes") mkUnit
-        // Opaque type ref — read side can't structurally parse it without
-        // the schema; ReadBytes preserves prior behavior. Callers that need
-        // structured access should whitelist the opaque type's constructors.
-        | "rawBytes" -> mkApp (mkDotGet reader "ReadBytes") mkUnit
+        // Opaque type ref: a `!X` type-variable field (`SchemaMapper.rewriteStubField` marks it
+        // `rawBytes`). The caller owns a complete pre-serialized TL value with no length prefix of
+        // its own, and a bare type variable is always the tail of the message on the wire, so
+        // reading it is "the rest of the buffer", not the length-prefixed `bytes` primitive.
+        | "rawBytes" -> mkApp (mkDotGet reader "ReadRawBytes") (mkParen (mkDotGet reader "Remaining"))
         | t when IrType.isFixedBytes t ->
             mkApp (mkDotGet reader "ReadRawBytes") (mkParen (mkInt32 (IrType.fixedWidth t).Value))
         | t when IrType.isBareVector t ->

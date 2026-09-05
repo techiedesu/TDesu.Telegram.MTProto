@@ -38,6 +38,9 @@ type MtProtoError =
     /// A 303 naming the DC the request belongs to: `kind` is the prefix (`PHONE`, `NETWORK`,
     /// `FILE`, `USER`, `STATS`), `dc` the number after `_MIGRATE_`.
     | Migrate of kind: string * dc: int
+    /// rpc_error 420 `FLOOD_WAIT_n` / `FLOOD_PREMIUM_WAIT_n`: the account must not call for
+    /// `seconds`.
+    | FloodWait of seconds: int
     /// A `bad_msg_notification` the client could not repair by itself; the code is the server's.
     | BadMsgNotification of code: int
     /// No session: the client was never connected, or was disconnected and not revived.
@@ -63,6 +66,20 @@ module MtProtoError =
             if at > 0 then
                 match Int32.TryParse(message.Substring(at + marker.Length)) with
                 | true, dc -> MtProtoError.Migrate(message.Substring(0, at), dc)
+                | _ -> MtProtoError.RpcError(code, message)
+            else
+                MtProtoError.RpcError(code, message)
+        elif code = 420 then
+            // `SLOWMODE_WAIT_n` also contains the `_WAIT_` marker but is a per-chat limit, not an
+            // account-wide one, so the prefix — not just the marker — decides whether this is a
+            // flood wait.
+            let marker = "_WAIT_"
+            let at = message.IndexOf(marker, StringComparison.Ordinal)
+            let prefix = if at > 0 then message.Substring(0, at) else ""
+
+            if prefix = "FLOOD" || prefix = "FLOOD_PREMIUM" then
+                match Int32.TryParse(message.Substring(at + marker.Length)) with
+                | true, seconds -> MtProtoError.FloodWait seconds
                 | _ -> MtProtoError.RpcError(code, message)
             else
                 MtProtoError.RpcError(code, message)

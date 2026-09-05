@@ -1,5 +1,37 @@
 # Release notes
 
+## 0.13.1
+
+### Generator
+
+**A `!X` type-variable field is written and read as raw bytes, not the length-prefixed `bytes`
+primitive.** The `types` target's field-type resolution collapsed a bare type-variable field
+(`query:!X` on a polymorphic wrapper like `invokeWithLayer#da9b0d0d {X:Type} layer:int query:!X =
+X;`) and a genuine TL `bytes` field to the same F# `byte[]`, and the emitter picked `WriteBytes`/
+`ReadBytes` for both — the same corruption `EmitWriters.fs` fixed for an unresolved boxed
+reference in April 2026, still open on this target. A `!X` field carries a complete
+pre-serialized TL value (the wrapped call's own constructor id and body) with no length prefix of
+its own; wrapping it in a `bytes` envelope adds a length prefix and padding a real client reads as
+the start of that inner constructor id instead, corrupting everything the wrapper carries.
+`SchemaMapper.fs` now carries the field through to the emitter with the same `rawBytes` sentinel
+the writers target already used for this, so `Serialize` emits `WriteRawBytes` and
+`DeserializeFields` emits `ReadRawBytes(reader.Remaining)` — a bare type variable is always the
+tail of the message, which is what makes reading to the end of the buffer correct. A genuine
+`bytes` field is unaffected and keeps `WriteBytes`/`ReadBytes`. A consumer can now whitelist
+`invokeWithLayer`/`initConnection` in the `types` target and delete its hand-written wrapper for
+them; regenerating this repository's own `TDesu.Telegram.Protocol` service layer against
+`mtproto.tl` is unaffected, since nothing in that schema declares a `!X` field.
+
+### Protocol
+
+**`MtProtoError` has a `FloodWait` case.** A 420 `rpc_error` whose message is `FLOOD_WAIT_<n>` or
+`FLOOD_PREMIUM_WAIT_<n>` is the server naming the exact account-wide backoff, the same shape
+`Migrate` already gives a 303, and every caller was left to parse `_WAIT_` out of the string
+itself instead. `MtProtoError.ofRpcError` now returns `FloodWait n` for both. `SLOWMODE_WAIT_<n>`
+carries the same code and the same `_WAIT_` marker but is a per-chat limit set by the chat admin,
+not a per-account throttle, so it — and every other 420 message — is left as a plain `RpcError`;
+the parser checks the prefix before the marker, not just the marker, to tell them apart.
+
 ## 0.13.0
 
 ### Generator

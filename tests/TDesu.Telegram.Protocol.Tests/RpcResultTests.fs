@@ -130,8 +130,8 @@ module RpcResultTests =
             client.RpcAsync([| 1uy; 2uy; 3uy; 4uy |], CancellationToken.None).GetAwaiter().GetResult()
 
         match result with
-        | Error(MtProtoError.RpcError(420, "FLOOD_WAIT_42")) -> ()
-        | other -> Assert.Fail($"expected RpcError(420, FLOOD_WAIT_42), got %A{other}")
+        | Error(MtProtoError.FloodWait 42) -> ()
+        | other -> Assert.Fail($"expected FloodWait 42, got %A{other}")
 
     /// Paired with the case above: a fix that stopped forwarding rpc_error but also broke plain
     /// results would still pass an error-only test, and a client that failed every request would

@@ -253,4 +253,15 @@ module ReconnectTests =
         Assert.That(MtProtoError.ofRpcError 303 "FILE_MIGRATE_4", Is.EqualTo(MtProtoError.Migrate("FILE", 4)))
         Assert.That(MtProtoError.ofRpcError 303 "PHONE_MIGRATE_2", Is.EqualTo(MtProtoError.Migrate("PHONE", 2)))
         Assert.That(MtProtoError.ofRpcError 303 "SEE_OTHER", Is.EqualTo(MtProtoError.RpcError(303, "SEE_OTHER")))
-        Assert.That(MtProtoError.ofRpcError 420 "FLOOD_WAIT_3", Is.EqualTo(MtProtoError.RpcError(420, "FLOOD_WAIT_3")))
+
+    /// A flood wait is its own case, the same way a migrate is: `FLOOD_WAIT_n` and
+    /// `FLOOD_PREMIUM_WAIT_n` both mean the account must not call for `n` seconds.
+    /// `SLOWMODE_WAIT_n` carries the same code and the same `_WAIT_` marker but is a per-chat
+    /// limit, not an account-wide one, so it must stay a plain `RpcError`.
+    [<Test>]
+    let ``a 420 flood wait error is split into its seconds`` () =
+        Assert.That(MtProtoError.ofRpcError 420 "FLOOD_WAIT_30", Is.EqualTo(MtProtoError.FloodWait 30))
+        Assert.That(MtProtoError.ofRpcError 420 "FLOOD_PREMIUM_WAIT_7", Is.EqualTo(MtProtoError.FloodWait 7))
+        Assert.That(MtProtoError.ofRpcError 420 "SLOWMODE_WAIT_5", Is.EqualTo(MtProtoError.RpcError(420, "SLOWMODE_WAIT_5")))
+        Assert.That(MtProtoError.ofRpcError 400 "FLOOD_WAIT_30", Is.EqualTo(MtProtoError.RpcError(400, "FLOOD_WAIT_30")))
+        Assert.That(MtProtoError.ofRpcError 420 "FLOOD_WAIT_x", Is.EqualTo(MtProtoError.RpcError(420, "FLOOD_WAIT_x")))

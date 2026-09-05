@@ -116,6 +116,30 @@ module CodeGeneratorTests =
             Pipeline.generateSerializationTypes testNs config apiSchema path
             assertMatchesSnapshot (normalizeTimestamp (File.ReadAllText path)) "CodeGen_SerializationTypes")
 
+    /// The `types` target collapsed a `!X` type-variable field and a genuine TL `bytes` field to
+    /// the same F# `byte[]` and picked `WriteBytes`/`ReadBytes` for both. A `!X` field carries a
+    /// complete pre-serialized TL value with no length prefix of its own — `bytes` framing around
+    /// it corrupts everything the wrapper carries. `invokeWithLayer`'s `query` field pins
+    /// `WriteRawBytes`/`ReadRawBytes(reader.Remaining)`; `testBytesField`'s `data` field pins that
+    /// a genuine `bytes` field is unaffected.
+    [<Test>]
+    let ``generateSerializationTypes emits raw bytes for a type-variable field, not length-prefixed bytes`` () =
+        let rawBytesSchema =
+            match
+                AstFactory.parse
+                    "testBytesField#3f9a8ce1 data:bytes = TestBytesField;\n---functions---\ninvokeWithLayer#da9b0d0d {X:Type} layer:int query:!X = X;\n"
+            with
+            | Ok s -> s
+            | Error e -> failwith e
+
+        let config =
+            { OverrideConfig.empty with
+                TypeWhitelist = set [ "TestBytesField"; "InvokeWithLayer" ] }
+
+        withTempFile (fun path ->
+            Pipeline.generateSerializationTypes testNs config rawBytesSchema path
+            assertMatchesSnapshot (normalizeTimestamp (File.ReadAllText path)) "CodeGen_RawBytesTypeVar")
+
     [<Test>]
     let ``generateErgonomics`` () =
         let config =

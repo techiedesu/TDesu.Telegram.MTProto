@@ -362,12 +362,18 @@ module SchemaMapper =
                     let inner = t.Substring(0, t.Length - 6)
                     $"%s{rewrite inner} array"
                 elif t = "obj" then
-                    // Unmapped TL type (typically a `!X` type variable on a
-                    // polymorphic wrapper like invokeAfterMsg / invokeWithLayer).
-                    // There's no generated type to (de)serialize, so treat it as
-                    // opaque bytes — these wrappers are transport-level and never
-                    // round-tripped as typed records.
-                    "byte[]"
+                    // Unmapped TL type: a `!X` type variable on a polymorphic wrapper like
+                    // invokeAfterMsg / invokeWithLayer. There's no generated type to (de)serialize
+                    // structurally — the field carries a complete pre-serialized TL value
+                    // (constructor id + payload) that the caller hands over whole, the same
+                    // contract `EmitWriters.fs` already gives an unresolved boxed reference. The
+                    // `rawBytes` sentinel keeps that distinct from a genuine TL `bytes` field: both
+                    // spell `byte[]` in F#, but only `bytes` is length-prefixed on the wire.
+                    // Collapsing the two to `"byte[]"` here (pre-2026-09-05) made `EmitTypes`
+                    // write `!X` through `WriteBytes`, adding a length prefix and padding that
+                    // corrupts everything the wrapper carries — a real client reads the prefix as
+                    // the start of the inner call's own constructor id.
+                    IrType.RawBytes
                 else
                     let pascal = t.Substring(0, 1).ToUpperInvariant() + t.Substring(1)
                     if stubs.Contains pascal || stubs.Contains t then "byte[]" else t
