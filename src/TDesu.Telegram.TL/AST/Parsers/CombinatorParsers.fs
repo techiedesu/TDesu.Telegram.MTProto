@@ -32,8 +32,27 @@ let private typesSection<'a> : Parser<unit, 'a> =
 let private functionsSection<'a> : Parser<unit, 'a> =
     pstring "---functions---" >>. skipRestOfLine true
 
+/// Field names referenced by every `flags.N?Type` conditional nested inside a type
+/// expression — including one wrapped in `Vector<...>`/`vector<...>`, since the
+/// vector still has to know which flag bit gates its presence.
+let rec private conditionalFieldRefs (t: TlTypeExpr) : string list =
+    match t with
+    | TlTypeExpr.Conditional(fieldRef, _, inner) -> fieldRef :: conditionalFieldRefs inner
+    | TlTypeExpr.Vector(_, inner) -> conditionalFieldRefs inner
+    | TlTypeExpr.Bare _
+    | TlTypeExpr.Boxed _
+    | TlTypeExpr.TypeVar _
+    | TlTypeExpr.Nat -> []
+
 /// Parse a full combinator line:
 /// `name#hexid {X:Type} param1:type1 param2:type2 = ResultType;`
+///
+/// Validates every `flags.N?Type` reference against the combinator's own `Params`
+/// as the last parsing step: the grammar alone accepts any identifier before the
+/// `.`, so a typo'd or renamed flags field (`flags2.0?T` in a combinator that only
+/// declares `flags:#`) used to parse cleanly and fail only once the emitter tried
+/// to read a field that isn't there. Failing here names the constructor and the
+/// bad reference at the point the schema is read, not three stages downstream.
 let combinator : Parser<TlCombinator, unit> =
     let combinatorId =
         namespacedIdent .>>. opt (attempt constructorId)
@@ -48,14 +67,32 @@ let combinator : Parser<TlCombinator, unit> =
         ws >>. pchar '=' >>. ws >>. typeExpr .>> ws .>> pchar ';'
 
     combinatorId .>>. typeParams .>>. params' .>>. resultType
-    |>> fun ((((ident, ctorId), typePs), parms), resType) ->
-        {
-            Id = ident
-            ConstructorId = ctorId
-            TypeParams = typePs
-            Params = parms
-            ResultType = resType
-        }
+    >>= fun ((((ident, ctorId), typePs), parms), resType) ->
+        let paramNames = parms |> List.map (fun p -> p.Name) |> Set.ofList
+        let badRefs =
+            parms
+            |> List.collect (fun p -> conditionalFieldRefs p.Type)
+            |> List.distinct
+            |> List.filter (fun name -> not (paramNames.Contains name))
+
+        match badRefs with
+        | [] ->
+            preturn {
+                Id = ident
+                ConstructorId = ctorId
+                TypeParams = typePs
+                Params = parms
+                ResultType = resType
+            }
+        | bad ->
+            let ctorName =
+                match ident.Namespace with
+                | Some ns -> $"%s{ns}.%s{ident.Name}"
+                | None -> ident.Name
+            let badList = String.concat ", " bad
+            fail
+                $"combinator '%s{ctorName}': flags reference(s) %s{badList} \
+                  do not name a parameter declared on this constructor"
 
 /// Represents a parsed line in the schema
 type private SchemaLine =

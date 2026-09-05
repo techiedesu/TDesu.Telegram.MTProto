@@ -41,7 +41,23 @@ module EmitTemplates =
         |> Map.ofList
 
     /// Generate the Cid + LayerCid modules with overrides applied.
+    ///
+    /// Fails when `apiSchema.Layer` is `None` (no `// LAYER N` directive): the audit
+    /// (`docs/tdesu-libraries-audit.md`, "TDesu.Telegram.TL / TL.Generator") measured
+    /// a real consumer's `GeneratedLayerCid.DefaultLayer` sitting at a hand-typed 223
+    /// while its `cached/api.tl` said `// LAYER 229` — the parser already extracted the
+    /// directive and nothing read it. A schema with no layer directive cannot be
+    /// advertised at all, so pinning something to it here would only reintroduce the
+    /// same silent drift one step later.
     let generateCidModule (ns: string) (config: OverrideConfig) (mtprotoSchema: TlSchema) (apiSchema: TlSchema) : string =
+        let layer =
+            match apiSchema.Layer with
+            | Some n -> n
+            | None ->
+                failwith
+                    "generateCidModule: the API schema has no `// LAYER N` directive — \
+                     a schema without a layer cannot be advertised to the server"
+
         let sb = System.Text.StringBuilder()
         // `AppendLine` writes Environment.NewLine, so the emitted bytes would
         // depend on the machine that ran the generator — CRLF on Windows, LF
@@ -103,9 +119,17 @@ module EmitTemplates =
         ln "[<RequireQualifiedAccess>]"
         ln "module GeneratedLayerCid ="
         ln0 ()
-        ln "    /// Default layer when client hasn't sent invokeWithLayer yet."
+        ln "    /// The schema's own layer, parsed from its `// LAYER N` directive."
+        ln "    /// Consumers pin `CurrentLayer` (or equivalent) to this instead of a"
+        ln "    /// hand-copied literal, turning the drift the audit measured into a"
+        ln "    /// compile-time equality."
         ln "    [<Literal>]"
-        ln "    let DefaultLayer = 223"
+        ln $"    let Layer = %d{layer}"
+        ln0 ()
+        ln "    /// Default layer when client hasn't sent invokeWithLayer yet. Always"
+        ln "    /// equal to `Layer` — a schema advertises exactly one layer."
+        ln "    [<Literal>]"
+        ln $"    let DefaultLayer = %d{layer}"
         ln0 ()
         ln "    /// Minimum supported layer."
         ln "    [<Literal>]"

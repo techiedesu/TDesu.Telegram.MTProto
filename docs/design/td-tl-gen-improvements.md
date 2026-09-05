@@ -36,8 +36,12 @@ the same tension.
 
 Restore implicit transitive closure in the generator. The `types` target
 must emit not just what the whitelist names, but also every type
-transitively required to keep the `writers` (and `client-parsers`) target
-self-consistent.
+transitively required to keep the `writers` target self-consistent. (At
+the time this was written the `client-parsers` target existed too and is
+named throughout this section for that reason; 0.13.0 removed it once
+this closure made it redundant — see `RELEASE_NOTES.md`'s 0.13.0 entry —
+so read every `client-parsers` mention below as history, not current
+surface.)
 
 ### Algorithm
 
@@ -54,8 +58,6 @@ set for the `types` target that is a strict superset of the whitelist.
 2. Build the initial seed set from the whitelist. Seeds MUST include:
      * every boxed type in `[whitelists].types`
      * every boxed type of a constructor in `[whitelists].writers`
-     * every boxed type of a client-parsed function's RETURN type in
-       `[whitelists].client_parsers`
      * every writer_layer_type's boxed type
 
 3. BFS from the seed set:
@@ -425,3 +427,44 @@ Once §2 is upstream:
 
 If §1 (closure) ships in the same version as §2, do both follow-ups
 in a single commit and drop `--no-whitelist` at the same time.
+
+---
+
+## 3. Schema layer literal
+
+### Problem
+
+`EmitTemplates.generateCidModule` emitted `GeneratedLayerCid.DefaultLayer` (and
+`MinSupportedLayer`) as string literals baked into `EmitTemplates.fs` — `223` and
+`190` respectively — regardless of what schema the invocation actually parsed.
+`CombinatorParsers.schema` already extracted the `// LAYER N` directive into
+`TlSchema.Layer` (`AST/Parsers/CombinatorParsers.fs`), but nothing downstream read
+it. The audit (`docs/tdesu-libraries-audit.md`, "TDesu.Telegram.TL / TL.Generator")
+measured a real consumer's `GeneratedCid.g.fs` advertising layer 223 while its
+`cached/api.tl` was generated against `// LAYER 229` — a hand-typed literal that had
+silently gone stale by six layers. A client that advertises a stale layer via
+`invokeWithLayer` and then deserializes with the newer schema's field/CID
+assumptions gets a response shaped for the layer it lied about, silently, for the
+account-critical types (`user`, `channel`) most likely to have changed shape.
+
+### Fix (shipped in 0.13.0)
+
+`generateCidModule` now reads `apiSchema.Layer` and emits it as both
+`GeneratedLayerCid.Layer` and `GeneratedLayerCid.DefaultLayer` — the two are always
+equal, because a given schema advertises exactly one layer; `Layer` is the new,
+canonical name a consumer pins `CurrentLayer` (or equivalent) to, and `DefaultLayer`
+is kept for source compatibility with callers that already read it.
+`MinSupportedLayer` is unaffected (190, unrelated to the schema's own layer — it is
+the oldest layer this generator's writers still target).
+
+A schema with no `// LAYER N` directive at all cannot be advertised to the server,
+so `generateCidModule` fails the run rather than falling back to a literal — the
+exact failure mode this section exists to close. `AstFactory`/`TlSchema` needed no
+change: the parsed layer was already on the schema record, unread.
+
+### Consumer follow-up
+
+Pin `CurrentLayer` (or whatever the consumer's protocol layer constant is named) to
+`GeneratedLayerCid.Layer` instead of a hand-copied number, so a schema regen that
+bumps the layer is a compile-time-verified, single-source change instead of a
+silent drift caught only by re-reading the schema file by hand.

@@ -16,6 +16,7 @@ td-tl-gen — F# code generator for Telegram TL schemas
 
 Usage:
   td-tl-gen --schema <path> --output <dir> --namespace <ns> --overrides <toml> --target <names>
+  td-tl-gen --version
 
 Required flags:
   --schema <path>             Path to .tl schema file (e.g. cached/api.tl)
@@ -33,10 +34,10 @@ Available targets:
   tests              Round-trip tests for whitelisted request types
   layer-aliases      L_old ↔ L_new function CID aliases (requires --layer-base-schema)
   client-cids        Flat literal table of all function/constructor CIDs
-  client-parsers     Response parsers for client.parsers whitelist
   all                Equivalent to: cid,types,writers,coverage,return-types
 
 Optional flags:
+  --version                   Print the tool's own version and exit.
   --mtproto-schema <path>     MTProto-level schema (e.g. schema/mtproto.tl).
                               Required by `cid`; optional for `csharp`, where it
                               merges the mtproto combinators
@@ -46,7 +47,7 @@ Optional flags:
                               logged. Omit it and `csharp` emits api.tl only.
   --layer-base-schema <path>  Required only by `layer-aliases` target
   --tests-namespace <ns>      Override namespace for `tests` (defaults to <namespace>.Tests)
-  --client-namespace <ns>     Override namespace for client-cids/client-parsers
+  --client-namespace <ns>     Override namespace for client-cids
                               (defaults to <namespace>.Client.Api)
   --split-by-domain           For `types` target: emit one F# file per TL domain
                               under <output>/Requests/, plus a Requests.targets
@@ -67,17 +68,18 @@ Optional flags:
                               imported from Requests.targets in place of a
                               single Base.g.fs entry. Opt-in; requires
                               --split-by-domain. Default off.
-  --no-whitelist              Ignore the type/writer/client-parser whitelists and
-                              emit the FULL schema for whichever of the
-                              `types`/`writers`/`tests`/`client-parsers` targets
-                              run in this invocation. CIDs are unchanged (derived
-                              from the TL), so wire compatibility is preserved;
+  --no-whitelist              Ignore the type/writer whitelists and emit the
+                              FULL schema for whichever of the
+                              `types`/`writers`/`tests` targets run in this
+                              invocation. CIDs are unchanged (derived from the
+                              TL), so wire compatibility is preserved;
                               `stub_types`, aliases, layer-variants and
                               structural-overlays from the overrides still apply.
   --split-by-class            For `csharp` target: emit one .g.cs file per
                               top-level TL declaration (Record → its own file,
                               Union + all case classes → one file named after the
                               base type) instead of the single GeneratedTl.g.cs.
+                              Requires --target csharp; an error otherwise.
   --clean                     Delete all *.g.cs files in the output directory
                               before writing. Recommended with --split-by-class
                               to remove files for types deleted from the schema.
@@ -117,6 +119,7 @@ Sample overrides config: samples/ServerOverrides/server-overrides.toml
             "--no-whitelist", false
             "--split-by-class", false
             "--clean", false
+            "--version", false
         ]
 
     /// Reject an argument the generator does not recognise, and any bare word
@@ -179,31 +182,28 @@ Sample overrides config: samples/ServerOverrides/server-overrides.toml
             [ "--mtproto-schema", flagGiven "--mtproto-schema", Targets [ "cid"; "csharp" ]
               "--layer-base-schema", flagGiven "--layer-base-schema", Targets [ "layer-aliases" ]
               "--tests-namespace", flagGiven "--tests-namespace", Targets [ "tests" ]
-              "--client-namespace", flagGiven "--client-namespace", Targets [ "client-cids"; "client-parsers" ]
+              "--client-namespace", flagGiven "--client-namespace", Targets [ "client-cids" ]
               "--split-by-domain", switchGiven "--split-by-domain", Targets [ "types" ]
               "--split-by-scc", switchGiven "--split-by-scc", Targets [ "types" ]
               "--split-domains", flagGiven "--split-domains", Targets [ "types" ]
-              "--no-whitelist", switchGiven "--no-whitelist", Targets [ "types"; "writers"; "tests"; "client-parsers" ]
-              "--split-by-class", switchGiven "--split-by-class", Targets [ "csharp" ]
+              "--no-whitelist", switchGiven "--no-whitelist", Targets [ "types"; "writers"; "tests" ]
               "--clean", switchGiven "--clean", Targets [ "csharp" ] ]
 
-        // The overrides file is one `--overrides` argument carrying twelve
+        // The overrides file is one `--overrides` argument carrying ten
         // independent channels. A target set that reads none of a populated
         // channel discards it just as silently as a mistyped flag does.
         let sections =
             [ "[[layer_variants]]", not config.LayerVariants.IsEmpty,
-              Targets [ "cid"; "types"; "tests"; "client-parsers"; "writers" ]
+              Targets [ "cid"; "types"; "tests"; "writers" ]
               "[[structural_overlays]]", not config.StructuralOverlays.IsEmpty, Targets [ "writers" ]
               "[[aliases]]", not config.Aliases.IsEmpty,
-              Targets [ "cid"; "types"; "tests"; "client-parsers"; "coverage"; "return-types" ]
+              Targets [ "cid"; "types"; "tests"; "coverage"; "return-types" ]
               "[[extras]]", not config.Extras.IsEmpty, Targets [ "cid" ]
               "[[extra_combinators]]", not config.ExtraCombinators.IsEmpty, AllTargets
-              "[layer_type_info]", not config.LayerTypeInfo.IsEmpty, NoTarget
-              "[whitelists].types", not config.TypeWhitelist.IsEmpty, Targets [ "types"; "tests"; "client-parsers" ]
+              "[whitelists].types", not config.TypeWhitelist.IsEmpty, Targets [ "types"; "tests" ]
               "[whitelists].writers", not config.WriterWhitelist.IsEmpty, Targets [ "writers" ]
               "[whitelists].writer_layer_types", not config.WriterLayerTypes.IsEmpty, Targets [ "writers" ]
-              "[whitelists].stub_types", not config.StubTypes.IsEmpty, Targets [ "types"; "tests"; "client-parsers" ]
-              "[whitelists].client_parsers", not config.ClientParserWhitelist.IsEmpty, Targets [ "client-parsers" ]
+              "[whitelists].stub_types", not config.StubTypes.IsEmpty, Targets [ "types"; "tests" ]
               "[whitelists].writer_record_per_case_unions", not config.WriterRecordPerCaseUnions.IsEmpty,
               Targets [ "writers" ] ]
 
@@ -243,9 +243,29 @@ Sample overrides config: samples/ServerOverrides/server-overrides.toml
                 log.LogError("Failed to parse {Kind} schema: {Error}", kind, err)
                 None
 
+    /// The tool's own informational version, as MinVer stamps it onto the
+    /// assembly (`AssemblyInformationalVersionAttribute`) at build time —
+    /// includes the git height/hash suffix for a non-tagged build, unlike
+    /// `AssemblyVersion`. Answers "unknown" only if the attribute is somehow
+    /// absent (e.g. a manual `dotnet build` of a single .fs file outside MSBuild).
+    let private toolVersion () : string =
+        let asm = System.Reflection.Assembly.GetExecutingAssembly()
+        asm.GetCustomAttributes(typeof<System.Reflection.AssemblyInformationalVersionAttribute>, false)
+        |> Array.tryHead
+        |> Option.map (fun a -> (a :?> System.Reflection.AssemblyInformationalVersionAttribute).InformationalVersion)
+        |> Option.defaultValue "unknown"
+
     [<EntryPoint>]
     let main argv =
         let log = Logger.get "td-tl-gen"
+
+        // Checked before anything else: `--version` needs none of the other
+        // required flags, and must work even when the rest of the command
+        // line is nonsense.
+        if argv |> Array.exists (fun s -> s = "--version") then
+            printfn "td-tl-gen %s" (toolVersion ())
+            0
+        else
 
         let schemaPath = argv |> tryGetArg "--schema"
         let mtprotoSchemaPath = argv |> tryGetArg "--mtproto-schema"
@@ -314,17 +334,17 @@ Sample overrides config: samples/ServerOverrides/server-overrides.toml
                     // parsed schema so downstream targets see them uniformly.
                     let apiSchema = SchemaAugment.fold config baseApiSchema
 
-                    // `--no-whitelist`: seed the type/writer/client-parser
-                    // whitelists with every name in the (augmented) schema, so
-                    // the whitelist-filtered targets emit the full surface. The
+                    // `--no-whitelist`: seed the type/writer whitelists with
+                    // every name in the (augmented) schema, so the
+                    // whitelist-filtered targets emit the full surface. The
                     // BFS resolver still skips `stub_types` (kept opaque), and
                     // aliases / layer-variants / overlays are untouched. CIDs
                     // are schema-derived, so this only widens coverage.
                     let config =
                         if noWhitelist then
                             let allTypes, allFuncs = SchemaMapper.mapSchema apiSchema
-                            // `types`/`client-parsers` match Pascal result-type
-                            // names; `writers` filter on the TL combinator name
+                            // `types` matches Pascal result-type names;
+                            // `writers` filter on the TL combinator name
                             // (snake_case) — seed each with the right projection.
                             let typeNames =
                                 allTypes
@@ -340,8 +360,7 @@ Sample overrides config: samples/ServerOverrides/server-overrides.toml
                                 typeNames.Count, funcNames.Count, ctorTlNames.Count)
                             { config with
                                 TypeWhitelist = Set.union typeNames funcNames
-                                WriterWhitelist = ctorTlNames
-                                ClientParserWhitelist = typeNames }
+                                WriterWhitelist = ctorTlNames }
                         else
                             config
 
@@ -353,6 +372,30 @@ Sample overrides config: samples/ServerOverrides/server-overrides.toml
                     let resolvedClientNs = defaultArg clientNs $"{ns}.Client.Api"
 
                     let mutable failed = false
+
+                    // `--split-by-scc` (line 406 below) requires `--split-by-domain`
+                    // as a hard error; `--split-by-class` used to only warn (via
+                    // `ignoredInputs`) when given without `csharp` — the same
+                    // "flag silently did nothing" shape, now the same error.
+                    if splitByClass && not (targets.Contains "csharp") then
+                        log.LogError("--split-by-class requires --target csharp (it further splits that target's per-type files)")
+                        failed <- true
+
+                    // Removed in 0.13.0: `types` now emits the whitelist's
+                    // transitive closure (docs/design/td-tl-gen-improvements.md
+                    // §1), so a `client-parsers` run had become an empty module
+                    // by construction — the audit's "TDesu.Telegram.TL /
+                    // TL.Generator" section measured 20 lines of bare header.
+                    // Named here instead of falling through to the generic
+                    // "Unknown target(s)" message below, so a consumer still
+                    // building the old CLI invocation is told what happened and
+                    // what replaces it, not just that the name is unrecognised.
+                    if targets.Contains "client-parsers" then
+                        log.LogError(
+                            "target 'client-parsers' was removed in td-tl-gen 0.13.0 — `types` \
+                             now emits the whitelist's transitive closure, so client-parsers had \
+                             become an empty module by construction; use `types` instead")
+                        failed <- true
 
                     // Parsed at most once, and only if `cid` or `csharp` asks
                     // for it — an unused --mtproto-schema must stay silent.
@@ -418,8 +461,6 @@ Sample overrides config: samples/ServerOverrides/server-overrides.toml
 
                     if targets.Contains "ergonomics" then
                         Pipeline.generateErgonomics ns config apiSchema (path "GeneratedErgonomics")
-                    if targets.Contains "client-parsers" then
-                        Pipeline.generateClientParsers resolvedClientNs config apiSchema (path "GeneratedResponseParsers")
 
                     if targets.Contains "csharp" then
                         // Single-layer C# backend: full schema surface, no whitelist.
@@ -469,10 +510,13 @@ Sample overrides config: samples/ServerOverrides/server-overrides.toml
                         let known =
                             Set.ofList [
                                 "cid"; "types"; "writers"; "coverage"; "return-types"
-                                "tests"; "layer-aliases"; "client-cids"; "client-parsers"
+                                "tests"; "layer-aliases"; "client-cids"
                                 "ergonomics"; "csharp"
                             ]
-                        targets |> Set.filter (fun t -> not (known.Contains t))
+                        // "client-parsers" already gets its own removal-specific
+                        // error above; it must not also spill into the generic
+                        // "Unknown target(s)" message below.
+                        targets |> Set.filter (fun t -> not (known.Contains t) && t <> "client-parsers")
                     if not unknown.IsEmpty then
                         log.LogError("Unknown target(s): {Unknown}", String.concat "," unknown)
                         failed <- true
