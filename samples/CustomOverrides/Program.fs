@@ -19,7 +19,6 @@ printfn "  Aliases:           %d" config.Aliases.Length
 printfn "  Extras:            %d" config.Extras.Length
 printfn "  Type whitelist:    %d entries" config.TypeWhitelist.Count
 printfn "  Writer whitelist:  %d entries" config.WriterWhitelist.Count
-printfn "  Client parsers:    %d entries" config.ClientParserWhitelist.Count
 
 printfn ""
 printfn "=== Custom entries from my_overrides.toml ==="
@@ -36,7 +35,10 @@ for e in config.Extras do
         printfn "  Extra: %s (0x%08X) — %s" e.Name e.Cid e.Comment
 
 // Parse a tiny inline schema and emit a CID module against the loaded overrides.
+// `// LAYER 229` is required as of 0.13.0 — generateCidModule fails without it
+// (a schema with no declared layer cannot be advertised to the server).
 let schema = """
+// LAYER 229
 boolFalse#bc799737 = Bool;
 boolTrue#997275b5 = Bool;
 ---functions---

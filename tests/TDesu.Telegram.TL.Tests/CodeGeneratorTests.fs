@@ -3,6 +3,7 @@ namespace TDesu.Telegram.TL.Tests
 open System.IO
 open NUnit.Framework
 open TDesu.Telegram.TL
+open TDesu.Telegram.TL.AST
 open TDesu.Telegram.TL.Generator
 open TDesu.Telegram.TL.Generator.Overrides
 
@@ -36,6 +37,39 @@ module CodeGeneratorTests =
     let ``generateCidModule`` () =
         let actual = EmitTemplates.generateCidModule testNs emptyConfig mtprotoSchema apiSchema
         assertMatchesSnapshot actual "CodeGen_CidModule"
+
+    /// Regression for the audit's headline finding: `GeneratedLayerCid.DefaultLayer`
+    /// used to be a hand-typed `223` literal in `EmitTemplates.fs` regardless of what
+    /// the schema's own `// LAYER N` directive said. `Layer` and `DefaultLayer` must
+    /// both reflect the parsed directive, not a value baked into the generator.
+    [<Test>]
+    let ``generateCidModule emits the schema's own parsed layer`` () =
+        let smallSchema =
+            match AstFactory.parse "// LAYER 229\nboolFalse#bc799737 = Bool;\n" with
+            | Ok s -> s
+            | Error e -> failwith e
+        let noMtproto : TlSchema = { Constructors = []; Functions = []; Layer = None }
+
+        let actual = EmitTemplates.generateCidModule testNs emptyConfig noMtproto smallSchema
+
+        Assert.That(actual, Does.Contain "let Layer = 229")
+        Assert.That(actual, Does.Contain "let DefaultLayer = 229")
+        Assert.That(actual, Does.Contain "let MinSupportedLayer = 190")
+
+    /// A schema with no `// LAYER N` directive cannot be advertised to the server at
+    /// all, so `cid` generation must fail loudly instead of silently pinning some
+    /// other value (which is exactly how the pre-fix `223` literal went stale).
+    [<Test>]
+    let ``generateCidModule fails when the schema has no layer directive`` () =
+        let noLayerSchema =
+            match AstFactory.parse "boolFalse#bc799737 = Bool;\n" with
+            | Ok s -> s
+            | Error e -> failwith e
+        let noMtproto : TlSchema = { Constructors = []; Functions = []; Layer = None }
+
+        Assert.Throws<System.Exception>(fun () ->
+            EmitTemplates.generateCidModule testNs emptyConfig noMtproto noLayerSchema |> ignore)
+        |> ignore
 
     [<Test>]
     let ``generateClientCids`` () =

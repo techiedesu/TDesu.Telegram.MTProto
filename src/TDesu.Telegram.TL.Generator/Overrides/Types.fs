@@ -47,12 +47,6 @@ module Types =
         Comment: string
     }
 
-    /// Layer-dependent type metadata for response serialization.
-    type LayerTypeFlags2 = {
-        /// Minimum layer at which flags2 field exists.
-        Flags2MinLayer: int
-    }
-
     /// A scalar field that exists only at layer > MaxOldLayer, inserted in the
     /// wire format after the named `After` field. Used for layer-223 additions
     /// like `dialog.unread_poll_votes_count:int` that don't fit the CID-only
@@ -89,16 +83,10 @@ module Types =
         Aliases: CidAlias list
         Extras: ExtraCid list
         ExtraCombinators: ExtraCombinator list
-        LayerTypeInfo: Map<string, LayerTypeFlags2>
         TypeWhitelist: Set<string>
         WriterWhitelist: Set<string>
         WriterLayerTypes: Set<string>
         StubTypes: Set<string>
-        /// Constructor names to emit response parsers for (used by the
-        /// `client-parsers` target). When empty, the target produces an empty
-        /// module. Replaces the previously hardcoded ["Message"; "User"; "Chat"]
-        /// in Pipeline.generateClientParsers.
-        ClientParserWhitelist: Set<string>
         /// PascalCase result-type names for which the writers target should
         /// emit a per-case record `Write{Type}{Case}Params` and reference it
         /// from the union case (`| {Case} of Write{Type}{Case}Params`),
@@ -116,12 +104,10 @@ module Types =
             Aliases = []
             Extras = []
             ExtraCombinators = []
-            LayerTypeInfo = Map.empty
             TypeWhitelist = Set.empty
             WriterWhitelist = Set.empty
             WriterLayerTypes = Set.empty
             StubTypes = Set.empty
-            ClientParserWhitelist = Set.empty
             WriterRecordPerCaseUnions = Set.empty
         }
 
@@ -133,12 +119,9 @@ module Types =
             Aliases = baseConfig.Aliases @ overlay.Aliases
             Extras = baseConfig.Extras @ overlay.Extras
             ExtraCombinators = baseConfig.ExtraCombinators @ overlay.ExtraCombinators
-            LayerTypeInfo =
-                Map.fold (fun acc k v -> Map.add k v acc) baseConfig.LayerTypeInfo overlay.LayerTypeInfo
             TypeWhitelist = Set.union baseConfig.TypeWhitelist overlay.TypeWhitelist
             WriterWhitelist = Set.union baseConfig.WriterWhitelist overlay.WriterWhitelist
             WriterLayerTypes = Set.union baseConfig.WriterLayerTypes overlay.WriterLayerTypes
             StubTypes = Set.union baseConfig.StubTypes overlay.StubTypes
-            ClientParserWhitelist = Set.union baseConfig.ClientParserWhitelist overlay.ClientParserWhitelist
             WriterRecordPerCaseUnions = Set.union baseConfig.WriterRecordPerCaseUnions overlay.WriterRecordPerCaseUnions
         }

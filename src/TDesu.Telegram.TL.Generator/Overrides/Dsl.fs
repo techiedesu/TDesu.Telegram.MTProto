@@ -33,11 +33,6 @@ module Dsl =
                 ExtraCombinators =
                     config.ExtraCombinators @ [ { Raw = raw; Section = section; Comment = comment } ] }
 
-        [<CustomOperation("layerTypeInfo")>]
-        member _.LayerTypeInfo(config, name, flags2MinLayer) =
-            { config with
-                LayerTypeInfo = config.LayerTypeInfo |> Map.add name { Flags2MinLayer = flags2MinLayer } }
-
         [<CustomOperation("whitelistTypes")>]
         member _.WhitelistTypes(config, types: string list) =
             { config with

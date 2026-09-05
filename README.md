@@ -117,7 +117,7 @@ td-tl-gen \
 
 | Target | Output file | Notes |
 |---|---|---|
-| `cid` | `GeneratedCid.g.fs` | Constructor ID literals — also needs `--mtproto-schema` |
+| `cid` | `GeneratedCid.g.fs` | Constructor ID literals — also needs `--mtproto-schema` and a `// LAYER N` directive in `--schema` |
 | `types` | `GeneratedTlRequests.g.fs` | Whitelist-filtered request types with `Serialize`/`Deserialize` |
 | `writers` | `GeneratedTlWriters.g.fs` | Standalone `write{X}` functions and `Write*` DUs |
 | `coverage` | `GeneratedCoverageValidator.g.fs` | Handler coverage validator |
@@ -125,17 +125,19 @@ td-tl-gen \
 | `tests` | `GeneratedRoundTripTests.g.fs` | Round-trip tests for whitelisted requests |
 | `layer-aliases` | `GeneratedLayerAliases.g.fs` | Cross-layer CID aliases — needs `--layer-base-schema` |
 | `client-cids` | `GeneratedClientCid.g.fs` | Flat literal CID table for clients |
-| `client-parsers` | `GeneratedResponseParsers.g.fs` | Driven by `[whitelists].client_parsers` |
 | `all` | (multi) | Equivalent to `cid,types,writers,coverage,return-types` |
 
 Optional flags:
+- `--version` — print the tool's own version and exit
 - `--mtproto-schema <path>` — required by the `cid` target
 - `--layer-base-schema <path>` — required by the `layer-aliases` target
 - `--tests-namespace <ns>` — module name for the `tests` target (default `<namespace>.Tests.GeneratedRoundTripTests`)
-- `--client-namespace <ns>` — namespace for `client-cids`/`client-parsers` (default `<namespace>.Client.Api`)
+- `--client-namespace <ns>` — namespace for `client-cids` (default `<namespace>.Client.Api`)
 
 Schemas are not downloaded automatically — fetch them manually from
-[core.telegram.org/schema](https://core.telegram.org/schema) or your TL source.
+[core.telegram.org/schema](https://core.telegram.org/schema) or your TL source. The `cid` target
+reads the schema's own `// LAYER N` directive (`GeneratedLayerCid.Layer`/`DefaultLayer`) — a schema
+with no layer directive cannot be advertised to the server, so `cid` fails rather than guessing.
 
 ### Override TOML
 
@@ -146,8 +148,7 @@ for a fully worked example. Sections:
 - `[[layer_variants]]` — CIDs that vary by negotiated protocol layer
 - `[[aliases]]` — multiple known CIDs for one method (older client layers)
 - `[[extras]]` — undocumented CIDs not in the public schema
-- `[layer_type_info.<TypeName>]` — per-type layer metadata (e.g. `flags2_min_layer`)
-- `[whitelists]` — `types` / `writers` / `writer_layer_types` / `stub_types` / `client_parsers`
+- `[whitelists]` — `types` / `writers` / `writer_layer_types` / `stub_types`
 
 ## Generator architecture
 

@@ -95,3 +95,30 @@ let ``param parses conditional`` () =
 let ``typeParam parses braced type variable`` () =
     let result = runParser typeParam "{X:Type}"
     equals result (Some "X")
+
+/// Regression for the audit's low-severity finding: "the parser accepts `flags.N?Type`
+/// without checking `flags` names a real parameter, so a typo surfaces at emit time."
+/// A combinator that declares `flags:#` and reads `flags.0?...` is the ordinary,
+/// valid shape and must keep parsing.
+[<Test>]
+let ``combinator accepts flags reference that names a declared parameter`` () =
+    let input = "message#5a686d7c flags:# out:flags.1?true text:string = Message;"
+    let result = runParser combinator input
+    Assert.That(result.IsSome)
+    let c = Option.get result
+    equals c.Params.Length 3
+
+/// A `flags2.N?Type` reference into a constructor that never declares `flags2` used
+/// to parse cleanly and only fail once the emitter tried to read a nonexistent field.
+/// It must now fail at parse time and name both the constructor and the bad reference.
+[<Test>]
+let ``combinator rejects flags reference to an undeclared parameter`` () =
+    let input = "user#215c4438 flags:# flags2_min:flags2.0?true id:long = User;"
+    let result = runParser combinator input
+    Assert.That(result.IsNone)
+
+    match run (combinator .>> eof) input with
+    | Failure(msg, _, _) ->
+        Assert.That(msg, Does.Contain "user")
+        Assert.That(msg, Does.Contain "flags2")
+    | Success _ -> Assert.Fail "expected the bad flags2 reference to fail parsing"

@@ -1,5 +1,50 @@
 # Release notes
 
+## 0.13.0
+
+### Generator
+
+**`GeneratedLayerCid` now advertises the schema's own layer instead of a hand-typed
+literal.** `EmitTemplates.fs` baked `DefaultLayer = 223` into every emitted
+`GeneratedCid.g.fs` regardless of the parsed `.tl` — the audit's measurement found a
+real consumer running against layer 229 while the generated file still said 223, six
+layers stale, because the parser already extracted `// LAYER N` and nothing read it.
+`GeneratedLayerCid` now emits `[<Literal>] let Layer = <parsed layer>` and
+`DefaultLayer` equal to it; a schema with no `// LAYER N` directive fails the `cid`
+target outright instead of guessing. `MinSupportedLayer` (190) is unchanged. Pin
+`CurrentLayer` to `GeneratedLayerCid.Layer` to turn the drift into a compile-time
+equality.
+
+**Removed dead surface named in the audit: `[layer_type_info]` overrides and the
+`client-parsers` target.** `[layer_type_info]` was parsed by `Toml.fs` and read by
+no target — confirmed against the generator's own `ignoredInputs` table, which
+already warned every run that populated it. `client-parsers` had become an empty
+module by construction once the whitelist's transitive closure shipped: `types`
+already emits everything a response parser would need, so a `client-parsers` run
+produced 20 lines of bare header. Both are gone — TOML config, DSL, CLI target,
+`--client-namespace`'s second consumer, and the samples. `--target client-parsers`
+now fails naming the removal and pointing at `types`; a stray `[layer_type_info]`
+section is simply unread now, the same as any other TOML key the generator never
+queries.
+
+**Parser validation: `flags.N?Type` must name a real parameter.** The grammar
+accepted any identifier before the `.`, so a typo'd or renamed flags field (writing
+`flags2.0?T` in a combinator that only declares `flags:#`) parsed cleanly and only
+failed once the emitter tried to read a field that was never there. `combinator`
+now rejects the reference at parse time, naming the constructor and the bad
+reference, for every `flags.N?Type` — including one nested inside `Vector<...>`.
+
+**`--version`, and a `--split-by-class` inconsistency closed.** `td-tl-gen
+--version` prints the tool's own informational version (MinVer-stamped) and exits;
+previously the flag answered "unknown flag". `--split-by-class` without `--target
+csharp` used to only warn that the flag was ignored — the same "flag silently did
+nothing" shape `--split-by-scc` without `--split-by-domain` already treats as a hard
+error. It is now the same hard error.
+
+The generated-file banner already dropped the tool's own version in an earlier
+fix on this branch (it used to rewrite every consumer file on a generator bump with
+no code change) — confirmed unchanged here; nothing further to do for that item.
+
 ## 0.12.1
 
 **`msg_detailed_info` is transport bookkeeping, and it was being published as an update.**

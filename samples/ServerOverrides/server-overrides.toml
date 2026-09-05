@@ -17,8 +17,7 @@
 #   [[layer_variants]]            — CIDs that vary by negotiated protocol layer
 #   [[aliases]]                   — multiple known CIDs for one method (older client layers)
 #   [[extras]]                    — undocumented CIDs not in the public schema
-#   [layer_type_info.<TypeName>]  — per-type layer metadata (e.g. flags2_min_layer)
-#   [whitelists]                  — types/writers/writer_layer_types/stub_types/client_parsers
+#   [whitelists]                  — types/writers/writer_layer_types/stub_types
 
 # ---------------------------------------------------------------
 # Layer-dependent CIDs (resolved at runtime via LayerCid module)
@@ -243,14 +242,6 @@ comment = "photos.uploadProfilePhoto Telethon layer 216"
 name = "MessagesDeleteTopicHistory"
 cid = 0xd2816f10
 comment = "messages.deleteTopicHistory old CID"
-
-# ---------------------------------------------------------------
-# Layer-dependent type metadata
-# ---------------------------------------------------------------
-
-[layer_type_info]
-[layer_type_info.User]
-flags2_min_layer = 223
 
 # ---------------------------------------------------------------
 # Whitelists for code generation

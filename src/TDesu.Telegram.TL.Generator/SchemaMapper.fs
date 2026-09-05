@@ -251,12 +251,12 @@ module SchemaMapper =
                             match allFunctions |> Map.tryFind name with
                             | Some f ->
                                 // A function seed also needs its RETURN type
-                                // closed over — e.g. a `client_parsers` seed
-                                // naming a request function is only useful if
-                                // the response type it decodes to is emitted
-                                // too. `f.Params` alone (the request side)
-                                // already covered the pre-existing behaviour;
-                                // this only adds coverage, never removes it.
+                                // closed over — a seed naming a request
+                                // function is only useful if the response
+                                // type it decodes to is emitted too.
+                                // `f.Params` alone (the request side) already
+                                // covered the pre-existing behaviour; this
+                                // only adds coverage, never removes it.
                                 extractDeps f.Params
                                 @ (extractReferencedTypeName f.ReturnType |> Option.toList)
                             | None -> []
@@ -283,9 +283,9 @@ module SchemaMapper =
 
     /// Seeds for the `types` target's whitelist closure — a strict superset
     /// of `typeWhitelist`. `writers` and `writer_layer_types` whitelist raw
-    /// TL constructor names (not the grouped boxed-type names `types` /
-    /// `client_parsers` use), so each name is resolved to the boxed type it
-    /// belongs to and added as its own seed.
+    /// TL constructor names (not the grouped boxed-type names `types` uses),
+    /// so each name is resolved to the boxed type it belongs to and added as
+    /// its own seed.
     ///
     /// Without this, a `types` target scoped only to `typeWhitelist` can
     /// omit a type that `EmitWriters`'s `toWrite{X}` converters (or DU case

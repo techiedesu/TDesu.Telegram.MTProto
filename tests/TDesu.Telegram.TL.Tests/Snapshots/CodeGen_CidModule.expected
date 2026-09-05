@@ -49,9 +49,17 @@ module GeneratedCid =
 [<RequireQualifiedAccess>]
 module GeneratedLayerCid =
 
-    /// Default layer when client hasn't sent invokeWithLayer yet.
+    /// The schema's own layer, parsed from its `// LAYER N` directive.
+    /// Consumers pin `CurrentLayer` (or equivalent) to this instead of a
+    /// hand-copied literal, turning the drift the audit measured into a
+    /// compile-time equality.
     [<Literal>]
-    let DefaultLayer = 223
+    let Layer = 229
+
+    /// Default layer when client hasn't sent invokeWithLayer yet. Always
+    /// equal to `Layer` — a schema advertises exactly one layer.
+    [<Literal>]
+    let DefaultLayer = 229
 
     /// Minimum supported layer.
     [<Literal>]
