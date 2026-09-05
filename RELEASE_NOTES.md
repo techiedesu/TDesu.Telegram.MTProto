@@ -45,6 +45,139 @@ The generated-file banner already dropped the tool's own version in an earlier
 fix on this branch (it used to rewrite every consumer file on a generator bump with
 no code change) — confirmed unchanged here; nothing further to do for that item.
 
+### Protocol
+
+**The receive loop retained one state machine per frame, and could overflow the stack.**
+`receiveStep` recursed with `return! receiveStep ct` inside `task { }`, which is not a tail
+call: the builder awaits the inner task, so every activation stayed registered as the
+continuation of the next until the connection dropped. Measured with an in-process transport
+feeding encrypted frames: **568 bytes retained per frame**, the same for a 76-byte frame and a
+4 KiB one — the boxes, not the buffers — which on a connection that lives for hours is
+hundreds of megabytes; and with reads completing synchronously, as a socket read does when
+the data is already buffered, a 1 MB thread-pool stack **overflowed between 1,000 and 1,500
+frames**. The loop is `Task.loop` from TDesu.FSharp 2.0.0 now (so is `WsTransport`'s pump),
+and a test drives 20,000 frames through it asserting under 60 bytes per frame.
+
+**Transport error codes are visible.** A 4-byte frame is not a message but an error code the
+server sends before closing: -404 for an auth key it does not know, -429 for too many
+connections from this address, -444 for a bad DC. Until now it reached `decrypt`, failed as an
+unreadable frame, and the close that followed looked like any other drop — a revoked key was
+retried at 1/2/4 s forever and the consumer never learned to discard its session file. It is
+`MtProtoError.TransportErrorCode` now: the pending calls fail with it, the client closes itself,
+`ConnectionLost` names it, later calls answer it; -429 reconnects on a 30/60/120 s schedule
+instead of the fastest possible one. The handshake's parser reports the same code.
+
+**A drop no longer fails the requests in flight.** The MTProto session outlives the socket —
+`reconnectInternal` always kept it — so after a reconnect that reused the auth key every
+pending request is re-sent under its original msg_id and seq_no. A server that had executed
+one answers it once, instead of running the consumer's retry as a second copy
+(`messages.transcribeAudio` charges its quota per call). Only exhausted reconnects
+(`ReconnectFailed`, also raised on `ConnectionLost`) and `Disconnect` fail them. Pinned by a
+test that drops the socket under a request and checks the re-send's ids.
+
+**`bad_msg_notification` is repaired, not reported.** Codes 32–35 (seq_no out of step) open a
+new session on the same connection and auth key and re-send what is pending — the one repair
+there is; the old behaviour failed the single request and left the session as it was, so the
+consumer's retry earned the same answer. Code 20 re-sends. Codes 16/17 keep correcting the
+clock, but a correction backwards past msg_ids already issued now opens a new session too:
+dropping the msg_id floor, as before, made the next id lower than ones already sent under
+higher seq_nos, which the server refused in turn. Anything else is `BadMsgNotification of
+code`.
+
+**`MtProtoError` says what happened.** `NotConnected` (was `InvalidResponse "not connected"`),
+`Cancelled` (the caller's token; used to arrive as a thrown `OperationCanceledException` from
+the lock wait, against the member's own contract), `TransportErrorCode`, `BadMsgNotification`,
+`ReconnectFailed`, and `Migrate of kind * dc` for a 303 whose message is `<KIND>_MIGRATE_<dc>` —
+every consumer was parsing that string. `SessionExpired`, never produced, is gone.
+`TransportError.Cancelled` likewise replaces the `Timeout` every carrier reported for a cancelled
+operation.
+
+**`RpcAsync`.** The response deadline is a constructor option (`responseTimeout`, default 30 s;
+zero means the caller's token only) — it was hard-coded and silently overrode callers asking
+for more. The lock wait is the only place the caller's token applies; every socket write runs
+on the client's lifetime token, because on the obfuscated carriers the CTR keystream advances
+before the write and a cancellation mid-write desynced the stream for every sender. Waiting for
+a reconnect in flight is an internal per-generation completion rather than a temporary handler
+on the public `Reconnected` event, whose `Event<'T>` is an unsynchronised delegate combine —
+concurrent callers could lose each other's registration, each lost one a 15 s stall or a dead
+handler invoked forever. `Reconnected` is raised after the attempt's own critical section, so a
+slow subscriber no longer holds up the reconnect it is reacting to. `SendUnencryptedAsync`,
+unusable once a session exists, is removed.
+
+**Keepalive that notices.** The `pong` arm records when it arrived; two intervals without one
+and the ping loop drops the transport, turning a socket the server stopped serving into the
+read error the reconnect path already handles — until now such a connection sat with a blocked
+reader and every RPC timing out. Acks flush every second rather than every ten (the server
+re-announces anything unacknowledged meanwhile). Server msg_ids must be 1 or 3 mod 4; ids far
+from the expected time are logged, not dropped, because dropping the `bad_msg_notification`
+that would correct the offset is how a client locks itself out.
+
+**Handshake.** `dh_gen_retry` is retried with `retry_id = auth_key_aux_hash`, up to five times,
+each answer's `new_nonce_hash` verified — a retry used to fail the whole exchange and cost a
+reconnect. `server_DH_params_fail` is recognised, its nonces and `new_nonce_hash` checked, and
+reported for what it is instead of "expected server_DH_params_ok, got 0x79cb045d".
+
+### Transport
+
+- `TcpObfuscatedTransport` and `FakeTlsTransport` dispose the `TcpClient` and both CTR ciphers
+  when a connect fails; the 0.6.0 note claimed both TCP carriers did, and only the plain one
+  did. During a DC outage a consumer reconnects three times per call in every loop, so this was
+  hundreds of dangling descriptors a minute.
+- `WsTransport` reassembles frames in one growable buffer with a read offset. `Array.append`
+  copied the whole accumulated buffer on every 16 KiB read — about 8.4 MB per 512 KiB frame,
+  8.4 GB per 16 MiB — and each read allocated a fresh chunk; now one chunk is reused, decrypted
+  in place, and a frame is copied out once.
+- `Aes256Ctr.ProcessInPlace` XORs the keystream eight bytes at a time instead of one; this loop
+  sits on every obfuscated carrier's hot path.
+- `TcpTransport` retires the connection on a failed write, as the obfuscated carrier already
+  did, instead of letting the next frame land after a half-written one.
+
+## 0.12.4
+
+`TlParser.ParseSchema` and `TlParser.Preprocess`: the parser can read an unmodified `api.tl`.
+`AstFactory.parse` failed on line 6 of the real schema — the `vector` container declared with a
+type parameter and `[ t ]` multiplicity — which made the documented entry point useless against
+the only schema anyone has.
+
+## 0.12.3
+
+- A replayed message was dropped before it reached the ack path. Telegram retransmits precisely
+  what it has not seen acknowledged, so a lost ack meant every retransmission was dropped in
+  silence and it retransmitted forever. Both replay guards — the outer one and the one inside the
+  `msg_container` loop — now re-ack a content-related duplicate; it is still processed once.
+- The `bad_msg_notification` 16/17 branch wrote `LastMsgId` and `TimeOffset` from the receive loop
+  while `generateMsgId` read-modify-writes the same field under the send lock, so the reset could
+  be lost to the very interleaving it corrected. It is `Session.resetClock` now, under the same
+  lock.
+- The generated banner named a script that exists only in one consumer; it now names the tool
+  and the target. Ten snapshot fixtures updated.
+- Pinned `TDesu.Telegram.Serialization` 0.3.1.
+
+## 0.12.2
+
+- The service layer of `mtproto.tl` is generated rather than hand-written: `cached/mtproto.tl`
+  feeds the `cid` and `types` targets into `Generated/` (reproducibly, `tools/regen-mtproto.fsx`),
+  and the dispatch matches generated ids and reads through generated deserializers. Two thirds of
+  the schema had fallen through to the update branch and been handed to subscribers as API
+  objects. Three constructors stay hand-read — `gzip_packed`, `msg_container`, `rpc_result` —
+  because the schema comments them out as parsed manually.
+- `resendRequest` took its content seq_no before knowing whether it had anything to re-send;
+  a consumed number that never reaches the wire is a hole the server reads as a lost message.
+  The seq_no is taken only after `Rekey` succeeds.
+- A reconnect swapped the transport under the previous reader; the reader is stopped first, and
+  reconnect attempts run on a client-lifetime token that only `Disconnect` cancels.
+- The ack flush lost its batch when the send was cancelled rather than refused; the ids are
+  requeued on any failure, with a test that cancels a flush mid-write.
+- Lifetime: a `Disconnect` landing while a reconnect was parked in a connect used to leave a
+  receive/ack/ping generation nothing could cancel — a torn-down client that kept pinging for
+  the life of the process. `spawnReceiveAndKeepalive` decides under the lock whether it may start
+  at all; superseded attempts no longer release a flag they do not own.
+- `answer_msg_id` from `msg_detailed_info` is acked only when the replay window has seen it, and
+  requested with `msg_resend_req` otherwise; `msg_resend_req` for ids the dispatcher no longer
+  holds is answered with a `msgs_state_info` naming their state.
+- Bounds on every count and length read off the wire: container count and inner length, the
+  8,192 service-vector ceiling, the 16 MiB gzip expansion cap, the fingerprint count, `pq`.
+
 ## 0.12.1
 
 **`msg_detailed_info` is transport bookkeeping, and it was being published as an update.**
@@ -169,6 +302,35 @@ exhaustive DUs instead of emitting code that doesn't compile.
 continued underneath them. This release is tagged 0.12.0, matching the prerelease line already
 on this commit (`0.12.0-alpha.1` through `.4`), so nothing already pinned to one of those
 prereleases sees a numerically lower "stable" release.
+
+## 0.9.0
+
+Breaking: `AuthKeyExchange.factorizePQ` takes a `CancellationToken` and returns
+`Result<uint64 * uint64, MtProtoError>` instead of a bare tuple. Nothing outside
+`performExchange` called it, but it is public, so this is a minor bump rather
+than a patch.
+
+- **fix(auth): bound `factorizePQ`.** `pq` is parsed off an unauthenticated,
+  pre-handshake `resPQ`, so the server chooses how much CPU the client spends.
+  Neither Pollard-rho loop polled the token or counted iterations, and nothing
+  established that the input was a semiprime. Measured: the largest prime below
+  2^63 runs ~24 minutes uninterruptible and then returns `(1, pq)`, which is not
+  a factorisation — so the defect had a silent mode as well as a loud one. Capped
+  at 32*sqrt(2147483629) iterations, shared across both attempts; a result that
+  does not multiply back to `pq` with both factors above 1 is an `Error` even
+  inside budget. Cancellation is now immediate and free (~1 ns polled against a
+  0.48 us iteration). The realistic case is unchanged at 10.8 ms.
+- **fix(tl): bare `vector<T>` is not boxed `Vector<T>`.** The parser folded case
+  and the IR could not carry the distinction, so every bare vector went out with
+  the boxed `0x1CB5C415` header. `future_salts` was 44 bytes where the wire
+  format is 36, and a real client read that header as an element count of
+  482,092,053. `int128`/`int256` travelled the same road as length-prefixed
+  `bytes`. Both were invisible to a round-trip test — reader and writer were
+  wrong the same way.
+- **fix(cli): an unknown argument is an error.** `--mtproto-schemaa` parsed as
+  nothing, emitted 37 fewer types and exited 0.
+- **fix(tests): a missing snapshot now fails** instead of writing the golden file
+  and passing, and the comparison no longer strips `\r\n` before diffing.
 
 ## 0.8.0
 
@@ -1014,32 +1176,3 @@ Pipeline.generateSerializationTypes config apiSchema outputPath
 let code = EmitTemplates.generateCidModule "YourApp.Serialization" config mtprotoSchema apiSchema
 Pipeline.generateSerializationTypes "YourApp.Serialization" config apiSchema outputPath
 ```
-
-## 0.9.0
-
-Breaking: `AuthKeyExchange.factorizePQ` takes a `CancellationToken` and returns
-`Result<uint64 * uint64, MtProtoError>` instead of a bare tuple. Nothing outside
-`performExchange` called it, but it is public, so this is a minor bump rather
-than a patch.
-
-- **fix(auth): bound `factorizePQ`.** `pq` is parsed off an unauthenticated,
-  pre-handshake `resPQ`, so the server chooses how much CPU the client spends.
-  Neither Pollard-rho loop polled the token or counted iterations, and nothing
-  established that the input was a semiprime. Measured: the largest prime below
-  2^63 runs ~24 minutes uninterruptible and then returns `(1, pq)`, which is not
-  a factorisation — so the defect had a silent mode as well as a loud one. Capped
-  at 32*sqrt(2147483629) iterations, shared across both attempts; a result that
-  does not multiply back to `pq` with both factors above 1 is an `Error` even
-  inside budget. Cancellation is now immediate and free (~1 ns polled against a
-  0.48 us iteration). The realistic case is unchanged at 10.8 ms.
-- **fix(tl): bare `vector<T>` is not boxed `Vector<T>`.** The parser folded case
-  and the IR could not carry the distinction, so every bare vector went out with
-  the boxed `0x1CB5C415` header. `future_salts` was 44 bytes where the wire
-  format is 36, and a real client read that header as an element count of
-  482,092,053. `int128`/`int256` travelled the same road as length-prefixed
-  `bytes`. Both were invisible to a round-trip test — reader and writer were
-  wrong the same way.
-- **fix(cli): an unknown argument is an error.** `--mtproto-schemaa` parsed as
-  nothing, emitted 37 fewer types and exited 0.
-- **fix(tests): a missing snapshot now fails** instead of writing the golden file
-  and passing, and the comparison no longer strips `\r\n` before diffing.
