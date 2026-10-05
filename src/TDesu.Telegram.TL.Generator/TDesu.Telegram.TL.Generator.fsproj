@@ -41,6 +41,7 @@
         <Compile Include="EmitTypes.fs" />
         <Compile Include="EmitWriters.fs" />
         <Compile Include="EmitTemplates.fs" />
+        <Compile Include="CSharpLayers.fs" />
         <Compile Include="EmitCSharp.fs" />
         <Compile Include="EmitErgonomics.fs" />
         <Compile Include="Pipeline.fs" />

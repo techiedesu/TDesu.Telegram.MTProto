@@ -17,6 +17,10 @@ module Dsl =
                 StructuralOverlays =
                     config.StructuralOverlays @ [ { Name = name; MaxOldLayer = maxOldLayer; ExtraFields = extras } ] }
 
+        [<CustomOperation("csharpLayerMapping")>]
+        member _.CSharpLayerMapping(config, mapping: CSharpLayerMapping) =
+            { config with CSharpLayerMappings = config.CSharpLayerMappings @ [ mapping ] }
+
         [<CustomOperation("alias")>]
         member _.Alias(config, name, cids) =
             { config with

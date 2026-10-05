@@ -45,7 +45,8 @@ Optional flags:
                               emitted C# surface. api.tl wins every name
                               collision — the mtproto declaration is skipped and
                               logged. Omit it and `csharp` emits api.tl only.
-  --layer-base-schema <path>  Required only by `layer-aliases` target
+  --layer-base-schema <path>  Required by `layer-aliases`; optional for `csharp`
+                              to generate historical readers and mapped writers.
   --tests-namespace <ns>      Override namespace for `tests` (defaults to <namespace>.Tests)
   --client-namespace <ns>     Override namespace for client-cids
                               (defaults to <namespace>.Client.Api)
@@ -180,7 +181,7 @@ Sample overrides config: samples/ServerOverrides/server-overrides.toml
 
         let flags =
             [ "--mtproto-schema", flagGiven "--mtproto-schema", Targets [ "cid"; "csharp" ]
-              "--layer-base-schema", flagGiven "--layer-base-schema", Targets [ "layer-aliases" ]
+              "--layer-base-schema", flagGiven "--layer-base-schema", Targets [ "layer-aliases"; "csharp" ]
               "--tests-namespace", flagGiven "--tests-namespace", Targets [ "tests" ]
               "--client-namespace", flagGiven "--client-namespace", Targets [ "client-cids" ]
               "--split-by-domain", switchGiven "--split-by-domain", Targets [ "types" ]
@@ -196,6 +197,7 @@ Sample overrides config: samples/ServerOverrides/server-overrides.toml
             [ "[[layer_variants]]", not config.LayerVariants.IsEmpty,
               Targets [ "cid"; "types"; "tests"; "writers" ]
               "[[structural_overlays]]", not config.StructuralOverlays.IsEmpty, Targets [ "writers" ]
+              "[[csharp_layer_mappings]]", not config.CSharpLayerMappings.IsEmpty, Targets [ "csharp" ]
               "[[aliases]]", not config.Aliases.IsEmpty,
               Targets [ "cid"; "types"; "tests"; "coverage"; "return-types" ]
               "[[extras]]", not config.Extras.IsEmpty, Targets [ "cid" ]
@@ -411,6 +413,12 @@ Sample overrides config: samples/ServerOverrides/server-overrides.toml
                              | Some p -> parseSchema log "MTProto" p
                              | None -> None)
 
+                    let layerBaseSchema =
+                        lazy
+                            (match layerBasePath with
+                             | Some p -> parseSchema log "layer-base" p
+                             | None -> None)
+
                     if targets.Contains "cid" then
                         match mtprotoSchemaPath with
                         | None ->
@@ -459,8 +467,8 @@ Sample overrides config: samples/ServerOverrides/server-overrides.toml
                         | None ->
                             log.LogError("`layer-aliases` target requires --layer-base-schema")
                             failed <- true
-                        | Some basePath ->
-                            match parseSchema log "layer-base" basePath with
+                        | Some _ ->
+                            match layerBaseSchema.Value with
                             | None -> failed <- true
                             | Some baseSchema ->
                                 EmitTemplates.generateLayerAliases ns baseSchema apiSchema (path "GeneratedLayerAliases")
@@ -473,9 +481,8 @@ Sample overrides config: samples/ServerOverrides/server-overrides.toml
                         Pipeline.generateErgonomics ns config apiSchema (path "GeneratedErgonomics")
 
                     if targets.Contains "csharp" then
-                        // Single-layer C# backend: full schema surface, no whitelist.
-                        // `--mtproto-schema` is opt-in; without it the emitted set is
-                        // exactly api.tl's, byte for byte as before.
+                        // Full schema surface; historical codecs are opt-in and
+                        // reuse this target's ordinary field emission.
                         let csTypes, csFuncs =
                             match mtprotoSchemaPath with
                             | None -> SchemaMapper.mapSchema apiSchema
@@ -495,6 +502,18 @@ Sample overrides config: samples/ServerOverrides/server-overrides.toml
                                         "csharp: merged MTProto schema (api.tl wins; {Skipped} declaration(s) skipped)",
                                         skipped.Length)
                                     types, funcs
+                        let variants =
+                            match layerBasePath with
+                            | None when config.CSharpLayerMappings.IsEmpty -> []
+                            | None -> failwith "csharp_layer_mappings requires --layer-base-schema"
+                            | Some _ ->
+                                let old = layerBaseSchema.Value |> Option.defaultWith (fun () -> failwith "Cannot read layer-base schema")
+                                let layer = old.Layer |> Option.defaultWith (fun () -> failwith "Layer-base schema requires // LAYER N")
+                                match apiSchema.Layer with
+                                | Some current when current > layer -> ()
+                                | _ -> failwith "Current schema layer must be newer than layer-base schema"
+                                let oldTypes, oldFunctions = SchemaMapper.mapSchema old
+                                CSharpLayers.plan layer config.CSharpLayerMappings oldTypes oldFunctions csTypes csFuncs
                         if clean then
                             let deleted =
                                 Directory.GetFiles(outputDir, "*.g.cs")
@@ -502,14 +521,14 @@ Sample overrides config: samples/ServerOverrides/server-overrides.toml
                             for f in deleted do File.Delete f
                             log.LogInformation("Cleaned {N} .g.cs file(s) from {Dir}", deleted.Length, outputDir)
                         if splitByClass then
-                            let files = EmitCSharp.buildFiles ns csTypes csFuncs
+                            let files = EmitCSharp.buildFiles ns csTypes csFuncs variants
                             for (name, code) in files do
                                 File.WriteAllText(Path.Combine(outputDir, name), code)
                             log.LogInformation(
                                 "Wrote {N} .g.cs files to {Dir} ({Types} types, {Funcs} functions)",
                                 files.Length, outputDir, csTypes.Length, csFuncs.Length)
                         else
-                            let code = EmitCSharp.buildModule ns csTypes csFuncs
+                            let code = EmitCSharp.buildModule ns csTypes csFuncs variants
                             let outPath = path "GeneratedTl.g.cs"
                             File.WriteAllText(outPath, code)
                             log.LogInformation(

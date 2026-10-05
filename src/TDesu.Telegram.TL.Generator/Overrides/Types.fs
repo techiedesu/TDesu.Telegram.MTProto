@@ -76,10 +76,21 @@ module Types =
         ExtraFields: StructuralExtraField list
     }
 
+    /// Semantic correspondence between declarations in --layer-base-schema
+    /// and the current schema. Field layouts and CIDs come only from schemas.
+    type CSharpLayerMapping = {
+        Source: string
+        Target: string
+        /// Move same-named fields into this target field's constructor.
+        NestedField: string option
+        NestedConstructor: string option
+    }
+
     /// Complete override configuration.
     type OverrideConfig = {
         LayerVariants: LayerVariant list
         StructuralOverlays: StructuralOverlay list
+        CSharpLayerMappings: CSharpLayerMapping list
         Aliases: CidAlias list
         Extras: ExtraCid list
         ExtraCombinators: ExtraCombinator list
@@ -101,6 +112,7 @@ module Types =
         let empty = {
             LayerVariants = []
             StructuralOverlays = []
+            CSharpLayerMappings = []
             Aliases = []
             Extras = []
             ExtraCombinators = []
@@ -116,6 +128,7 @@ module Types =
         let merge (baseConfig: OverrideConfig) (overlay: OverrideConfig) : OverrideConfig = {
             LayerVariants = baseConfig.LayerVariants @ overlay.LayerVariants
             StructuralOverlays = baseConfig.StructuralOverlays @ overlay.StructuralOverlays
+            CSharpLayerMappings = baseConfig.CSharpLayerMappings @ overlay.CSharpLayerMappings
             Aliases = baseConfig.Aliases @ overlay.Aliases
             Extras = baseConfig.Extras @ overlay.Extras
             ExtraCombinators = baseConfig.ExtraCombinators @ overlay.ExtraCombinators

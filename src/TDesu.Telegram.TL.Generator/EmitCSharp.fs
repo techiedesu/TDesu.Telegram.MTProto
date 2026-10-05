@@ -64,6 +64,13 @@ module EmitCSharp =
     /// whether the `TlBare` helper class is emitted at all.
     let mutable private needsBareVector = false
 
+    let mutable private layerVariants: Map<string, CSharpLayers.Variant list> = Map.empty
+
+    let private variantsFor name = Map.tryFind name layerVariants |> Option.defaultValue []
+
+    let private layerReaderName (v: CSharpLayers.Variant) = sprintf "ReadLayer%d_%08X" v.Layer v.Source.Cid
+    let private layerWriterName (v: CSharpLayers.Variant) = sprintf "WriteLayer%d_%08X" v.Layer v.Source.Cid
+
     /// The generated helper holding the bare-vector codec. Generated rather
     /// than required of the runtime: the C# backend's runtime contract (see
     /// the module docstring) is a consumer-owned file, and a codegen fix that
@@ -446,6 +453,89 @@ module EmitCSharp =
 
         List.ofSeq stmts, List.ofSeq inits
 
+    let private layerReaderMethod (v: CSharpLayers.Variant) : MemberDeclarationSyntax =
+        let reads, inits = emitReads v.Source.Name "r" v.ReadFields
+        let values = Map.ofList inits
+        let init isNested enclosing =
+            v.Bindings
+            |> List.filter (fun b -> b.Nested = isNested)
+            |> List.map (fun b -> propName enclosing b.Target, values[propName v.Source.Name b.Source])
+        let root = init false v.Target.Name
+        let root =
+            match v.Nested with
+            | None -> root
+            | Some(field, nested) ->
+                let fields = init true nested.Name |> List.map (fun (n, value) -> $"{n} = {value}") |> String.concat ", "
+                root @ [ propName v.Target.Name field, $"new {nested.Name} {{ {fields} }}" ]
+        F.MethodDeclaration(ty v.Target.Name, F.Identifier(layerReaderName v))
+            .AddModifiers(modifier SyntaxKind.InternalKeyword, modifier SyntaxKind.StaticKeyword)
+            .AddParameterListParameters(F.Parameter(F.Identifier "r").WithType(ty "TlReadBuffer"))
+            .WithBody(block (reads @ [ returnNew v.Target.Name root ]))
+
+    let private layerReadPrefix name =
+        if (variantsFor name).IsEmpty then [ stmt "r.ReadConstructorId();" ]
+        else
+            [ yield stmt "uint cid = r.ReadConstructorId();"
+              for v in variantsFor name ->
+                  stmt $"if (cid == {hex v.Source.Cid}) return {layerReaderName v}(r);" ]
+
+    let private layerWriterMethod (v: CSharpLayers.Variant) : MemberDeclarationSyntax =
+        let access (f: GeneratedField) =
+            let b = v.Bindings |> List.find (fun b -> b.Source.Name = f.Name)
+            let owner, prefix =
+                match b.Nested, v.Nested with
+                | true, Some(_, nested) -> nested.Name, "value."
+                | _ -> v.Target.Name, ""
+            let value = prefix + propName owner b.Target
+            if not (IrType.isOption f.FSharpType) && IrType.isOption b.Target.FSharpType then
+                $"({value} ?? throw new System.InvalidOperationException(\"{v.Target.Name}.{b.Target.RecordName} is required at layer {v.Layer}\"))"
+            else value
+        let guards =
+            [ for nested, name, prefix, fields in
+                  [ yield false, v.Target.Name, "", dataFields v.Target.Fields
+                    match v.Nested with
+                    | Some(_, d) -> yield true, d.Name, "value.", dataFields d.Fields
+                    | None -> () ] do
+                  for f in fields do
+                      let used = v.Bindings |> List.exists (fun b -> b.Nested = nested && b.Target.Name = f.Name)
+                      let container = not nested && (v.Nested |> Option.exists (fun (n, _) -> n.Name = f.Name))
+                      if not used && not container && not (isPresenceFlag f) then
+                          let value = prefix + propName name f
+                          let condition =
+                              if IrType.isOption f.FSharpType then
+                                  if isValueCs (csType f.FSharpType) then $"{value}.HasValue" else $"{value} != null"
+                              else $"{value} != default"
+                          yield stmt $"if ({condition}) throw new System.InvalidOperationException(\"{name}.{f.RecordName} is unavailable at layer {v.Layer}\");" ]
+        let parameters =
+            [ yield F.Parameter(F.Identifier "w").WithType(ty "TlWriteBuffer")
+              match v.Nested with
+              | Some(_, nested) -> yield F.Parameter(F.Identifier "value").WithType(ty nested.Name)
+              | None -> () ]
+        F.MethodDeclaration(ty "void", F.Identifier(layerWriterName v))
+            .AddModifiers(modifier SyntaxKind.PrivateKeyword)
+            .AddParameterListParameters(Array.ofList parameters)
+            .WithBody(block (guards @ [ stmt $"w.WriteConstructorId({hex v.Source.Cid});" ]
+                             @ emitWrites v.Source.Name "w" v.ReadFields access))
+
+    let private layerWriteBranches name =
+        [ for layer, variants in variantsFor name |> List.filter _.Write |> List.groupBy _.Layer do
+              let calls =
+                  [ for v in variants do
+                        match v.Nested with
+                        | None -> yield $"{layerWriterName v}(w); return;"
+                        | Some(field, nested) ->
+                            let variable = sprintf "value_%08X" v.Source.Cid
+                            yield $"if ({propName name field} is {nested.Name} {variable}) {{ {layerWriterName v}(w, {variable}); return; }}" ]
+              let fallback =
+                  if variants |> List.exists (fun v -> v.Nested.IsNone) then ""
+                  else $"throw new System.InvalidOperationException(\"{name} action is unavailable at layer {layer}\");"
+              yield stmt ("if (w.Layer > 0 && w.Layer <= " + string layer + ") { " + String.concat " " calls + fallback + " }") ]
+
+    let private layerMethods name =
+        [ for v in variantsFor name do
+              yield layerReaderMethod v
+              if v.Write then yield layerWriterMethod v ]
+
     /// `SerializeBody` — the fields with no constructor id, which is what a
     /// bare TL reference puts on the wire. Emitted only for the types some
     /// declaration references barely.
@@ -482,7 +572,7 @@ module EmitCSharp =
             .MethodDeclaration(ty "void", F.Identifier "Serialize")
             .AddModifiers(mods)
             .AddParameterListParameters(F.Parameter(F.Identifier "w").WithType(ty "TlWriteBuffer"))
-            .WithBody(block body)
+            .WithBody(block (layerWriteBranches enclosing @ body))
 
     /// A reader method over the type's fields. `readCid` prepends the cid read
     /// (the union case path has already consumed it in the base dispatcher).
@@ -497,7 +587,7 @@ module EmitCSharp =
 
         let body =
             [ if readCid then
-                  yield stmt "r.ReadConstructorId();"
+                  yield! layerReadPrefix name
               yield! stmts
               yield returnNew name inits ]
 
@@ -520,7 +610,7 @@ module EmitCSharp =
                     .MethodDeclaration(ty name, F.Identifier "Deserialize")
                     .AddModifiers(pub, modifier SyntaxKind.StaticKeyword)
                     .AddParameterListParameters(F.Parameter(F.Identifier "r").WithType(ty "TlReadBuffer"))
-                    .WithBody(block [ stmt "r.ReadConstructorId();"; stmt "return ReadBody(r);" ])
+                    .WithBody(block (layerReadPrefix name @ [ stmt "return ReadBody(r);" ]))
                 :> MemberDeclarationSyntax
             else
                 readerMethod name "Deserialize" [| pub; modifier SyntaxKind.StaticKeyword |] true fields
@@ -540,7 +630,8 @@ module EmitCSharp =
                           "ReadBody"
                           [| modifier SyntaxKind.InternalKeyword; modifier SyntaxKind.StaticKeyword |]
                           false
-                          fields ]
+                          fields
+              yield! layerMethods name ]
 
         F
             .ClassDeclaration(name)
@@ -560,6 +651,10 @@ module EmitCSharp =
                       |> List.reduce (fun a b -> F.BinaryPattern(SyntaxKind.OrPattern, a, b) :> PatternSyntax)
 
                   yield F.SwitchExpressionArm(pattern, expr $"{c.Name}.ReadBody(r)")
+
+              for c in cases do
+                  for v in variantsFor c.Name do
+                      yield F.SwitchExpressionArm(F.ConstantPattern(expr (hex v.Source.Cid)), expr $"{c.Name}.{layerReaderName v}(r)")
 
               yield
                   F.SwitchExpressionArm(
@@ -625,7 +720,8 @@ module EmitCSharp =
                       "ReadBody"
                       [| modifier SyntaxKind.InternalKeyword; modifier SyntaxKind.StaticKeyword |]
                       false
-                      c.Fields ]
+                      c.Fields
+              yield! layerMethods c.Name ]
 
         F
             .ClassDeclaration(c.Name)
@@ -639,7 +735,7 @@ module EmitCSharp =
                 .MethodDeclaration(ty fn.Name, F.Identifier "Deserialize")
                 .AddModifiers(pub, modifier SyntaxKind.StaticKeyword)
                 .AddParameterListParameters(F.Parameter(F.Identifier "r").WithType(ty "TlReadBuffer"))
-                .WithBody(block [ stmt "r.ReadConstructorId();"; stmt "return DeserializeFields(r);" ])
+                .WithBody(block (layerReadPrefix fn.Name @ [ stmt "return DeserializeFields(r);" ]))
 
         let members =
             [ yield cidField fn.ConstructorId
@@ -653,7 +749,8 @@ module EmitCSharp =
                       [| pub; modifier SyntaxKind.StaticKeyword |]
                       false
                       fn.Params
-              yield deserialize ]
+              yield deserialize
+              yield! layerMethods fn.Name ]
 
         F
             .ClassDeclaration(fn.Name)
@@ -827,9 +924,30 @@ module EmitCSharp =
             .AddModifiers(modifier SyntaxKind.InternalKeyword, modifier SyntaxKind.StaticKeyword)
             .AddMembers(writeVector, readVector)
 
+    [<Literal>]
+    let LayerCompatibilityName = "GeneratedLayerCompatibility"
+
+    let private layerCompatibilityClass (variants: CSharpLayers.Variant list) : MemberDeclarationSyntax =
+        let writable =
+            variants |> List.filter _.Write
+            |> List.distinctBy (fun v -> v.Layer, v.Target.Cid)
+            |> List.map (fun v -> $"(layer > 0 && layer <= {v.Layer} && cid == {hex v.Target.Cid})")
+            |> String.concat " || "
+        let writable = if writable = "" then "false" else writable
+        let requestCases =
+            [ for v in variants |> List.filter (fun v -> v.Target.IsFunction) do
+                  yield $"if (layer > 0 && layer <= {v.Layer} && cid == {hex v.Source.Cid}) {{ current = {hex v.Target.Cid}; return true; }}" ]
+            |> String.concat " "
+        F.ClassDeclaration(LayerCompatibilityName)
+            .AddModifiers(pub, modifier SyntaxKind.StaticKeyword)
+            .AddMembers(
+                F.ParseMemberDeclaration($"public static bool CanWrite(int layer, uint cid) => {writable};"),
+                F.ParseMemberDeclaration($"public static bool TryUpgradeRequest(int layer, uint cid, out uint current) {{ {requestCases} current = 0; return false; }}"))
+
     /// Shared initialisation: set global refs and check for duplicate top-level
     /// names. Called by both buildModule and buildFiles.
-    let private setup (namespaceName: string) (types: GeneratedType list) (functions: GeneratedFunction list) =
+    let private setup (namespaceName: string) (types: GeneratedType list) (functions: GeneratedFunction list) (variants: CSharpLayers.Variant list) =
+        layerVariants <- variants |> List.groupBy (fun v -> v.Target.Name) |> Map.ofList
         nsRef <- namespaceName
 
         collidingUnions <-
@@ -872,6 +990,7 @@ module EmitCSharp =
                 failwithf "EmitCSharp: duplicate top-level type name '%s' — needs disambiguation" n
 
         claim ReturnTypeMapName
+        if not variants.IsEmpty then claim LayerCompatibilityName
 
         if needsBareVector then
             claim BareHelperName
@@ -915,14 +1034,15 @@ module EmitCSharp =
         | Union(name, cases) -> unionBaseClass name cases :: [ for c in cases -> caseClass name c ]
 
     /// Build the whole C# module as a single string (original behaviour).
-    let buildModule (namespaceName: string) (types: GeneratedType list) (functions: GeneratedFunction list) : string =
-        setup namespaceName types functions
+    let buildModule (namespaceName: string) (types: GeneratedType list) (functions: GeneratedFunction list) (variants: CSharpLayers.Variant list) : string =
+        setup namespaceName types functions variants
 
         let members =
             [ for t in types do
                   yield! declarationsOf t
               for fn in functions -> functionClass fn
               yield returnTypeMapClass types functions
+              if not variants.IsEmpty then yield layerCompatibilityClass variants
               if needsBareVector then
                   yield bareHelperClass () ]
 
@@ -936,8 +1056,9 @@ module EmitCSharp =
         (namespaceName: string)
         (types: GeneratedType list)
         (functions: GeneratedFunction list)
+        (variants: CSharpLayers.Variant list)
         : (string * string) list =
-        setup namespaceName types functions
+        setup namespaceName types functions variants
 
         [ for t in types do
               let fileName =
@@ -949,5 +1070,7 @@ module EmitCSharp =
           for fn in functions do
               yield (fn.Name + ".g.cs", render namespaceName [ functionClass fn ])
           yield (ReturnTypeMapName + ".g.cs", render namespaceName [ returnTypeMapClass types functions ])
+          if not variants.IsEmpty then
+              yield (LayerCompatibilityName + ".g.cs", render namespaceName [ layerCompatibilityClass variants ])
           if needsBareVector then
               yield (BareHelperName + ".g.cs", render namespaceName [ bareHelperClass () ]) ]

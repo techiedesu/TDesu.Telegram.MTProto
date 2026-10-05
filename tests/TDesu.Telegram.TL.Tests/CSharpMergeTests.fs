@@ -102,7 +102,7 @@ module CSharpMergeTests =
     let ``merge: no duplicate top-level name reaches the emitter`` () =
         // EmitCSharp.setup hard-fails on a duplicate; this is the real contract.
         Assert.DoesNotThrow(fun () ->
-            EmitCSharp.buildModule "Test.Namespace" mergedTypes mergedFunctions |> ignore)
+            EmitCSharp.buildModule "Test.Namespace" mergedTypes mergedFunctions [] |> ignore)
 
     [<Test>]
     let ``merge: surface snapshot`` () =
@@ -135,4 +135,4 @@ module CSharpMergeTests =
         let names = types |> List.map (function Record(n, _, _) -> n | Union(n, _) -> n)
         Assert.That(names, Does.Contain "BindAuthKeyInner")
         Assert.DoesNotThrow(fun () ->
-            EmitCSharp.buildModule "Test.Namespace" types functions |> ignore)
+            EmitCSharp.buildModule "Test.Namespace" types functions [] |> ignore)

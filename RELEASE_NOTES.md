@@ -1,5 +1,27 @@
 # Release notes
 
+## 0.14.0
+
+### Generator
+
+The C# target accepts `--layer-base-schema` and generates historical codecs from both
+schemas. `[[csharp_layer_mappings]]` describes semantic renames and fields moved into a
+nested object; the existing read/write emitters retain the archived field order and flags.
+Same-name changed-CID declarations receive archived readers automatically. Archived
+readers do not depend on a client layer, preserving previously stored native payloads.
+Unrepresentable new fields and missing formerly-required values fail explicitly.
+`GeneratedLayerCompatibility` supplies request routing and writer-coverage metadata.
+
+`EmitCSharp.buildModule` and `buildFiles` now require a final variants list (`[]` for
+single-layer consumers). Compiled consumer checks cover all 18 pre-229 keyboard variants
+against stock Telethon payloads, nested cached messages, nine other changed 228 layouts,
+truncation, following-object preservation, and refusal of unrepresentable 229 values.
+
+### Dependencies
+
+Microsoft.SourceLink.GitHub 10.0.303 removes the vulnerable 8.0.0 Git build task
+(CVE-2026-62900).
+
 ## 0.13.1
 
 ### Generator

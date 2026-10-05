@@ -108,7 +108,7 @@ use local = new MtProtoClient(dc, rsaKeys = [ myServerKey ], responseTimeout = T
 
 ### Generator CLI
 
-Every invocation needs a schema, an output directory, an F# namespace, an overrides
+Every invocation needs a schema, an output directory, a target namespace, an overrides
 TOML, and at least one target. There is no embedded default config — supply your own.
 
 ```sh
@@ -130,12 +130,13 @@ td-tl-gen \
 | `tests` | `GeneratedRoundTripTests.g.fs` | Round-trip tests for whitelisted requests |
 | `layer-aliases` | `GeneratedLayerAliases.g.fs` | Cross-layer CID aliases — needs `--layer-base-schema` |
 | `client-cids` | `GeneratedClientCid.g.fs` | Flat literal CID table for clients |
+| `csharp` | `GeneratedTl.g.cs`, or one file per class with `--split-by-class` | C# models and codecs; optional historical schema support |
 | `all` | (multi) | Equivalent to `cid,types,writers,coverage,return-types` |
 
 Optional flags:
 - `--version` — print the tool's own version and exit
 - `--mtproto-schema <path>` — required by the `cid` target
-- `--layer-base-schema <path>` — required by the `layer-aliases` target
+- `--layer-base-schema <path>` — required by `layer-aliases`; enables archived-layout readers and writers for `csharp`
 - `--tests-namespace <ns>` — module name for the `tests` target (default `<namespace>.Tests.GeneratedRoundTripTests`)
 - `--client-namespace <ns>` — namespace for `client-cids` (default `<namespace>.Client.Api`)
 
@@ -157,6 +158,32 @@ for a fully worked example. Sections:
 - `[[aliases]]` — multiple known CIDs for one method (older client layers)
 - `[[extras]]` — undocumented CIDs not in the public schema
 - `[whitelists]` — `types` / `writers` / `writer_layer_types` / `stub_types`
+- `[[csharp_layer_mappings]]` — semantic old/current class mappings for C# historical codecs
+
+With `--target csharp --layer-base-schema previous.tl`, both schemas must declare
+`// LAYER N`, and the current layer must be newer. Same-name declarations whose CIDs
+changed get historical readers automatically. Explicit mappings also enable historical
+writers, including fields moved into a nested action object:
+
+```toml
+[[csharp_layer_mappings]]
+source = "OldUrlButton"
+target = "InlineButton"
+nested_field = "Type"
+nested_constructor = "InlineButtonTypeUrl"
+```
+
+Names are generated C# class/property names. The archived schema supplies CIDs, flags,
+wire types and field order; TOML contains no binary layouts. Readers recognise archived
+CIDs even without a negotiated layer, so previously saved payloads remain readable.
+Writers select the archived layout for non-native layers through the base layer.
+Missing formerly-required fields and new byte-bearing fields that cannot be represented
+are rejected rather than silently dropped. `GeneratedLayerCompatibility` exposes
+`CanWrite` and `TryUpgradeRequest` for consumer gates and request routing.
+
+The F# library APIs `EmitCSharp.buildModule` and `buildFiles` take the planned variants
+as their final argument; pass `[]` when historical codecs are not needed.
+
 
 ## Generator architecture
 

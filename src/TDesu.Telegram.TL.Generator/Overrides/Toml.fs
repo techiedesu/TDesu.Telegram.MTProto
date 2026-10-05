@@ -77,6 +77,18 @@ module Toml =
             | _ -> []
         { Name = name; MaxOldLayer = maxOldLayer; ExtraFields = extras }
 
+    let private parseCSharpLayerMapping (table: TomlTable) : CSharpLayerMapping =
+        let optional key =
+            let value = getStringOr key "" table
+            if value = "" then None else Some value
+        let field, constructor = optional "nested_field", optional "nested_constructor"
+        if field.IsSome <> constructor.IsSome then
+            failwith "csharp_layer_mappings requires both nested_field and nested_constructor, or neither"
+        { Source = getString "source" table
+          Target = getString "target" table
+          NestedField = field
+          NestedConstructor = constructor }
+
     let private parseAlias (table: TomlTable) : CidAlias =
         let name = table |> getString "name"
         let cids =
@@ -128,6 +140,7 @@ module Toml =
 
         { LayerVariants = layerVariants
           StructuralOverlays = structuralOverlays
+          CSharpLayerMappings = doc |> getTableArray "csharp_layer_mappings" |> List.map parseCSharpLayerMapping
           Aliases = aliases
           Extras = extras
           ExtraCombinators = extraCombinators
