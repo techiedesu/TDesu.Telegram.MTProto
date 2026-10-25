@@ -1,5 +1,15 @@
 # Release notes
 
+## 0.14.2
+
+### Dependencies
+
+Picks up TDesu.Telegram.Serialization 0.4.2 (a `bytes`/`string` field no longer builds and
+discards a rejection message on every write, and disposal scrubs only what was written instead
+of the whole rented array), TDesu.Telegram.Crypto 0.5.1 (the same guard fix in
+`BigEndian.toBytes`, which runs per modular exponentiation in the handshake) and
+TDesu.FSharp 2.1.1.
+
 ## 0.14.1
 
 ### Protocol
