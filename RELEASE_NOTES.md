@@ -1,5 +1,25 @@
 # Release notes
 
+## 0.14.1
+
+### Protocol
+
+`MessageFraming.encrypt` allocates one array per message instead of three. The padded
+plaintext is now built inside the frame, behind the 24-byte header, and encrypted onto
+itself — `AesIge.encryptTo` has always documented that `output` may alias `input`. The
+writer's plaintext and its padded copy are gone; the writer is pooled and pre-sized to the
+message, so copying out of it costs a memcpy and no allocation.
+
+Measured on a 256 KiB body: 3.01x the body size in managed allocation down to 1.01x, and
+2160 us down to 1118 us. A 16 KiB body goes from 3.10x to 1.10x. Small messages are
+dominated by the fixed per-message cost and move little.
+
+The padding rule did not move: this needs `Padding.paddedLength` to size the frame and
+`Padding.fill` to write the tail, both added in TDesu.Telegram.Crypto 0.5.0 alongside
+`KeyDerivation.computeMsgKeyOf`, which hashes the plaintext as a slice of the frame rather
+than a copy. `addPadding` is defined in terms of the same arithmetic, so the 12..27 rule
+still has exactly one owner. Requires Crypto 0.5.0.
+
 ## 0.14.0
 
 ### Generator

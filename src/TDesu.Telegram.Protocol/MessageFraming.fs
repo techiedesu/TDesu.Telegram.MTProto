@@ -31,15 +31,18 @@ module MessageFraming =
 
     /// Frame `body` as an encrypted MTProto 2.0 message.
     ///
-    /// Three arrays per message: the writer's plaintext, its padded copy, and the frame the
-    /// ciphertext is written into. 0.12 made five — `AesIge.encrypt` returned the ciphertext as its
-    /// own array and a second writer copied it into the frame behind the header; `encryptTo` writes
-    /// it straight into the frame instead. The padded copy stays because the 12..27-byte rule
-    /// belongs to `Padding.addPadding`, and reproducing it here to save one copy would be a second
-    /// place for the rule to drift.
+    /// One array per message: the frame itself. The padded plaintext is built inside it,
+    /// behind the 24-byte header, and encrypted onto itself — `AesIge.encryptTo` documents
+    /// that `output` may alias `input`. 0.13 allocated three full-size arrays instead (the
+    /// writer's plaintext, its padded copy, and the frame), measured at 3.01x the body size
+    /// for a 256 KiB part. The padding rule still belongs to `Padding`: `paddedLength` sizes
+    /// the frame and `fill` writes the tail, so this is the same rule `addPadding` applies,
+    /// not a second copy of it. The writer stays the one owner of the plaintext layout, and
+    /// its buffer is pooled, so copying out of it costs a memcpy and no allocation.
     let encrypt (authKey: AuthKey) (session: SessionState) (msgId: int64) (seqNo: int32) (body: byte[]) : byte[] =
-        // Build plaintext: salt + session_id + msg_id + seq_no + length + body
-        use innerWriter = new TlWriteBuffer()
+        // Sized up front: the default 256-byte writer would otherwise grow by doubling, and
+        // every growth copies everything written so far.
+        use innerWriter = new TlWriteBuffer(PlaintextHeaderLength + body.Length)
         innerWriter.WriteInt64(session.Salt)
         innerWriter.WriteInt64(session.SessionId)
         innerWriter.WriteInt64(msgId)
@@ -47,20 +50,20 @@ module MessageFraming =
         innerWriter.WriteInt32(body.Length)
         innerWriter.WriteRawBytes(body)
 
-        // Add padding (12-1024 bytes, total divisible by 16)
-        let padded = Padding.addPadding (innerWriter.ToArray())
+        let plaintextLength = innerWriter.Length
+        let paddedLength = Padding.paddedLength plaintextLength
+        let frame = Array.zeroCreate<byte> (HeaderLength + paddedLength)
+        let plaintext = Span(frame, HeaderLength, paddedLength)
+        innerWriter.WrittenSpan.CopyTo plaintext
+        Padding.fill (plaintext.Slice plaintextLength)
 
-        // Compute msg_key (x=0 for client->server)
-        let msgKey = KeyDerivation.computeMsgKey authKey.Data padded 0
-
-        // Derive AES key/iv
+        // msg_key (x=0 for client->server) over the padded plaintext, read in place.
+        let msgKey = KeyDerivation.computeMsgKeyOf authKey.Data (Span.op_Implicit plaintext) 0
         let aesParams = KeyDerivation.deriveAesKeyIv authKey.Data msgKey 0
 
-        // Final message: auth_key_id + msg_key + AES-IGE ciphertext, encrypted in place.
-        let frame = Array.zeroCreate<byte> (HeaderLength + padded.Length)
         BinaryPrimitives.WriteInt64LittleEndian(Span(frame, 0, 8), authKey.Id)
         Buffer.BlockCopy(msgKey, 0, frame, 8, 16)
-        AesIge.encryptTo (ReadOnlySpan(padded)) aesParams.Key aesParams.Iv (Span(frame, HeaderLength, padded.Length))
+        AesIge.encryptTo (Span.op_Implicit plaintext) aesParams.Key aesParams.Iv plaintext
         frame
 
     /// Decrypt one frame and hand back its body as a reader over the decrypted plaintext.
