@@ -63,7 +63,8 @@ module Session =
         lock session (fun () ->
             session.SessionId <- newSessionId ()
             session.SeqNo <- 0
-            session.LastMsgId <- 0L)
+            session.LastMsgId <- 0L
+            session.Announced <- false)
 
     /// Generate next sequence number.
     /// Content-related messages: seqNo = seqNo*2 + 1
@@ -83,4 +84,86 @@ module Session =
         SeqNo = 0
         LastMsgId = 0L
         TimeOffset = 0
+        FutureSalts = []
+        SaltConfirmed = false
+        Announced = false
     }
+
+    // ─── Server salts ────────────────────────────────────────────────────────
+    //
+    // The server rotates the salt about once an hour and refuses a message carrying an expired one
+    // with `bad_server_salt`, which costs a round trip and a re-send. Asking `get_future_salts`
+    // ahead of time and switching by the server's clock, as TDLib does, keeps every message on a
+    // valid salt. `bad_server_salt` is then a fault worth a warning, not an hourly routine.
+
+    /// How long a salt must already have been valid, and must stay valid, before it is chosen —
+    /// slack for the gap between our corrected clock and the server's.
+    [<Literal>]
+    let SaltSwitchMarginSeconds = 60L
+
+    /// Ask for more salts once the announced ones cover less than this much time ahead.
+    [<Literal>]
+    let SaltRefillHorizonSeconds = 3600L
+
+    /// How many salts to ask for at once. The server answers with up to 64, about an hour each.
+    [<Literal>]
+    let FutureSaltsRequested = 32
+
+    /// The server's clock as far as this session knows it: local time plus the correction
+    /// `bad_msg_notification` 16/17 taught it.
+    let serverNow (session: SessionState) : int64 =
+        DateTimeOffset.UtcNow.ToUnixTimeSeconds() + int64 session.TimeOffset
+
+    /// Which announced salt to use at server time `now`: the newest whose window has been open for
+    /// at least the margin and stays open at least the margin longer, else any window containing
+    /// `now`, else none.
+    let selectSalt (salts: SaltWindow list) (now: int64) : int64 option =
+        let comfortable =
+            salts
+            |> List.filter (fun s ->
+                s.ValidSince <= now - SaltSwitchMarginSeconds && s.ValidUntil > now + SaltSwitchMarginSeconds)
+
+        let containing =
+            salts |> List.filter (fun s -> s.ValidSince <= now && s.ValidUntil > now)
+
+        match comfortable, containing with
+        | _ :: _, _ -> Some (comfortable |> List.maxBy _.ValidSince).Salt
+        | [], _ :: _ -> Some (containing |> List.maxBy _.ValidSince).Salt
+        | [], [] -> None
+
+    /// Whether the announced salts run out within `SaltRefillHorizonSeconds` of `now` (or there are
+    /// none at all).
+    let needsFutureSalts (salts: SaltWindow list) (now: int64) : bool =
+        salts |> List.forall (fun s -> s.ValidUntil < now + SaltRefillHorizonSeconds)
+
+    /// Drop expired windows and switch `Salt` to the one valid now. Called right before a message
+    /// is encrypted; a no-op while no salts have been announced.
+    let refreshSalt (session: SessionState) : unit =
+        lock session (fun () ->
+            let now = serverNow session
+            session.FutureSalts <- session.FutureSalts |> List.filter (fun s -> s.ValidUntil > now)
+
+            match selectSalt session.FutureSalts now with
+            | Some salt -> session.Salt <- salt
+            | None -> ())
+
+    /// Keep the salts a `future_salts` answer announced and switch to the one valid now.
+    let storeFutureSalts (session: SessionState) (salts: SaltWindow list) : unit =
+        lock session (fun () ->
+            session.FutureSalts <- salts |> List.sortBy _.ValidSince
+            session.SaltConfirmed <- true)
+
+        refreshSalt session
+
+    /// Take a salt the server named outright (`bad_server_salt`, `new_session_created`). Announced
+    /// salts are dropped with it: they disagreed with the server, or belong to a session it no
+    /// longer has, and the next refill asks again.
+    let replaceSalt (session: SessionState) (salt: int64) : unit =
+        lock session (fun () ->
+            session.Salt <- salt
+            session.SaltConfirmed <- true
+            session.FutureSalts <- [])
+
+    /// Whether this session should ask for more salts now.
+    let needsMoreSalts (session: SessionState) : bool =
+        lock session (fun () -> needsFutureSalts session.FutureSalts (serverNow session))

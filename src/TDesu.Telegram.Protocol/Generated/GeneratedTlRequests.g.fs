@@ -415,6 +415,26 @@ type RpcError = {
             ErrorMessage = errorMessage
         }
 
+type GetFutureSalts = {
+    Num: int32
+} with
+
+    static member ConstructorId: uint32 = 3105996036u
+    static member AliasCids: uint32[] = [||]
+
+    static member Serialize(writer: TlWriteBuffer, value: GetFutureSalts) : unit =
+        writer.WriteConstructorId(3105996036u)
+        writer.WriteInt32(value.Num)
+
+    static member DeserializeFields(reader: TlReadBuffer) : GetFutureSalts =
+        let num = reader.ReadInt32()
+        { Num = num }
+
+    static member Deserialize(body: byte[]) : GetFutureSalts =
+        let reader = new TlReadBuffer(body)
+        let _cid = reader.ReadConstructorId()
+        GetFutureSalts.DeserializeFields(reader)
+
 type PingDelayDisconnect = {
     PingId: int64
     DisconnectDelay: int32

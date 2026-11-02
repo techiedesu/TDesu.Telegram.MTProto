@@ -77,6 +77,8 @@ type MtProtoClient
     // timing out; two missed pongs are the signal to drop it and let the reconnect path run.
     let mutable lastPingSentAt = 0L
     let mutable lastPongAt = 0L
+    // When the keepalive last asked for future salts; bounds the asking to once a minute.
+    let mutable lastSaltRequestAt = Int64.MinValue / 2L
 
     // Cancelled only by Disconnect, and replaced by the next connect. A reconnect has to outlive
     // the receive loop that asked for it: stopping that loop is the reconnect's own first step, so
@@ -208,6 +210,25 @@ type MtProtoClient
             { PingDelayDisconnect.PingId = pingId
               DisconnectDelay = disconnectDelay }
 
+    let buildGetFutureSalts () : byte[] =
+        Tl.bytesOf { GetFutureSalts.Num = Session.FutureSaltsRequested }
+
+    /// Keep the salts a `future_salts` answer announced, whether it came bare (as the server sends
+    /// it, carrying its own req_msg_id) or wrapped in an rpc_result.
+    let acceptFutureSalts (salts: FutureSalts) =
+        session
+        |> Option.iter (fun s ->
+            salts.Salts
+            |> Array.map (fun (f: FutureSalt) ->
+                ({ ValidSince = int64 f.ValidSince
+                   ValidUntil = int64 f.ValidUntil
+                   Salt = f.Salt }
+                : SaltWindow))
+            |> List.ofArray
+            |> Session.storeFutureSalts s)
+
+        log.LogDebug("future_salts: {Count} salt(s) announced", salts.Salts.Length)
+
     /// Send an already-built TL body as an encrypted message under the send lock; returns its
     /// msg_id. Does NOT register for a response — for fire-and-forget service messages (ack, ping).
     let sendServiceMessage (body: byte[]) (contentRelated: bool) (ct: CancellationToken) : Task<Result<int64, MtProtoError>> =
@@ -217,6 +238,7 @@ type MtProtoClient
                 do! sendLock.WaitAsync(ct)
 
                 try
+                    Session.refreshSalt sess
                     let msgId = Session.generateMsgId sess
                     let seqNo = Session.nextSeqNo sess contentRelated
                     let encrypted = MessageFraming.encrypt key sess msgId seqNo body
@@ -256,23 +278,28 @@ type MtProtoClient
         // which quietly disables flood-wait handling and 2FA detection alike.
         let result = TlReadBuffer(resultData)
 
-        let completed =
-            if result.TryPeekConstructorId() = ValueSome Requests.RpcError.ConstructorId then
-                let err = Requests.RpcError.Deserialize result
+        // future_salts names its own req_msg_id and normally arrives bare (see processInnerMessage);
+        // one wrapped in rpc_result answers the keepalive's request, which nobody awaits.
+        if result.TryPeekConstructorId() = ValueSome FutureSalts.ConstructorId then
+            acceptFutureSalts (FutureSalts.Deserialize result)
+        else
+            let completed =
+                if result.TryPeekConstructorId() = ValueSome Requests.RpcError.ConstructorId then
+                    let err = Requests.RpcError.Deserialize result
 
-                log.LogDebug(
-                    "rpc_error {Code} {Message} for msg_id {MsgId}",
-                    err.ErrorCode,
-                    err.ErrorMessage,
-                    reqMsgId
-                )
+                    log.LogDebug(
+                        "rpc_error {Code} {Message} for msg_id {MsgId}",
+                        err.ErrorCode,
+                        err.ErrorMessage,
+                        reqMsgId
+                    )
 
-                dispatcher.FailRequest(reqMsgId, MtProtoError.ofRpcError err.ErrorCode err.ErrorMessage)
-            else
-                dispatcher.CompleteRequest(reqMsgId, resultData)
+                    dispatcher.FailRequest(reqMsgId, MtProtoError.ofRpcError err.ErrorCode err.ErrorMessage)
+                else
+                    dispatcher.CompleteRequest(reqMsgId, resultData)
 
-        if not completed then
-            log.LogWarning("No pending request for msg_id {MsgId}", reqMsgId)
+            if not completed then
+                log.LogWarning("No pending request for msg_id {MsgId}", reqMsgId)
 
     /// Re-send a still-pending request under a fresh msg_id (e.g. after bad_server_salt corrected
     /// the salt). The response to the re-send completes the original caller's task via Rekey.
@@ -302,6 +329,7 @@ type MtProtoClient
                     else
                         let seqNo = Session.nextSeqNo sess true
                         dispatcher.SetSeqNo(newMsgId, seqNo)
+                        Session.refreshSalt sess
                         let encrypted = MessageFraming.encrypt key sess newMsgId seqNo body
 
                         match! transport.SendAsync(encrypted, lifetimeCts.Token) with
@@ -415,8 +443,25 @@ type MtProtoClient
 
                     match BadMsgNotification.Deserialize body with
                     | BadMsgNotification.BadServerSalt(badMsgId, _, _, newSalt) ->
-                        session |> Option.iter (fun s -> s.Salt <- newSalt)
-                        log.LogWarning("bad_server_salt for msg_id {MsgId}; updated salt and re-sending", badMsgId)
+                        // With salts announced ahead of time the hourly rotation never reaches the
+                        // server, so a refusal is either a salt restored from storage that expired
+                        // while nothing was connected, or the server disagreeing with a salt it had
+                        // itself vouched for. Both stay warnings, so their rate shows a regression;
+                        // the text tells the two apart.
+                        let wasConfirmed = session |> Option.exists _.SaltConfirmed
+                        session |> Option.iter (fun s -> Session.replaceSalt s newSalt)
+
+                        if wasConfirmed then
+                            log.LogWarning(
+                                "bad_server_salt for msg_id {MsgId}: the server refused a salt it had confirmed; updated salt and re-sending",
+                                badMsgId
+                            )
+                        else
+                            log.LogWarning(
+                                "bad_server_salt for msg_id {MsgId}: the restored salt had expired; updated salt and re-sending",
+                                badMsgId
+                            )
+
                         %Task.Run(Func<Task>(fun () -> task { let! _ = resendRequest badMsgId in () }))
                     | other -> log.LogWarning("bad_server_salt id decoded as {Other}", other)
                 | GeneratedCid.NewSessionCreated ->
@@ -428,15 +473,35 @@ type MtProtoClient
                     body.Position <- 0
                     let created = NewSession.Deserialize body
                     let firstMsgId = created.FirstMsgId
-                    session |> Option.iter (fun s -> s.Salt <- created.ServerSalt)
+
+                    // The first one for a session id is how the server acknowledges a session it
+                    // has just created for us — every connect, every new DC client, every renewal.
+                    // A second one on the same id means it dropped a session we were using, and
+                    // with it whatever it would have pushed meanwhile. Both stay warnings, so their
+                    // rate shows a regression; the text tells the two apart.
+                    let fresh =
+                        match session with
+                        | Some s ->
+                            let fresh = not s.Announced
+                            s.Announced <- true
+                            Session.replaceSalt s created.ServerSalt
+                            fresh
+                        | None -> true
 
                     let abandoned = dispatcher.PendingIds |> List.filter (fun id -> id < firstMsgId)
 
-                    log.LogWarning(
-                        "new_session_created (first_msg_id={FirstMsgId}); re-sending {Count} abandoned request(s)",
-                        firstMsgId,
-                        abandoned.Length
-                    )
+                    if fresh then
+                        log.LogWarning(
+                            "new_session_created (first_msg_id={FirstMsgId}) for a fresh session; re-sending {Count} abandoned request(s)",
+                            firstMsgId,
+                            abandoned.Length
+                        )
+                    else
+                        log.LogWarning(
+                            "new_session_created (first_msg_id={FirstMsgId}) for a session already in use: the server dropped it; re-sending {Count} abandoned request(s)",
+                            firstMsgId,
+                            abandoned.Length
+                        )
 
                     for abandonedId in abandoned do
                         %Task.Run(Func<Task>(fun () -> task { let! _ = resendRequest abandonedId in () }))
@@ -676,8 +741,9 @@ type MtProtoClient
                     // Replies to rpc_drop_answer, which this client never sends.
                     log.LogTrace("rpc_answer 0x{Constructor:x8}", constructor)
                 | GeneratedCid.FutureSalts ->
-                    // Only ever a reply to get_future_salts, unsent here.
-                    log.LogTrace("future_salts")
+                    // The answer to the keepalive's get_future_salts: not wrapped in rpc_result.
+                    body.Position <- 0
+                    acceptFutureSalts (FutureSalts.Deserialize body)
                 | GeneratedCid.DestroySessionOk
                 | GeneratedCid.DestroySessionNone ->
                     log.LogDebug("destroy_session result 0x{Constructor:x8}", constructor)
@@ -777,6 +843,19 @@ type MtProtoClient
                         match! sendServiceMessage (buildPing pingId disconnectDelay) false ct with
                         | Ok _ -> lastPingSentAt <- Environment.TickCount64
                         | Error e -> log.LogDebug("ping send failed: {Error}", e)
+
+                        // Top up the announced salts before they run out. At most one request a
+                        // minute: an answer that never comes (a dropped frame, a refused salt on
+                        // the request itself) is simply asked for again on a later tick.
+                        match session with
+                        | Some sess when
+                            Session.needsMoreSalts sess
+                            && Environment.TickCount64 - lastSaltRequestAt > 60_000L
+                            ->
+                            match! sendServiceMessage (buildGetFutureSalts ()) true ct with
+                            | Ok _ -> lastSaltRequestAt <- Environment.TickCount64
+                            | Error e -> log.LogDebug("get_future_salts send failed: {Error}", e)
+                        | _ -> ()
                 })
             ct
             (fun ex -> log.LogDebug(ex, "ping failed"))
@@ -809,6 +888,7 @@ type MtProtoClient
 
                         for (msgId, seqNo, body) in pending do
                             if ok then
+                                Session.refreshSalt sess
                                 let encrypted = MessageFraming.encrypt key sess msgId seqNo body
 
                                 match! transport.SendAsync(encrypted, lifetimeCts.Token) with
@@ -1089,6 +1169,8 @@ type MtProtoClient
                                             authKey <- Some key
                                             let sess = Session.createSession ()
                                             sess.Salt <- salt
+                                            // The key exchange's own answer: the server's salt.
+                                            sess.SaltConfirmed <- true
                                             sess.TimeOffset <- timeOffset
                                             session <- Some sess
 
@@ -1167,7 +1249,8 @@ type MtProtoClient
     /// Set the auth key + a fresh session (carrying the given salt/time offset) and start the
     /// receive + keepalive loops. Shared by the fresh-DH connect and persisted-session restore,
     /// and the one place that revives a client an earlier Disconnect had closed.
-    let startSession (key: AuthKey) (salt: int64) (timeOffset: int32) =
+    /// `saltConfirmed`: the salt came from the server just now (key exchange), not from storage.
+    let startSession (key: AuthKey) (salt: int64) (timeOffset: int32) (saltConfirmed: bool) =
         // Replacing the lifetime generation and disowning any attempt still parked in a transport
         // call, both under the lock that publishes them. Without the replacement every reconnect on
         // the revived client aborts before its first backoff; without clearing the flag, a stale
@@ -1186,6 +1269,7 @@ type MtProtoClient
         authKey <- Some key
         let sess = Session.createSession ()
         sess.Salt <- salt
+        sess.SaltConfirmed <- saltConfirmed
         sess.TimeOffset <- timeOffset
         session <- Some sess
 
@@ -1218,7 +1302,7 @@ type MtProtoClient
                 | Error e -> return Error e
                 | Ok(key, salt, timeOffset) ->
 
-                    startSession key salt timeOffset
+                    startSession key salt timeOffset true
                     log.LogInformation("Auth key established, session created")
                     return Ok()
         }
@@ -1240,7 +1324,7 @@ type MtProtoClient
             | Error e -> return Error(MtProtoError.TransportError e)
             | Ok() ->
 
-                startSession key salt timeOffset
+                startSession key salt timeOffset false
                 log.LogInformation("Connected with persisted auth key (no DH)")
                 return Ok()
         }
@@ -1306,6 +1390,7 @@ type MtProtoClient
                 Error MtProtoError.NotConnected
 
             try
+                Session.refreshSalt sess
                 let msgId = Session.generateMsgId sess
                 let seqNo = Session.nextSeqNo sess true
                 let encrypted = MessageFraming.encrypt key sess msgId seqNo requestBody

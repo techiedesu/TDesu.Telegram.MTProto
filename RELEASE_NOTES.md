@@ -1,5 +1,42 @@
 # Release notes
 
+## 0.14.3
+
+### Protocol
+
+**The client asks for future salts and switches to each one on time.** The server rotates the
+salt about once an hour and refuses a message carrying an expired one with `bad_server_salt`. The
+client never sent `get_future_salts`, so every rotation reached the server as a refused message
+and a re-send, on every connection: one consumer measured ~176 `bad_server_salt` warnings a day
+across its main and per-DC connections. The keepalive now asks for 32 salts whenever the
+announced ones cover less than an hour ahead, at most once a minute. `future_salts` is accepted
+bare — as the server sends it, naming its own `req_msg_id` — or wrapped in `rpc_result`.
+`Session.refreshSalt` re-chooses the salt by the server's clock (local time plus `TimeOffset`)
+right before every message is encrypted, since one answer covers many hours. A salt is taken
+once it has been valid for 60 s and stays valid 60 s longer, slack for the gap between the
+corrected clock and the server's; back-to-back windows still switch at the boundary. A salt the
+server names outright — `bad_server_salt`, `new_session_created` — replaces the announced ones:
+re-choosing an announced salt the server has just refused would be refused again.
+
+`bad_server_salt` and `new_session_created` stay warnings, so their rate still shows a
+regression, and the text now says which case it was. For `bad_server_salt`: a salt restored
+from storage that expired while nothing was connected (`ConnectWithAuthKeyAsync` cannot know
+whether it is still current, so the first message after a restore may still draw one), or the
+server refusing a salt it had itself confirmed. For `new_session_created`: a fresh session's
+acknowledgement, or the server dropping a session already in use. Both keep their
+`bad_server_salt` / `new_session_created` prefix.
+
+**`SessionState` has three more fields** — `FutureSalts`, `SaltConfirmed`, `Announced` — and
+`SaltWindow` is new. Code that builds a `SessionState` record literal instead of calling
+`Session.createSession` no longer compiles; add the three fields as `[]`, `false`, `false`.
+
+The service layer whitelists `get_future_salts` (`src/tl-overrides/mtproto.toml`); no other
+generated type changed.
+
+### Dependencies
+
+As in 0.14.2.
+
 ## 0.14.2
 
 ### Dependencies

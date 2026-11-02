@@ -19,6 +19,7 @@
         <Compile Include="SeqNoContinuityTests.fs" />
         <Compile Include="AckRequeueTests.fs" />
         <Compile Include="ReconnectTests.fs" />
+        <Compile Include="ServerSaltTests.fs" />
     </ItemGroup>
 
     <ItemGroup>

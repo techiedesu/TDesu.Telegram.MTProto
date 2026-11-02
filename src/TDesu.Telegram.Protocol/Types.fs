@@ -8,12 +8,31 @@ type AuthKey = {
     AuxHash: int64
 }
 
+/// One salt the server announced through `future_salts`: valid on the server's clock for unix
+/// seconds in `[ValidSince, ValidUntil)`.
+type SaltWindow = {
+    ValidSince: int64
+    ValidUntil: int64
+    Salt: int64
+}
+
 type SessionState = {
     mutable Salt: int64
     mutable SessionId: int64
     mutable SeqNo: int32
     mutable LastMsgId: int64
     mutable TimeOffset: int32
+    /// Salts announced ahead of time, oldest first. `Session.refreshSalt` switches `Salt` to the
+    /// one valid now before every send, so the hourly rotation never reaches the server as a
+    /// stale salt.
+    mutable FutureSalts: SaltWindow list
+    /// Whether the server itself vouched for `Salt` — key exchange, `future_salts`,
+    /// `bad_server_salt`, `new_session_created`. A salt restored from storage has not, and the
+    /// server refusing it is expected rather than a fault.
+    mutable SaltConfirmed: bool
+    /// Whether the server has already answered this session id with `new_session_created`. The
+    /// first one is how it acknowledges a fresh session; a second means it dropped one in use.
+    mutable Announced: bool
 }
 
 /// Why a call did not produce an answer. Every case is something a caller can act on without

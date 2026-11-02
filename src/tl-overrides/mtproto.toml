@@ -22,4 +22,6 @@ types = [
     "DestroySessionRes",
     # Written by the keepalive and ack paths.
     "PingDelayDisconnect",
+    # Written by the keepalive path to keep a valid salt announced ahead of its rotation.
+    "GetFutureSalts",
 ]
