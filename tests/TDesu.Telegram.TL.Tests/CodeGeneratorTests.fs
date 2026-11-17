@@ -173,6 +173,29 @@ module CodeGeneratorTests =
             Assert.That(code, Does.Contain "ReadBareVector")
             Assert.That(code, Does.Not.Contain "Array.init"))
 
+    /// A type that can contain itself brackets its deserializer with the reader's nesting bound;
+    /// a type that cannot is emitted without it.
+    [<Test>]
+    let ``generateSerializationTypes bounds nesting only for self-referencing types`` () =
+        let schema =
+            match
+                AstFactory.parse
+                    "textPlain#744694e0 text:string = RichText;\ntextBold#6724abc4 text:RichText = RichText;\nleaf#11111111 n:int = Leaf;\n"
+            with
+            | Ok s -> s
+            | Error e -> failwith e
+
+        let config =
+            { OverrideConfig.empty with
+                TypeWhitelist = set [ "RichText"; "Leaf" ] }
+
+        withTempFile (fun path ->
+            Pipeline.generateSerializationTypes testNs config schema path
+            let code = File.ReadAllText path
+            let count (needle: string) = code.Split(needle).Length - 1
+            Assert.That(count "reader.EnterNested()", Is.EqualTo 1)
+            Assert.That(count "reader.LeaveNested()", Is.EqualTo 1))
+
     /// Regression: `[[layer_variants]]` CIDs must flow into the generated
     /// `Deserialize`'s pattern match via `AliasCids`. Without this, a layer
     /// 223 client sending the post-216 CID for `messages.sendMessage` is

@@ -1,5 +1,6 @@
 namespace TDesu.Telegram.TL.Generator
 
+open System.Collections.Generic
 open Fantomas.FCS.Syntax
 open Fantomas.FCS.SyntaxTrivia
 open Fantomas.FCS.Text
@@ -34,6 +35,91 @@ module EmitTypes =
         elif IrType.isBare t then [ IrType.unbare t ]
         else []
 
+    // --- Self-referencing types ---
+
+    /// Types whose values can contain a value of the same type, directly or through other types
+    /// (`RichText`, `PageBlock`, `JSONValue`, ...). Their deserializers bracket the body with
+    /// `reader.EnterNested()` / `reader.LeaveNested()`, so how deep such a value nests is bounded
+    /// by `TlReadBuffer.MaxNestingDepth`; every other type pays nothing.
+    let mutable private selfReferencing: Set<string> = Set.empty
+
+    let rec private typeNamesIn (t: string) : string list =
+        if IrType.isOption t then typeNamesIn (IrType.unoption t)
+        elif IrType.isVector t then typeNamesIn (IrType.element t)
+        else [ IrType.unbare t ]
+
+    /// Tarjan's strongly connected components over "type -> types its fields mention"; a type is
+    /// self-referencing when its component has more than one member or it mentions itself.
+    let private selfReferencingTypes (types: GeneratedType list) : Set<string> =
+        let fieldTypesOf =
+            function
+            | Record(_, fields, _) -> fields |> List.map _.FSharpType
+            | Union(_, cases) -> cases |> List.collect (fun c -> c.Fields |> List.map _.FSharpType)
+
+        let nameOf =
+            function
+            | Record(name, _, _)
+            | Union(name, _) -> name
+
+        let known = types |> List.map nameOf |> Set.ofList
+
+        let edges =
+            types
+            |> List.map (fun t -> nameOf t, fieldTypesOf t |> List.collect typeNamesIn |> List.filter known.Contains |> List.distinct)
+            |> Map.ofList
+
+        let index = Dictionary<string, int>()
+        let lowLink = Dictionary<string, int>()
+        let onStack = HashSet<string>()
+        let stack = Stack<string>()
+        let mutable next = 0
+        let mutable result = Set.empty
+
+        let rec connect (v: string) =
+            index[v] <- next
+            lowLink[v] <- next
+            next <- next + 1
+            stack.Push v
+            onStack.Add v |> ignore
+
+            for w in edges[v] do
+                if not (index.ContainsKey w) then
+                    connect w
+                    lowLink[v] <- min lowLink[v] lowLink[w]
+                elif onStack.Contains w then
+                    lowLink[v] <- min lowLink[v] index[w]
+
+            if lowLink[v] = index[v] then
+                let mutable comp = []
+                let mutable fin = false
+
+                while not fin do
+                    let w = stack.Pop()
+                    onStack.Remove w |> ignore
+                    comp <- w :: comp
+                    fin <- (w = v)
+
+                match comp with
+                | [ single ] when not (List.contains single edges[single]) -> ()
+                | _ -> result <- Set.union result (Set.ofList comp)
+
+        for t in types do
+            let v = nameOf t
+
+            if not (index.ContainsKey v) then
+                connect v
+
+        result
+
+    /// Wraps a deserializer body for `name` in the nesting bracket when `name` is self-referencing.
+    let private withNestingBound (name: string) (body: SynExpr) : SynExpr =
+        if selfReferencing.Contains name then
+            mkSeq
+                [ mkApp (mkDotGet reader "EnterNested") mkUnit
+                  mkLet "result" body (mkSeq [ mkApp (mkDotGet reader "LeaveNested") mkUnit; mkIdent "result" ]) ]
+        else
+            body
+
     /// Register the surface's bare references before any declaration is
     /// built. Every emit entry point calls this, and an unregistered bare
     /// reference fails generation — a forgotten call must not degrade to a
@@ -62,6 +148,8 @@ module EmitTypes =
                 | Record(name, _, _) -> Some name
                 | Union _ -> None)
             |> Set.ofList
+
+        selfReferencing <- selfReferencingTypes types
 
         match Set.difference referenced recordNames |> Set.toList with
         | [] -> bareRecords <- referenced
@@ -363,7 +451,7 @@ module EmitTypes =
     /// `DeserializeBody(reader)` — the fields, with the constructor id
     /// already consumed (or never present, for a bare reference).
     let private mkDeserializeBodyMember (name: string) (fields: GeneratedField list) =
-        let body = mkDeserializeRecordBody fields (flagFieldNames fields) false
+        let body = mkDeserializeRecordBody fields (flagFieldNames fields) false |> withNestingBound name
 
         let readerPat =
             mkPatTyped (mkPatNamed "reader") (mkSynType "TlReadBuffer")
@@ -380,7 +468,7 @@ module EmitTypes =
                     (mkApp (mkDotGet reader "ReadConstructorId") mkUnit)
                     (mkApp (mkLongIdent [ name; "DeserializeBody" ]) (mkParen reader))
             else
-                mkDeserializeRecordBody fields flagFields true
+                mkDeserializeRecordBody fields flagFields true |> withNestingBound name
 
         let readerPat =
             mkPatTyped (mkPatNamed "reader") (mkSynType "TlReadBuffer")
@@ -607,7 +695,7 @@ module EmitTypes =
         let readerPat =
             mkPatTyped (mkPatNamed "reader") (mkSynType "TlReadBuffer")
 
-        mkStaticMemberWithReturnType "Deserialize" [ readerPat ] (Some(mkSynType name)) body
+        mkStaticMemberWithReturnType "Deserialize" [ readerPat ] (Some(mkSynType name)) (withNestingBound name body)
 
     /// Generate inline field accessor members for a union type
     let private mkFieldAccessors (name: string) (cases: UnionCase list) : SynMemberDefn list =

@@ -8,15 +8,26 @@
 `TlReadBuffer.ReadBareVector`**, which applies the same declared-count bound as `ReadVector`.
 Regenerated `Generated/GeneratedTlRequests.g.fs` (`future_salts.salts`).
 
+**Self-referencing types get a nesting bound in their generated deserializers.** The `types`
+target finds the types that can contain themselves (strongly connected components of the field
+graph: `RichText`, `PageBlock`, `JSONValue`, `MessageMedia`/`WebPage`/`StoryItem`, ... in the API
+schema) and brackets their `Deserialize`/`DeserializeBody` with `reader.EnterNested()` /
+`reader.LeaveNested()`, so nesting stops at `TlReadBuffer.MaxNestingDepth` with a
+`TlFormatException`. Other types are emitted unchanged.
+
 ### Dependencies
 
-Picks up TDesu.Telegram.Serialization's new `TlReadBuffer.ReadBareVector`.
+Picks up TDesu.Telegram.Serialization's new `TlReadBuffer.ReadBareVector` and
+`TlReadBuffer.EnterNested`/`LeaveNested`.
 
 ### Protocol
 
 **`processInnerMessage` unwraps at most `MaxMessageNestingDepth` (4) nested `msg_container` /
 `gzip_packed` layers**, matching the schema's single-level wrappers; a message nested deeper is
 logged and dropped.
+
+**`factorizePQ` steps Pollard's rho in `UInt128`/`uint64` arithmetic** instead of `BigInteger`,
+with the same iteration budget, so an exhausted budget costs a fraction of the time.
 
 ## 0.14.3
 

@@ -357,6 +357,14 @@ type TlReadBuffer(data: byte array) =
         let count = this.ReadInt32()
         Array.init count (fun _ -> readItem this)
 
+    member this.ReadBareVector<'T>(readItem: TlReadBuffer -> 'T) : 'T[] =
+        let count = this.ReadInt32()
+        Array.init count (fun _ -> readItem this)
+
+    member _.EnterNested() = ()
+
+    member _.LeaveNested() = ()
+
     interface IDisposable with
         member _.Dispose() = ()
 """
