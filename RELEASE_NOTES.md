@@ -29,6 +29,9 @@ logged and dropped.
 **`factorizePQ` steps Pollard's rho in `UInt128`/`uint64` arithmetic** instead of `BigInteger`,
 with the same iteration budget, so an exhausted budget costs a fraction of the time.
 
+**`new_nonce_hash1/2/3` and the `server_DH_params_fail` hash are compared with
+`Bytes.constantTimeEquals`**, like `msg_key` already is.
+
 ## 0.14.3
 
 ### Protocol

@@ -321,7 +321,7 @@ module AuthKeyExchange =
 
                 if failNonce <> nonce || failServerNonce <> serverNonce then
                     return Error (MtProtoError.AuthKeyExchangeFailed "server_DH_params_fail for a different handshake")
-                elif failHash <> expectedHash then
+                elif not (Bytes.constantTimeEquals failHash expectedHash) then
                     return Error (MtProtoError.AuthKeyExchangeFailed "server_DH_params_fail with a wrong new_nonce_hash")
                 else
                     return Error (MtProtoError.AuthKeyExchangeFailed "server_DH_params_fail: the server rejected p_q_inner_data (wrong RSA key, bad pq factorisation, or a rejected encryption)")
@@ -466,7 +466,7 @@ module AuthKeyExchange =
                     elif genServerNonce <> serverNonce then
                         return Loop.Stop(Error (MtProtoError.AuthKeyExchangeFailed "server_nonce mismatch in DH result"))
                     elif constructorId3 = DhGenOk then
-                        if newNonceHash <> expectedHash 1uy then
+                        if not (Bytes.constantTimeEquals newNonceHash (expectedHash 1uy)) then
                             return Loop.Stop(Error (MtProtoError.AuthKeyExchangeFailed "new_nonce_hash1 mismatch — server derived a different auth key"))
                         else
 
@@ -482,14 +482,14 @@ module AuthKeyExchange =
                         }
                         return Loop.Stop(Ok (authKey, salt, timeOffset))
                     elif constructorId3 = DhGenRetry then
-                        if newNonceHash <> expectedHash 2uy then
+                        if not (Bytes.constantTimeEquals newNonceHash (expectedHash 2uy)) then
                             return Loop.Stop(Error (MtProtoError.AuthKeyExchangeFailed "new_nonce_hash2 mismatch in dh_gen_retry"))
                         elif attemptsLeft <= 1 then
                             return Loop.Stop(Error (MtProtoError.AuthKeyExchangeFailed "dh_gen_retry requested five times"))
                         else
                             return Loop.Continue(auxHash, attemptsLeft - 1)
                     elif constructorId3 = DhGenFail then
-                        if newNonceHash <> expectedHash 3uy then
+                        if not (Bytes.constantTimeEquals newNonceHash (expectedHash 3uy)) then
                             return Loop.Stop(Error (MtProtoError.AuthKeyExchangeFailed "new_nonce_hash3 mismatch in dh_gen_fail"))
                         else
                             return Loop.Stop(Error (MtProtoError.AuthKeyExchangeFailed "dh_gen_fail: the server rejected the DH result"))
