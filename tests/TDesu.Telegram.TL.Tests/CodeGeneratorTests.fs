@@ -150,6 +150,29 @@ module CodeGeneratorTests =
             Pipeline.generateErgonomics testNs config apiSchema path
             assertMatchesSnapshot (File.ReadAllText path) "CodeGen_Ergonomics")
 
+    /// A field declared with TL's lowercase `vector<...>` (a "bare" vector -- no constructor id of
+    /// its own on the wire, unlike `Vector<T>`) deserializes through `ReadBareVector`, which
+    /// carries the same declared-count bound `ReadVector` has.
+    [<Test>]
+    let ``generateSerializationTypes bounds a bare vector field's declared count`` () =
+        let bareVectorSchema =
+            match
+                AstFactory.parse
+                    "testSalt#0949d9dc valid_since:int valid_until:int salt:long = TestSalt;\ntestBareVector#5e6f7a8b req_msg_id:long items:vector<testSalt> = TestBareVector;\n"
+            with
+            | Ok s -> s
+            | Error e -> failwith e
+
+        let config =
+            { OverrideConfig.empty with
+                TypeWhitelist = set [ "TestBareVector" ] }
+
+        withTempFile (fun path ->
+            Pipeline.generateSerializationTypes testNs config bareVectorSchema path
+            let code = File.ReadAllText path
+            Assert.That(code, Does.Contain "ReadBareVector")
+            Assert.That(code, Does.Not.Contain "Array.init"))
+
     /// Regression: `[[layer_variants]]` CIDs must flow into the generated
     /// `Deserialize`'s pattern match via `AliasCids`. Without this, a layer
     /// 223 client sending the post-216 CID for `messages.sendMessage` is

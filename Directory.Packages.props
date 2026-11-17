@@ -5,7 +5,7 @@
     <ItemGroup>
         <PackageVersion Include="FSharp.Core" Version="10.0.103" />
         <PackageVersion Include="TDesu.FSharp" Version="2.1.1" />
-        <PackageVersion Include="TDesu.Telegram.Serialization" Version="0.4.2" />
+        <PackageVersion Include="TDesu.Telegram.Serialization" Version="0.4.3-local.1" />
         <PackageVersion Include="TDesu.Telegram.Crypto" Version="0.5.1" />
         <PackageVersion Include="Serilog.Extensions.Logging" Version="10.0.0" />
         <PackageVersion Include="Serilog.Sinks.Console" Version="6.0.0" />
@@ -22,6 +22,7 @@
         <PackageVersion Include="NUnit3TestAdapter" Version="6.1.0" />
         <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.3.0" />
         <PackageVersion Include="coverlet.collector" Version="8.0.0" />
+        <PackageVersion Include="FsCheck" Version="3.3.2" />
         <PackageVersion Include="JunitXml.TestLogger" Version="8.0.0" />
         <PackageVersion Include="MinVer" Version="6.0.0" />
         <PackageVersion Include="Microsoft.SourceLink.GitHub" Version="10.0.303" />

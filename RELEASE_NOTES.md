@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Protocol / Generator
+
+**Lowercase `vector<...>` (bare vector) fields deserialize through
+`TlReadBuffer.ReadBareVector`**, which applies the same declared-count bound as `ReadVector`.
+Regenerated `Generated/GeneratedTlRequests.g.fs` (`future_salts.salts`).
+
+### Dependencies
+
+Picks up TDesu.Telegram.Serialization's new `TlReadBuffer.ReadBareVector`.
+
 ### Protocol
 
 **`processInnerMessage` unwraps at most `MaxMessageNestingDepth` (4) nested `msg_container` /

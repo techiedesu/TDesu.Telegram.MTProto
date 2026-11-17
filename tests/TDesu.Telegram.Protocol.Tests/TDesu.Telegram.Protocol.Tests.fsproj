@@ -21,6 +21,7 @@
         <Compile Include="ReconnectTests.fs" />
         <Compile Include="ServerSaltTests.fs" />
         <Compile Include="MessageNestingTests.fs" />
+        <Compile Include="GeneratedServiceMessageRoundTripTests.fs" />
     </ItemGroup>
 
     <ItemGroup>
@@ -33,7 +34,7 @@
         <PackageReference Include="Microsoft.NET.Test.Sdk" />
         <PackageReference Include="NUnit3TestAdapter" />
         <PackageReference Include="coverlet.collector" />
-        <PackageReference Include="TDesu.Telegram.Crypto" />
+        <PackageReference Include="FsCheck" />
         <PackageReference Include="TDesu.Telegram.Serialization" />
     </ItemGroup>
 

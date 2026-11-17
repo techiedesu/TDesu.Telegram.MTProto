@@ -151,7 +151,10 @@ type FutureSalts = {
         let now = reader.ReadInt32()
 
         let salts =
-            Array.init (reader.ReadInt32()) (fun _i -> FutureSalt.DeserializeBody(reader))
+            reader
+                .ReadBareVector(fun r ->
+                    let reader = r
+                    FutureSalt.DeserializeBody(reader))
 
         {
             ReqMsgId = reqMsgId

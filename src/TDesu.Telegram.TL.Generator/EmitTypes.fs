@@ -146,13 +146,16 @@ module EmitTypes =
         | t when IrType.isFixedBytes t ->
             mkApp (mkDotGet reader "ReadRawBytes") (mkParen (mkInt32 (IrType.fixedWidth t).Value))
         | t when IrType.isBareVector t ->
-            // `Array.init` runs its generator ascending — FSharp.Core fills the
-            // array with a `for i = 0 to n-1` loop — which is the order a
-            // sequential reader requires.
+            // Mirrors the `isBoxedVector` branch below: `deserializeExprFor` always spells the
+            // reader as `reader`, so the lambda shadows that name with its own parameter rather
+            // than needing a second code path. `ReadBareVector` carries the same declared-count
+            // bound as `ReadVector` (TDesu.Serialization), just without a constructor id to read
+            // first -- a bare vector has none on the wire.
             let inner = IrType.element t
-            mkApp
-                (mkApp (mkLongIdent [ "Array"; "init" ]) (mkParen (mkApp (mkDotGet reader "ReadInt32") mkUnit)))
-                (mkParen (mkLambda [ "_i" ] (deserializeExprFor inner)))
+            let innerCall = deserializeExprFor inner
+            let lambdaBody = mkLet "reader" (mkIdent "r") innerCall
+            let lambda = mkLambda [ "r" ] lambdaBody
+            mkApp (mkDotGet reader "ReadBareVector") (mkParen lambda)
         | t when IrType.isBoxedVector t ->
             let inner = IrType.element t
             let innerCall = deserializeExprFor inner
