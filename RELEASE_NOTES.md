@@ -1,6 +1,6 @@
 # Release notes
 
-## Unreleased
+## 0.14.4
 
 ### Protocol / Generator
 
