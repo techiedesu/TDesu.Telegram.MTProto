@@ -20,6 +20,7 @@
         <Compile Include="AckRequeueTests.fs" />
         <Compile Include="ReconnectTests.fs" />
         <Compile Include="ServerSaltTests.fs" />
+        <Compile Include="MessageNestingTests.fs" />
     </ItemGroup>
 
     <ItemGroup>

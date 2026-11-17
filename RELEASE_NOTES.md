@@ -1,5 +1,13 @@
 # Release notes
 
+## Unreleased
+
+### Protocol
+
+**`processInnerMessage` unwraps at most `MaxMessageNestingDepth` (4) nested `msg_container` /
+`gzip_packed` layers**, matching the schema's single-level wrappers; a message nested deeper is
+logged and dropped.
+
 ## 0.14.3
 
 ### Protocol

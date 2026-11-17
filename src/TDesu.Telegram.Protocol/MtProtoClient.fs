@@ -166,6 +166,15 @@ type MtProtoClient
     [<Literal>]
     let RpcResultCid = 0xf35c6d01u
 
+    /// Neither `msg_container` nor `gzip_packed` is modelled as wrapping itself: the schema
+    /// treats both as flat, single-level wrappers around one message. `processInnerMessage`'s two
+    /// recursive branches (`MsgContainerCid`, `GzipPackedCid` below) carry a depth counter so a
+    /// message wrapped more than a few levels deep is rejected at a fixed, shallow point instead
+    /// of being unwrapped for as long as the bytes keep describing another layer. Four levels is
+    /// already more than one container plus one packed wrapper ever needs.
+    [<Literal>]
+    let MaxMessageNestingDepth = 4
+
     /// Inflate the `packed_data:bytes` of a gzip_packed, with a ceiling.
     ///
     /// Takes the packed bytes rather than the frame so a caller holding a reader already
@@ -380,14 +389,20 @@ type MtProtoClient
     /// container's inner messages are `Slice`s of it rather than copies, and only the two things
     /// that leave this function — an RPC result for its caller, an update for the subscribers —
     /// are copied out, because their owners outlive the frame.
-    let rec processInnerMessage (body: TlReadBuffer) (msgId: int64) (seqNo: int32) =
-        if body.Remaining >= 4 then
+    let rec processInnerMessage (depth: int) (body: TlReadBuffer) (msgId: int64) (seqNo: int32) =
+        if depth > MaxMessageNestingDepth then
+            log.LogWarning(
+                "Dropping msg_id {MsgId}: nesting depth exceeds {Max} (msg_container/gzip_packed)",
+                msgId,
+                MaxMessageNestingDepth
+            )
+        elif body.Remaining >= 4 then
             let constructor = body.ReadConstructorId()
 
             match constructor with
             | GzipPackedCid ->
                 // gzip_packed wrapping the whole message — decompress and re-dispatch (ack at leaf).
-                processInnerMessage (TlReadBuffer(inflate (body.ReadBytes()))) msgId seqNo
+                processInnerMessage (depth + 1) (TlReadBuffer(inflate (body.ReadBytes()))) msgId seqNo
             | MsgContainerCid ->
                 // msg_container — a non-content wrapper; don't ack it, recurse into each inner
                 // message so their service constructors are handled and content ones get acked.
@@ -416,7 +431,7 @@ type MtProtoClient
                         // own msg_id but travels inside a *new* container with a new outer id. The
                         // outer check passes and the update would be applied a second time.
                         if markSeen innerMsgId then
-                            processInnerMessage innerBody innerMsgId innerSeqNo
+                            processInnerMessage (depth + 1) innerBody innerMsgId innerSeqNo
                         else
                             // A duplicate content-related message means the server never saw our
                             // ack for it and is retransmitting; dropping it silently here left that
@@ -1011,7 +1026,7 @@ type MtProtoClient
                                         // connection: the handler in `receiveLoop` fails every
                                         // in-flight RPC and reconnects.
                                         try
-                                            processInnerMessage body msgId seqNo
+                                            processInnerMessage 0 body msgId seqNo
                                         with ex ->
                                             log.LogError(ex, "Failed to process msg_id {MsgId}", msgId)
                                     else
