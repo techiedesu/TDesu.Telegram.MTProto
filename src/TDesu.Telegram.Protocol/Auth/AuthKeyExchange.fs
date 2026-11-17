@@ -66,7 +66,7 @@ module AuthKeyExchange =
     ///
     /// Four orders of magnitude separate the two, so this is not a tuning knob. The cap is
     /// 32 x 46 341 = 1 482 912: 55x what the realistic case actually needed, 0.049% of what the
-    /// hostile input needs, ~0.7 s of worst-case work here. Rho's chance of missing a factor
+    /// hostile input needs, ~0.36 s of worst-case work here (UInt128 steps; ~0.7 s with BigInteger). Rho's chance of missing a factor
     /// after t iterations falls off as exp(-t^2 / 2p), so at t = 32 sqrt(p) a false failure on a
     /// real semiprime is exp(-512)-improbable. Anyone raising this is buying nothing for a
     /// legitimate server and paying the attacker directly.
@@ -93,15 +93,19 @@ module AuthKeyExchange =
         elif pq % 2UL = 0UL then
             validated 2UL (pq / 2UL)
         else
-            let bigPq = BigInteger(pq)
+            // UInt128 keeps x*x + c exact for any 64-bit x and c, so each step is two native
+            // multiplies and a modulo instead of three BigInteger allocations.
+            let bigPq = UInt128.op_Implicit pq
+
+            let rec gcd (a: uint64) (b: uint64) = if b = 0UL then a else gcd b (a % b)
 
             // Returns the divisor found and the budget left, so the retry below cannot spend the
             // budget twice. (A closure cannot capture a mutable local in F#, hence the threading.)
             let rho (c: uint64) (startBudget: int) =
-                let bigC = BigInteger(c)
+                let bigC = UInt128.op_Implicit c
                 let f (xv: uint64) =
-                    let bx = BigInteger(xv)
-                    (BigInteger.Multiply(bx, bx) + bigC) % bigPq |> uint64
+                    let bx = UInt128.op_Implicit xv
+                    UInt128.op_Explicit ((bx * bx + bigC) % bigPq) : uint64
                 let mutable x = 2UL
                 let mutable y = 2UL
                 let mutable d = 1UL
@@ -113,7 +117,7 @@ module AuthKeyExchange =
                     // |x - y| as uint64: the old int64 cast wrapped negative above 2^63 and fed
                     // gcd a different number than the one the algorithm computed.
                     let diff = if x > y then x - y else y - x
-                    d <- BigInteger.GreatestCommonDivisor(BigInteger(diff), bigPq) |> uint64
+                    d <- gcd diff pq
                 struct (d, budget)
 
             let struct (d1, budget1) = rho 1UL MaxRhoIterations
