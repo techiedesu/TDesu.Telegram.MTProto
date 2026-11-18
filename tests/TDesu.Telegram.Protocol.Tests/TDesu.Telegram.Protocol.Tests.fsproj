@@ -9,6 +9,7 @@
     <ItemGroup>
         <Compile Include="PersistenceTests.fs" />
         <Compile Include="FactorizePqTests.fs" />
+        <Compile Include="GzipInflaterConformanceTests.fs" />
         <Compile Include="MessageFramingTests.fs" />
         <Compile Include="TransportFramingTests.fs" />
         <Compile Include="TransportSelectionTests.fs" />
@@ -22,6 +23,7 @@
         <Compile Include="ServerSaltTests.fs" />
         <Compile Include="MessageNestingTests.fs" />
         <Compile Include="GeneratedServiceMessageRoundTripTests.fs" />
+        <Compile Include="GzipInflaterInjectionTests.fs" />
     </ItemGroup>
 
     <ItemGroup>

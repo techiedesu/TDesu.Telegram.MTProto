@@ -1,5 +1,27 @@
 # Release notes
 
+## 0.15.0
+
+### Protocol
+
+**`gzip_packed` decompression is pluggable per `MtProtoClient` instance.** `IGzipInflater` takes
+the packed bytes and a ceiling and returns `Result<byte[], InflateError>`; `GzipInflater.platform`
+wraps `System.IO.Compression.GZipStream` with the same allocation strategy and ceiling
+(`FrameCodec.MaxFrameLength`) the client has always used, and stays the default. A consumer that
+needs a different inflater — a managed one for a platform without `System.IO.Compression`, for
+instance — passes `inflater` to the constructor instead; nothing is process-global. Both call
+sites (`processRpcResult`, `processInnerMessage`) now log and drop a message whose `gzip_packed`
+fails to decompress instead of `failwith`ing; a well-formed message decompresses exactly as
+before. `GzipInflaterConformanceTests` is a reusable NUnit fixture a consumer can copy into their
+own test project to run the same checks against a custom `IGzipInflater`.
+
+### Dependencies
+
+TDesu.FSharp 2.1.1 → 3.0.1, TDesu.Telegram.Serialization 0.4.3 → 0.4.4, TDesu.Telegram.Crypto
+0.5.1 → 0.5.2 (both also on TDesu.FSharp 3.0.1). None of the TDesu.FSharp APIs these packages use
+changed in 3.0; consumers already on TDesu.FSharp 3.x no longer resolve them against a major
+version they were not built with.
+
 ## 0.14.4
 
 ### Protocol / Generator

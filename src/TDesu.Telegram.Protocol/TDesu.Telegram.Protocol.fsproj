@@ -29,6 +29,7 @@
         <Compile Include="Session.fs" />
         <Compile Include="Auth\AuthKeyExchange.fs" />
         <Compile Include="RpcDispatcher.fs" />
+        <Compile Include="GzipInflater.fs" />
         <Compile Include="MtProtoClient.fs" />
     </ItemGroup>
 

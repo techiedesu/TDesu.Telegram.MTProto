@@ -2,8 +2,6 @@ namespace TDesu.MTProto
 
 open System
 open System.Buffers.Binary
-open System.IO
-open System.IO.Compression
 open System.Threading
 open System.Threading.Tasks
 open Microsoft.Extensions.Logging
@@ -28,13 +26,19 @@ open TDesu.Transport
 /// `rsaKeys` is the key set the handshake matches the server's fingerprints against; the default
 /// is Telegram's production key, and a test server supplies its own here rather than through the
 /// process-global registry the crypto package used to carry.
+///
+/// `inflater` decompresses `gzip_packed` messages; the default, `GzipInflater.platform`, wraps
+/// `System.IO.Compression.GZipStream`. A consumer that needs a different one — a managed inflate
+/// for a platform without `System.IO.Compression`, or any other reason — supplies its own
+/// `IGzipInflater` here instead of through a process-wide setting.
 type MtProtoClient
     (
         dc: DataCenter,
         ?logger: ILogger,
         ?transportFactory: DataCenter -> ITransport,
         ?responseTimeout: TimeSpan,
-        ?rsaKeys: Rsa.RsaPublicKey list
+        ?rsaKeys: Rsa.RsaPublicKey list,
+        ?inflater: IGzipInflater
     ) =
 
     // The carrier comes from the DataCenter the caller connected with (`dc.Transport`), so it is
@@ -44,6 +48,7 @@ type MtProtoClient
 
     let responseTimeout = defaultArg responseTimeout (TimeSpan.FromSeconds 30.0)
     let rsaKeys = defaultArg rsaKeys Rsa.publicKeys
+    let inflater = defaultArg inflater GzipInflater.platform
 
     let mutable transport = createTransport dc
     let dispatcher = RpcDispatcher()
@@ -175,39 +180,6 @@ type MtProtoClient
     [<Literal>]
     let MaxMessageNestingDepth = 4
 
-    /// Inflate the `packed_data:bytes` of a gzip_packed, with a ceiling.
-    ///
-    /// Takes the packed bytes rather than the frame so a caller holding a reader already
-    /// positioned on the packed field can inflate without first slicing the enclosing frame out
-    /// of the buffer — that slice is a full-size copy, discarded the moment the packed bytes are
-    /// read.
-    let inflate (packed: byte[]) : byte[] =
-        use input = new MemoryStream(packed)
-        use gz = new GZipStream(input, CompressionMode.Decompress)
-
-        // Grown once to a plausible size rather than doubled from nothing. A MemoryStream that
-        // doubles into a multi-megabyte result allocates every intermediate size on the large object
-        // heap, and this runs on a process that never restarts.
-        use output = new MemoryStream(min (packed.Length * 4) FrameCodec.MaxFrameLength)
-
-        // A frame is capped at 16 MiB on the wire, but gzip of structured TL data expands by
-        // three orders of magnitude, and the unpacked body can itself be gzip_packed. Copying
-        // without a ceiling turns one frame into gigabytes on a process that never restarts.
-        let buffer = Array.zeroCreate<byte> 81920
-        let mutable total = 0
-        let mutable read = gz.Read(buffer, 0, buffer.Length)
-
-        while read > 0 do
-            total <- total + read
-
-            if total > FrameCodec.MaxFrameLength then
-                failwith "gzip_packed expands beyond the maximum frame size"
-
-            output.Write(buffer, 0, read)
-            read <- gz.Read(buffer, 0, buffer.Length)
-
-        output.ToArray()
-
     // Service messages are the generated records, encoded by `Tl.bytesOf`. They used to be
     // hand-written: a literal constructor id, a literal vector id, a length and a loop, per message
     // type. That is the byte-poking the generator exists to make unnecessary, and it is how a schema
@@ -265,21 +237,10 @@ type MtProtoClient
         }
 
 
-    /// Complete (or fail) the caller waiting on `reqMsgId` with the result `reader` is positioned on.
-    ///
-    /// The one copy here is the caller's: an awaiting `RpcAsync` owns the bytes it is handed, and
-    /// the frame they are read out of is reused by the next message. A packed result is inflated
-    /// straight from the reader — 0.12 sliced the tail of the frame into a fresh array first, a
-    /// full-size copy thrown away as soon as the packed bytes were read, and packed is precisely
-    /// what the large results arrive as.
-    let processRpcResult (reader: TlReadBuffer) (reqMsgId: int64) =
-        let resultData =
-            match reader.TryPeekConstructorId() with
-            | ValueSome GzipPackedCid ->
-                %reader.ReadConstructorId()
-                inflate (reader.ReadBytes())
-            | _ -> reader.ReadRawBytes(reader.Remaining)
-
+    /// Complete (or fail) `reqMsgId` with an already-decompressed result. Split out of
+    /// `processRpcResult` so a `gzip_packed` result that failed to decompress can log and return
+    /// without reaching any of this.
+    let completeRpcResult (resultData: byte[]) (reqMsgId: int64) =
         // An rpc_error arrives in the same slot as a successful result, so handing the
         // bytes straight to the caller reports failure as success. Every consumer then
         // fails deserializing an "unknown constructor id" instead of reading the error
@@ -309,6 +270,26 @@ type MtProtoClient
 
             if not completed then
                 log.LogWarning("No pending request for msg_id {MsgId}", reqMsgId)
+
+    /// Complete (or drop) the caller waiting on `reqMsgId` with the result `reader` is positioned
+    /// on.
+    ///
+    /// The one copy here is the caller's: an awaiting `RpcAsync` owns the bytes it is handed, and
+    /// the frame they are read out of is reused by the next message. A packed result is inflated
+    /// straight from the reader — 0.12 sliced the tail of the frame into a fresh array first, a
+    /// full-size copy thrown away as soon as the packed bytes were read, and packed is precisely
+    /// what the large results arrive as. A result that fails to decompress is logged and dropped —
+    /// the caller's `RpcAsync` times out rather than completing with corrupted data.
+    let processRpcResult (reader: TlReadBuffer) (reqMsgId: int64) =
+        match reader.TryPeekConstructorId() with
+        | ValueSome GzipPackedCid ->
+            %reader.ReadConstructorId()
+            let packed = reader.ReadBytes()
+
+            match inflater.Inflate(ReadOnlySpan packed, FrameCodec.MaxFrameLength) with
+            | Ok resultData -> completeRpcResult resultData reqMsgId
+            | Error err -> log.LogWarning("Dropping rpc_result for msg_id {MsgId}: gzip_packed {Error}", reqMsgId, err)
+        | _ -> completeRpcResult (reader.ReadRawBytes(reader.Remaining)) reqMsgId
 
     /// Re-send a still-pending request under a fresh msg_id (e.g. after bad_server_salt corrected
     /// the salt). The response to the re-send completes the original caller's task via Rekey.
@@ -402,7 +383,11 @@ type MtProtoClient
             match constructor with
             | GzipPackedCid ->
                 // gzip_packed wrapping the whole message — decompress and re-dispatch (ack at leaf).
-                processInnerMessage (depth + 1) (TlReadBuffer(inflate (body.ReadBytes()))) msgId seqNo
+                let packed = body.ReadBytes()
+
+                match inflater.Inflate(ReadOnlySpan packed, FrameCodec.MaxFrameLength) with
+                | Ok inflated -> processInnerMessage (depth + 1) (TlReadBuffer inflated) msgId seqNo
+                | Error err -> log.LogWarning("Dropping msg_id {MsgId}: gzip_packed {Error}", msgId, err)
             | MsgContainerCid ->
                 // msg_container — a non-content wrapper; don't ack it, recurse into each inner
                 // message so their service constructors are handled and content ones get acked.

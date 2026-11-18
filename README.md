@@ -106,6 +106,32 @@ use local = new MtProtoClient(dc, rsaKeys = [ myServerKey ], responseTimeout = T
 | `Http` | `HttpTransport` | HTTP/1.1 | none | legacy carrier |
 | `FakeTls(host, port, secret, domain)` | `FakeTlsTransport` | TLS-camouflaged TCP | obfuscation2 | via an MTProxy (`ee` secret + fronting domain) |
 
+### Decompressing `gzip_packed`
+
+`inflater` controls how `gzip_packed` messages are decompressed. The default,
+`GzipInflater.platform`, wraps `System.IO.Compression.GZipStream` with the same ceiling
+(`FrameCodec.MaxFrameLength`) the client has always used. A consumer that needs a different one —
+a managed inflate for a platform without `System.IO.Compression`, or any other reason — passes
+their own `IGzipInflater` instead, per `MtProtoClient` instance rather than process-wide:
+
+```fsharp
+let managed =
+    { new IGzipInflater with
+        member _.Inflate(packed, maxOutputBytes) =
+            // decompress `packed`, stopping at or before `maxOutputBytes`, and return
+            // `Error (InflateError.Malformed _)` / `Error (InflateError.ExceedsLimit _)`
+            // instead of throwing
+            ...
+    }
+
+use client = new MtProtoClient(dc, inflater = managed)
+```
+
+`GzipInflaterConformanceTests` in `tests/TDesu.Telegram.Protocol.Tests` is a reusable NUnit
+fixture for exactly this case: copy the file into a consumer's own test project, add a
+`[<TestFixture>]` subclass overriding `Inflater`, and it runs the same checks against a custom
+implementation.
+
 ### Generator CLI
 
 Every invocation needs a schema, an output directory, a target namespace, an overrides
